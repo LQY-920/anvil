@@ -4,6 +4,7 @@ import type { Hub } from "../ws/hub.js";
 import { makeDaemonAuth, makeTaskAuth } from "../lib/auth.js";
 import { claimTasks, getTask } from "../services/tasks.js";
 import { registerRuntimes, heartbeat } from "../services/runtimes.js";
+import { appendTaskMessages } from "../services/messages.js";
 import type { ClaimRequest, DaemonHeartbeatRequest, DaemonRegisterRequest } from "@anvil/core";
 
 export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
@@ -36,5 +37,13 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const task = getTask(db, id);
     if (!task) return reply.code(404).send({ error: "not found" });
     return { status: task.status };
+  });
+
+  app.post("/api/daemon/tasks/:id/messages", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { messages } = req.body as { messages: any[] };
+    const result = appendTaskMessages(db, hub, id, messages);
+    if (!result.ok) return reply.code(409).send({ last_seq: result.last_seq });
+    return result;
   });
 }
