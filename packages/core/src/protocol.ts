@@ -1,4 +1,5 @@
-import type { AgentMessage, Issue, Priority, Task } from "./index.js";
+import type { FailureReason, Issue, IssueStatus, Priority, Task } from "./models.js";
+import type { AgentMessage } from "./messages.js";
 
 export interface DaemonRegisterRequest { daemon_id: string; runtimes: { provider: string; version: string | null }[]; }
 export interface DaemonHeartbeatRequest { daemon_id: string; }
@@ -17,7 +18,7 @@ export interface AppendMessagesResponse { last_seq: number; }
 
 export interface StartRequest { work_dir: string; }
 export interface CompleteRequest { branch?: string; diff_stat?: string; work_dir?: string; session_id?: string; }
-export interface FailRequest { failure_reason: string; error: string; work_dir?: string; }
+export interface FailRequest { failure_reason: FailureReason; error: string; work_dir?: string; }
 export interface IssueStatusRequest { status: "in_review" | "done" | "blocked"; note?: string; }
 
 export type ServerEventType = "issue.updated" | "task.updated" | "task.message" | "runtime.updated" | "task.available";
@@ -28,6 +29,6 @@ export interface CreateIssueRequest {
   assignee_type?: "member" | "agent"; assignee_id?: string; repo_path?: string;
 }
 export interface UpdateIssueRequest {
-  title?: string; description?: string; status?: string; priority?: Priority;
+  title?: string; description?: string; status?: IssueStatus; priority?: Priority;
   assignee_type?: "member" | "agent" | null; assignee_id?: string | null; repo_path?: string | null;
 }

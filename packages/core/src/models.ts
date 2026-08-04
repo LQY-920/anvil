@@ -54,6 +54,6 @@ export interface Agent {
 }
 
 export interface Runtime {
-  id: string; workspace_id: string; daemon_id: string; provider: string;
+  id: string; workspace_id: string; daemon_id: string; provider: Provider;
   version: string | null; status: "online" | "offline"; last_seen_at: string | null;
 }

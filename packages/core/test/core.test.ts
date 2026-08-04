@@ -11,8 +11,12 @@ describe("enums", () => {
     expect(MESSAGE_TYPES).toEqual(["text","thinking","tool_use","tool_result","status","error","log"]);
     expect(FAILURE_REASONS).toEqual(["runtime_offline","idle_timeout","spawn_failed","non_zero_exit","lease_expired","cancelled_by_user"]);
   });
-  it("priorityWeight orders urgent > none", () => {
-    expect(priorityWeight("urgent")).toBeGreaterThan(priorityWeight("none"));
+  it("priorityWeight maps each priority to its exact weight", () => {
+    expect(priorityWeight("urgent")).toBe(40);
+    expect(priorityWeight("high")).toBe(30);
+    expect(priorityWeight("medium")).toBe(20);
+    expect(priorityWeight("low")).toBe(10);
+    expect(priorityWeight("none")).toBe(0);
   });
 });
 
