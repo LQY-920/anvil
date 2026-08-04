@@ -166,5 +166,7 @@ describe("POST /api/tasks/:id/merge", () => {
     expect(res.json().error).toBeTruthy();
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
     expect(detail.json().issue.status).not.toBe("done");
+    // merge 失败已 abort，仓库不留 MERGING 状态
+    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
   });
 });

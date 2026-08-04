@@ -58,7 +58,9 @@ export async function mergeTaskBranch(db: Db, taskId: string): Promise<MergeResu
   try {
     await git(repo, ["merge", "--no-ff", branch, "-m", `merge: anvil task ${task.id.slice(0, 8)}`]);
   } catch (e: any) {
-    // 冲突等合并失败：返回 stderr，DB 状态不动
+    // 冲突等合并失败：abort 掉，避免仓库留在 MERGING 状态卡死后续操作；abort 失败仅记录
+    try { await git(repo, ["merge", "--abort"]); }
+    catch (abortErr) { console.warn(`merge --abort failed in ${repo}`, abortErr); }
     return { ok: false, error: e?.message ?? String(e) };
   }
   // 清理失败仅记录，不阻断合并结果
