@@ -2957,7 +2957,7 @@ git add apps/runner && git commit -m "feat(runner): kimi cli adapter (headless s
 - Test: `apps/runner/test/executor.test.ts`
 - Test: `apps/runner/test/uploader.test.ts`
 
-- [ ] **Step 1: 写失败测试（uploader）**
+- [x] **Step 1: 写失败测试（uploader）**
 
 `apps/runner/test/uploader.test.ts`:
 
@@ -3021,7 +3021,7 @@ describe("MessageUploader", () => {
 });
 ```
 
-- [ ] **Step 2: 写失败测试（executor 端到端，真 server + fake backend）**
+- [x] **Step 2: 写失败测试（executor 端到端，真 server + fake backend）**
 
 `apps/runner/test/executor.test.ts`:
 
@@ -3124,12 +3124,12 @@ describe("executor", () => {
 });
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: FAIL，`worktree.js` / `uploader.js` / `executor.js` 不存在。
 
-- [ ] **Step 4: 实现 worktree.ts 与 uploader.ts**
+- [x] **Step 4: 实现 worktree.ts 与 uploader.ts**
 
 `apps/runner/src/worktree.ts`:
 
@@ -3240,7 +3240,7 @@ export class MessageUploader {
 }
 ```
 
-- [ ] **Step 5: 实现 executor.ts 与 index.ts**
+- [x] **Step 5: 实现 executor.ts 与 index.ts**
 
 `apps/runner/src/executor.ts`:
 
@@ -3374,12 +3374,12 @@ async function main() {
 main().catch((e) => { console.error(e); process.exit(1); });
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: PASS（uploader 3 + executor 4 + 既有 9 = 16）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/runner && git commit -m "feat(runner): worktree prep, batched uploader with redact/resync, task executor + entrypoint"
@@ -3396,7 +3396,7 @@ git add apps/runner && git commit -m "feat(runner): worktree prep, batched uploa
 - Create: `apps/web/src/pages/BoardPage.tsx`
 - Test: `apps/web/test/board.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/board.test.tsx`:
 
@@ -3434,12 +3434,12 @@ describe("BoardPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，组件与 api 模块不存在。
 
-- [ ] **Step 3: 实现脚手架与 api/ws 封装**
+- [x] **Step 3: 实现脚手架与 api/ws 封装**
 
 `apps/web/vite.config.ts`:
 
@@ -3576,7 +3576,7 @@ export function useServerEvents(onEvent: (e: ServerEvent) => void) {
 }
 ```
 
-- [ ] **Step 4: 实现 BoardPage 与 styles.css**
+- [x] **Step 4: 实现 BoardPage 与 styles.css**
 
 `apps/web/src/pages/BoardPage.tsx`:
 
@@ -3735,12 +3735,12 @@ button.primary { background: #2563eb; border-color: #2563eb; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（1 个用例）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): scaffold + board page (columns, create modal, status select, rerun)"
@@ -3754,7 +3754,7 @@ git add apps/web && git commit -m "feat(web): scaffold + board page (columns, cr
 - Create: `apps/web/src/pages/TaskDetailPage.tsx`
 - Test: `apps/web/test/task-detail.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/task-detail.test.tsx`:
 
@@ -3796,12 +3796,12 @@ describe("TaskDetailPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，`TaskDetailPage` 不存在。
 
-- [ ] **Step 3: 实现 TaskDetailPage**
+- [x] **Step 3: 实现 TaskDetailPage**
 
 `apps/web/src/pages/TaskDetailPage.tsx`:
 
@@ -3921,12 +3921,12 @@ export default function TaskDetailPage() {
 .comment-form textarea { background: #0f1115; color: #e5e7eb; border: 1px solid #2a2f3a; border-radius: 6px; padding: 8px; }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（累计 2 个用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): task detail page (live transcript, cancel/rerun, comments)"
@@ -3940,7 +3940,7 @@ git add apps/web && git commit -m "feat(web): task detail page (live transcript,
 - Create: `apps/web/src/pages/AgentsPage.tsx`
 - Test: `apps/web/test/agents.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/agents.test.tsx`:
 
@@ -3971,12 +3971,12 @@ describe("AgentsPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，`AgentsPage` 不存在。
 
-- [ ] **Step 3: 实现 AgentsPage**
+- [x] **Step 3: 实现 AgentsPage**
 
 `apps/web/src/pages/AgentsPage.tsx`:
 
@@ -4053,12 +4053,12 @@ export default function AgentsPage() {
 .token-reveal { background: #0a0c10; padding: 10px; border-radius: 6px; user-select: all; }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（累计 3 个用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): agents/runtimes admin page + daemon token generation"
@@ -4072,7 +4072,7 @@ git add apps/web && git commit -m "feat(web): agents/runtimes admin page + daemo
 - Create: `apps/server/src/index.ts`
 - Test: `apps/runner/test/e2e.test.ts`
 
-- [ ] **Step 1: 写 server 入口**
+- [x] **Step 1: 写 server 入口**
 
 `apps/server/src/index.ts`:
 
@@ -4087,7 +4087,7 @@ await app.listen({ port, host: "127.0.0.1" });
 console.log(`anvil server listening on http://127.0.0.1:${port}`);
 ```
 
-- [ ] **Step 2: 写 E2E 测试**
+- [x] **Step 2: 写 E2E 测试**
 
 `apps/runner/test/e2e.test.ts`:
 
@@ -4166,12 +4166,12 @@ it("create issue → daemon claims → completes end to end", async () => {
 }, 10000);
 ```
 
-- [ ] **Step 3: 跑 E2E**
+- [x] **Step 3: 跑 E2E**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: 全部 PASS（含 E2E，累计 17）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/server/src/index.ts apps/runner/test/e2e.test.ts && git commit -m "feat: server entrypoint + end-to-end happy path test"
@@ -4185,7 +4185,7 @@ git add apps/server/src/index.ts apps/runner/test/e2e.test.ts && git commit -m "
 - Create: `README.md`, `LICENSE`
 - Test: 手动验收清单（spec §10）
 
-- [ ] **Step 1: 写 README**
+- [x] **Step 1: 写 README**
 
 `README.md`:
 
@@ -4231,7 +4231,7 @@ MIT（见 LICENSE）。本项目为独立实现，与 Multica 无代码继承关
 
 `LICENSE`：标准 MIT 文本（Copyright (c) 2026 Anvil contributors）。
 
-- [ ] **Step 2: 全量测试 + 类型检查**
+- [x] **Step 2: 全量测试 + 类型检查**
 
 Run:
 
@@ -4241,7 +4241,7 @@ cd /d/anvil && pnpm test && pnpm -r exec tsc --noEmit -p tsconfig.json
 
 Expected: 四个包测试全 PASS，tsc 无错误。
 
-- [ ] **Step 3: 手动验收（对照 spec §10 checklist）**
+- [ ] **Step 3: 手动验收（对照 spec §10 checklist）—— 留给用户手动执行**
 
 逐项人工执行并记录结果：
 
@@ -4251,7 +4251,7 @@ Expected: 四个包测试全 PASS，tsc 无错误。
 4. runner 断网/断心跳 60s+，确认 runtime 标 offline、任务按 `runtime_offline` 失败并自动重试。
 5. daemon 连续运行期间制造单任务崩溃（比如给一个不存在目录的 repo_path），确认 daemon 不退出、其他任务不受影响。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md LICENSE && git commit -m "docs: readme quickstart + MIT license"
