@@ -66,11 +66,18 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
   const task = getTask(db, taskId);
   if (!task || task.status === "completed" || task.status === "failed" || task.status === "cancelled") return;
   const now = new Date().toISOString();
-  db.$client
-    .prepare(`UPDATE tasks SET status='failed', failure_reason=?, error=?, completed_at=?, work_dir=COALESCE(?, work_dir),
-              task_token_hash=NULL, lease_expires_at=NULL WHERE id=?`)
-    .run(reason, error, now, workDir, taskId);
-  if (task.attempt < task.max_attempts) {
+  db.$client.transaction(() => {
+    db.$client
+      .prepare(`UPDATE tasks SET status='failed', failure_reason=?, error=?, completed_at=?, work_dir=COALESCE(?, work_dir),
+                task_token_hash=NULL, lease_expires_at=NULL WHERE id=?`)
+      .run(reason, error, now, workDir, taskId);
+    if (task.attempt >= task.max_attempts) return;
+    // 同 issue 已有 queued/dispatched 任务（如 running 期间用户手动 rerun）则跳过重试，
+    // 否则 INSERT 会撞 tasks_one_pending_per_issue 部分唯一索引
+    const pending = db.$client
+      .prepare(`SELECT id FROM tasks WHERE issue_id = ? AND status IN ('queued','dispatched') LIMIT 1`)
+      .get(task.issue_id);
+    if (pending) return;
     db.$client
       .prepare(`INSERT INTO tasks (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts, parent_task_id, created_at)
                 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
@@ -79,7 +86,7 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
       author_type: "system", author_id: "system", type: "system",
       body: `任务失败（${reason}），自动重试 ${task.attempt + 1}/${task.max_attempts}`,
     });
-  }
+  })();
 }
 
 export function startTask(db: Db, taskId: string, workDir: string): boolean {
@@ -126,6 +133,8 @@ export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, 
   if (!["in_review", "done", "blocked"].includes(status)) return { ok: false, error: "status must be in_review | done | blocked" };
   const task = getTask(db, taskId);
   if (!task) return { ok: false, error: "task not found" };
+  // 终态任务（如 cancelled）保留的 token 不能再推进 issue
+  if (task.status !== "dispatched" && task.status !== "running") return { ok: false, error: "task not active" };
   const issue = getIssue(db, task.issue_id);
   if (!issue) return { ok: false, error: "issue not found" };
   const now = new Date().toISOString();

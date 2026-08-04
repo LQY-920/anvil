@@ -95,4 +95,28 @@ describe("task lifecycle", () => {
     const bad = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "todo" }, pkg.task_token);
     expect(bad.statusCode).toBe(400);
   });
+
+  it("skips retry child when a pending task already exists for the issue", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    // running 期间手动 rerun：由于父任务已离开 queued/dispatched，索引放行，产生第二条 pending
+    const rerun = await app.inject({ method: "POST", url: `/api/issues/${issueId}/rerun` });
+    expect([201, 409]).toContain(rerun.statusCode);
+    // 父任务失败：不应 500，且不应产生第三条任务
+    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { failure_reason: "non_zero_exit", error: "exit 1" }, pkg.task_token);
+    expect(f.statusCode).toBe(200);
+    const tasks = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
+    expect(tasks.json().length).toBeLessThanOrEqual(2);
+    expect(tasks.json().filter((t: any) => ["queued", "dispatched"].includes(t.status)).length).toBeLessThanOrEqual(1);
+  });
+
+  it("cancelled task token cannot advance issue status", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    await app.inject({ method: "POST", url: `/api/tasks/${pkg.task.id}/cancel` });
+    const res = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "done" }, pkg.task_token);
+    expect(res.statusCode).toBe(400);
+    const detail = await app.inject({ method: "GET", url: `/api/issues/${issueId}` });
+    expect(detail.json().issue.status).not.toBe("done");
+  });
 });

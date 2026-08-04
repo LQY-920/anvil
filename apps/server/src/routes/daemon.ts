@@ -50,7 +50,8 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
   app.post("/api/daemon/tasks/:id/start", { preHandler: taskAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { work_dir } = req.body as { work_dir: string };
+    const { work_dir } = (req.body ?? {}) as { work_dir?: string };
+    if (!work_dir) return reply.code(400).send({ error: "work_dir required" });
     if (!startTask(db, id, work_dir)) return reply.code(409).send({ error: "task not in dispatched state" });
     return { ok: true };
   });
@@ -65,7 +66,8 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
   app.post("/api/daemon/tasks/:id/fail", { preHandler: taskAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = req.body as { failure_reason: string; error: string; work_dir?: string };
+    const body = (req.body ?? {}) as { failure_reason?: string; error?: string; work_dir?: string };
+    if (!body.failure_reason || !body.error) return reply.code(400).send({ error: "failure_reason/error required" });
     failTaskInternal(db, id, body.failure_reason, body.error, body.work_dir ?? null);
     hub.broadcast({ type: "task.updated", data: getTask(db, id) });
     return { ok: true };
