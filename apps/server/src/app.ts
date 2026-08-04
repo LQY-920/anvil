@@ -29,6 +29,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   registerDaemonRoutes(app, db, hub);
   const { registerTaskRoutes } = await import("./routes/tasks.js");
   registerTaskRoutes(app, db, hub);
+  const { registerReviewRoutes } = await import("./routes/review.js");
+  registerReviewRoutes(app, db, hub);
 
   const { sweepOfflineRuntimes } = await import("./services/runtimes.js");
   const { sweepExpiredLeases } = await import("./services/tasks.js");
