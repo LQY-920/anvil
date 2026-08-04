@@ -1,0 +1,14 @@
+{
+  "name": "anvil",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev:server": "pnpm --filter @anvil/server dev",
+    "dev:runner": "pnpm --filter @anvil/runner dev",
+    "dev:web": "pnpm --filter @anvil/web dev",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build"
+  }
+}
