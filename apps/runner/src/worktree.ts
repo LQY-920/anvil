@@ -5,7 +5,7 @@ import type { Issue } from "@anvil/core";
 
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd, windowsHide: true }, (err, stdout, stderr) => {
+    execFile("git", args, { cwd, windowsHide: true, timeout: 30_000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`git ${args.join(" ")}: ${stderr || err.message}`));
       resolve(stdout.trim());
     });

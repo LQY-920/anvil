@@ -108,14 +108,28 @@ export function completeTask(db: Db, taskId: string, result: { branch?: string; 
   return res.changes === 1;
 }
 
-/** 租约清扫：dispatched 且租约过期 → 回 queued，token 作废，等待重新认领。 */
+/** 租约清扫：dispatched 且租约过期 → attempt+1 回 queued，token 作废；attempt 已满 → failed/lease_expired，不再重派（防无限重派）。 */
 export function sweepExpiredLeases(db: Db, nowIso: string): number {
-  const res = db.$client
-    .prepare(`UPDATE tasks SET status='queued', runtime_id=NULL, task_token_hash=NULL,
-              lease_expires_at=NULL, dispatched_at=NULL
-              WHERE status='dispatched' AND lease_expires_at < ?`)
-    .run(nowIso);
-  return res.changes;
+  const expired = db.$client
+    .prepare(`SELECT id, attempt, max_attempts FROM tasks WHERE status='dispatched' AND lease_expires_at < ?`)
+    .all(nowIso) as any[];
+  let handled = 0;
+  for (const t of expired) {
+    if (t.attempt >= t.max_attempts) {
+      handled += db.$client
+        .prepare(`UPDATE tasks SET status='failed', failure_reason='lease_expired', error='lease expired, max attempts reached',
+                  completed_at=?, runtime_id=NULL, task_token_hash=NULL, lease_expires_at=NULL, dispatched_at=NULL
+                  WHERE id=? AND status='dispatched'`)
+        .run(nowIso, t.id).changes;
+    } else {
+      handled += db.$client
+        .prepare(`UPDATE tasks SET status='queued', attempt=attempt+1, runtime_id=NULL, task_token_hash=NULL,
+                  lease_expires_at=NULL, dispatched_at=NULL
+                  WHERE id=? AND status='dispatched'`)
+        .run(t.id).changes;
+    }
+  }
+  return handled;
 }
 
 /** 看板取消：置 cancelled + failure_reason=cancelled_by_user。保留 token 让 runner 轮询能读到终态。 */

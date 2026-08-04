@@ -12,6 +12,13 @@ export interface ExecutorDeps {
   cancelPollMs?: number;   // 默认 5s
 }
 
+/** 在途 session 注册表：daemon 停止/进程退出时统一 kill，避免孤儿 Agent 进程与重派任务写同一 work_dir。 */
+const activeSessions = new Set<{ kill: () => void }>();
+
+export function killAllActiveSessions() {
+  for (const s of activeSessions) s.kill();
+}
+
 export function buildPrompt(issue: Issue, task: Task): string {
   const lines = [
     "你是 Anvil 平台上的编码 Agent，正在无人值守地执行任务。",
@@ -61,6 +68,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       resume: prepared.resumed,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     });
+    activeSessions.add(session);
 
     // 取消轮询：server 端终态 → 杀进程组
     const cancelTimer = setInterval(async () => {
@@ -96,6 +104,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       }
     } finally {
       clearInterval(cancelTimer);
+      activeSessions.delete(session);
     }
   } catch (e: any) {
     const reason = String(e?.message ?? "").includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";

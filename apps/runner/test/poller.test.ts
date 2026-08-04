@@ -3,6 +3,12 @@ import { buildApp } from "@anvil/server";
 import type { FastifyInstance } from "fastify";
 import { ApiClient } from "../src/client.js";
 import { Daemon } from "../src/poller.js";
+import { executeTask } from "../src/executor.js";
+import type { AgentBackend } from "../src/agents/backend.js";
+import type { AgentMessage } from "@anvil/core";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 let app: FastifyInstance;
 let daemon: Daemon | null = null;
@@ -72,5 +78,34 @@ describe("daemon poller", () => {
     // stop 后等待超过重连窗口，ws 不应复活：process 无新增连接即可，主要验证不抛错且 daemon 保持停止
     await new Promise((r) => setTimeout(r, 200));
     expect(daemon.isAlive()).toBe(false);
+  });
+
+  it("stop() kills in-flight agent sessions", async () => {
+    const { url, token } = await startServerWithTask();
+    const client = new ApiClient(url, token);
+    const state = { killed: false };
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute() {
+        const messages = (async function* (): AsyncGenerator<AgentMessage> {
+          while (!state.killed) await new Promise((r) => setTimeout(r, 20));
+        })();
+        const result = new Promise<any>((resolve) => {
+          const t = setInterval(() => { if (state.killed) { clearInterval(t); resolve({ status: "cancelled" }); } }, 20);
+        });
+        return { messages, result, kill: () => { state.killed = true; } };
+      },
+    };
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-runner-"));
+    daemon = new Daemon(client, {
+      daemonId: "d-test",
+      providers: [{ provider: "kimi", version: "test" }],
+      pollMs: 50, heartbeatMs: 1000,
+      executor: (pkg) => executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg),
+    });
+    await daemon.start();
+    await new Promise((r) => setTimeout(r, 300)); // 等任务被 claim 并 spawn
+    await daemon.stop();
+    expect(state.killed).toBe(true);
   });
 });

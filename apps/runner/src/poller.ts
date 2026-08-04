@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import type { ApiClient } from "./client.js";
 import type { TaskPackage } from "@anvil/core";
+import { killAllActiveSessions } from "./executor.js";
 
 export interface DaemonOptions {
   daemonId: string;
@@ -36,6 +37,7 @@ export class Daemon {
     for (const t of this.timers) clearInterval(t);
     if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
     this.ws?.close();
+    killAllActiveSessions(); // 杀掉在途 Agent 进程，避免孤儿
   }
 
   private connectHints() {
