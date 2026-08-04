@@ -91,4 +91,13 @@ describe("issue CRUD + enqueue triggers", () => {
     const res = await app.inject({ method: "POST", url: "/api/issues" });
     expect(res.statusCode).toBe(400);
   });
+
+  it("trims repo_path whitespace on create and patch", async () => {
+    const issue = await createIssue({ repo_path: "  D:/anvil  " });
+    expect(issue.repo_path).toBe("D:/anvil");
+    const res = await app.inject({ method: "PATCH", url: `/api/issues/${issue.id}`, payload: { repo_path: " D:/other " } });
+    expect(res.json().repo_path).toBe("D:/other");
+    const cleared = await app.inject({ method: "PATCH", url: `/api/issues/${issue.id}`, payload: { repo_path: "   " } });
+    expect(cleared.json().repo_path).toBeNull();
+  });
 });

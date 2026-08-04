@@ -63,7 +63,7 @@ export function createIssueRow(db: Db, workspaceId: string, userId: string, req:
     status, priority: req.priority ?? "medium",
     assignee_type: req.assignee_type ?? null, assignee_id: req.assignee_id ?? null,
     creator_type: "member", creator_id: userId,
-    repo_path: req.repo_path ?? null,
+    repo_path: req.repo_path?.trim() ? req.repo_path.trim() : null,
     position: Date.now(), created_at: now, updated_at: now,
   }).run();
   return getIssue(db, id)!;
@@ -79,7 +79,7 @@ export function updateIssueRow(db: Db, id: string, req: UpdateIssueRequest): Iss
     priority: req.priority ?? cur.priority,
     assignee_type: req.assignee_type !== undefined ? req.assignee_type : cur.assignee_type,
     assignee_id: req.assignee_id !== undefined ? req.assignee_id : cur.assignee_id,
-    repo_path: req.repo_path !== undefined ? req.repo_path : cur.repo_path,
+    repo_path: req.repo_path !== undefined ? (req.repo_path?.trim() ? req.repo_path.trim() : null) : cur.repo_path,
     updated_at: new Date().toISOString(),
   }).where(eq(schema.issues.id, id)).run();
   return getIssue(db, id);

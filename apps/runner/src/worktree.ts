@@ -12,10 +12,39 @@ export function git(cwd: string, args: string[]): Promise<string> {
   });
 }
 
+function probe(cmd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(cmd, ["--version"], { windowsHide: true, timeout: 5000 }, (err) => resolve(!err));
+  });
+}
+
+let gitChecked = false;
+
+/** 确保 git 可用：不在 PATH 时探测常见安装路径并注入 process.env.PATH（子进程含 Agent CLI 一并继承）。 */
+export async function ensureGitAvailable(): Promise<void> {
+  if (gitChecked) return;
+  if (await probe("git")) { gitChecked = true; return; }
+  const candidates = [
+    process.env.GIT_EXE,
+    "D:\\codingTools\\Git\\cmd\\git.exe",
+    "C:\\Program Files\\Git\\cmd\\git.exe",
+  ].filter((c): c is string => Boolean(c));
+  for (const c of candidates) {
+    if (!fs.existsSync(c)) continue;
+    if (await probe(c)) {
+      process.env.PATH = `${path.dirname(c)}${path.delimiter}${process.env.PATH ?? ""}`;
+      gitChecked = true;
+      return;
+    }
+  }
+  throw new Error("git 不可用：PATH 中找不到，已知安装路径也探测失败（可设 GIT_EXE 指定）");
+}
+
 export interface PreparedWorkdir { workDir: string; branch: string | null; resumed: boolean; }
 
 /** 有 repo_path 则建 git worktree（分支 task/<shortId>）；否则用普通目录。prior_work_dir 存在则复用以恢复会话。 */
 export async function prepareWorkdir(issue: Issue, taskId: string, runnerRoot: string, priorWorkDir: string | null): Promise<PreparedWorkdir> {
+  await ensureGitAvailable();
   if (priorWorkDir && fs.existsSync(priorWorkDir)) {
     return { workDir: priorWorkDir, branch: null, resumed: true };
   }
