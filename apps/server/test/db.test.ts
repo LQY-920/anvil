@@ -16,6 +16,8 @@ describe("db", () => {
     for (const t of ["workspaces","users","workspace_members","issues","tasks","task_messages","comments","agents","runtimes","daemon_tokens","skills","skill_files","agent_skills"]) {
       expect(names).toContain(t);
     }
+    const wm = db.prepare("SELECT COUNT(*) AS n FROM workspace_members").get() as any;
+    expect(wm.n).toBe(1);
   });
 
   it("enforces one pending task per issue via partial unique index", () => {

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex, index, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const workspaces = sqliteTable("workspaces", {
@@ -21,7 +21,9 @@ export const workspaceMembers = sqliteTable("workspace_members", {
   workspace_id: text("workspace_id").notNull().references(() => workspaces.id),
   user_id: text("user_id").notNull().references(() => users.id),
   role: text("role").notNull(), // owner | admin | member
-});
+}, (t) => [
+  primaryKey({ columns: [t.workspace_id, t.user_id] }),
+]);
 
 export const issues = sqliteTable("issues", {
   id: text("id").primaryKey(),
@@ -104,7 +106,9 @@ export const agents = sqliteTable("agents", {
   max_concurrent_tasks: integer("max_concurrent_tasks").notNull().default(1),
   runtime_id: text("runtime_id"),
   created_at: text("created_at").notNull(),
-});
+}, (t) => [
+  index("agents_ws").on(t.workspace_id),
+]);
 
 export const runtimes = sqliteTable("runtimes", {
   id: text("id").primaryKey(),
@@ -125,7 +129,9 @@ export const daemonTokens = sqliteTable("daemon_tokens", {
   label: text("label").notNull(),
   revoked_at: text("revoked_at"),
   created_at: text("created_at").notNull(),
-});
+}, (t) => [
+  index("daemon_tokens_ws").on(t.workspace_id),
+]);
 
 export const skills = sqliteTable("skills", {
   id: text("id").primaryKey(),
@@ -143,9 +149,13 @@ export const skillFiles = sqliteTable("skill_files", {
   skill_id: text("skill_id").notNull().references(() => skills.id),
   path: text("path").notNull(),
   content: text("content").notNull(),
-});
+}, (t) => [
+  index("skill_files_skill").on(t.skill_id),
+]);
 
 export const agentSkills = sqliteTable("agent_skills", {
   agent_id: text("agent_id").notNull().references(() => agents.id),
   skill_id: text("skill_id").notNull().references(() => skills.id),
-});
+}, (t) => [
+  primaryKey({ columns: [t.agent_id, t.skill_id] }),
+]);
