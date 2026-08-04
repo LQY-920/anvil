@@ -25,5 +25,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
   registerMetaRoutes(app, db);
   registerIssueRoutes(app, db, hub);
+  const { registerDaemonRoutes } = await import("./routes/daemon.js");
+  registerDaemonRoutes(app, db, hub);
+
+  const { sweepOfflineRuntimes } = await import("./services/runtimes.js");
+  const sweepTimer = setInterval(() => {
+    try { sweepOfflineRuntimes(db, new Date().toISOString()); }
+    catch (e) { app.log.error(e, "sweepOfflineRuntimes failed"); }
+  }, 30_000);
+  app.addHook("onClose", async () => clearInterval(sweepTimer));
   return app;
 }
