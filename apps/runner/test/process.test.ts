@@ -62,4 +62,18 @@ describe("runCliProcess", () => {
     const result = await p.result;
     expect(result.status).toBe("cancelled");
   }, 15000);
+
+  it("spawn failure → failed with spawn_failed error", async () => {
+    const p = runCliProcess({
+      command: "definitely-not-a-real-command-xyz",
+      args: [],
+      cwd: process.cwd(),
+      env: { ...process.env } as Record<string, string>,
+      parseLine: parseAgentLine,
+      idleTimeoutMs: 5000,
+    });
+    const result = await p.result;
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("spawn_failed");
+  });
 });

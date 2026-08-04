@@ -76,6 +76,7 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
     for (const line of chunk.split(/\r?\n/)) push({ type: "log", content: `[stderr] ${line}` });
+    armWatchdog(); // stderr 有输出也说明进程活着
   });
 
   const result = new Promise<AgentResult>((resolve) => {
