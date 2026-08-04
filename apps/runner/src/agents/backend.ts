@@ -19,6 +19,7 @@ export interface AgentResult {
 export interface AgentSession {
   messages: AsyncIterable<AgentMessage>;
   result: Promise<AgentResult>;
+  kill: () => void;
 }
 
 export interface AgentBackend {
