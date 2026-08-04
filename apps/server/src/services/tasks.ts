@@ -81,3 +81,58 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
     });
   }
 }
+
+export function startTask(db: Db, taskId: string, workDir: string): boolean {
+  const now = new Date().toISOString();
+  const res = db.$client
+    .prepare(`UPDATE tasks SET status='running', started_at=?, work_dir=? WHERE id=? AND status='dispatched'`)
+    .run(now, workDir, taskId);
+  return res.changes === 1;
+}
+
+export function completeTask(db: Db, taskId: string, result: { branch?: string; diff_stat?: string; work_dir?: string; session_id?: string }): boolean {
+  const now = new Date().toISOString();
+  const res = db.$client
+    .prepare(`UPDATE tasks SET status='completed', result_json=?, completed_at=?,
+              work_dir=COALESCE(?, work_dir), session_id=COALESCE(?, session_id),
+              task_token_hash=NULL, lease_expires_at=NULL
+              WHERE id=? AND status IN ('dispatched','running')`)
+    .run(JSON.stringify(result), now, result.work_dir ?? null, result.session_id ?? null, taskId);
+  return res.changes === 1;
+}
+
+/** 租约清扫：dispatched 且租约过期 → 回 queued，token 作废，等待重新认领。 */
+export function sweepExpiredLeases(db: Db, nowIso: string): number {
+  const res = db.$client
+    .prepare(`UPDATE tasks SET status='queued', runtime_id=NULL, task_token_hash=NULL,
+              lease_expires_at=NULL, dispatched_at=NULL
+              WHERE status='dispatched' AND lease_expires_at < ?`)
+    .run(nowIso);
+  return res.changes;
+}
+
+/** 看板取消：置 cancelled + failure_reason=cancelled_by_user。保留 token 让 runner 轮询能读到终态。 */
+export function cancelTask(db: Db, taskId: string): boolean {
+  const now = new Date().toISOString();
+  const res = db.$client
+    .prepare(`UPDATE tasks SET status='cancelled', failure_reason='cancelled_by_user', completed_at=?, lease_expires_at=NULL
+              WHERE id=? AND status IN ('queued','dispatched','running')`)
+    .run(now, taskId);
+  return res.changes === 1;
+}
+
+/** Agent 回调推进 issue 状态（spec §6：平台不替 Agent 做决定，只提供端点）。 */
+export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, note?: string): { ok: boolean; error?: string } {
+  if (!["in_review", "done", "blocked"].includes(status)) return { ok: false, error: "status must be in_review | done | blocked" };
+  const task = getTask(db, taskId);
+  if (!task) return { ok: false, error: "task not found" };
+  const issue = getIssue(db, task.issue_id);
+  if (!issue) return { ok: false, error: "issue not found" };
+  const now = new Date().toISOString();
+  db.$client.prepare(`UPDATE issues SET status=?, updated_at=? WHERE id=?`).run(status, now, issue.id);
+  addComment(db, issue.id, {
+    author_type: "agent", author_id: task.agent_id, type: "status_change",
+    body: note ? `${issue.status} → ${status}：${note}` : `${issue.status} → ${status}`,
+  });
+  return { ok: true };
+}

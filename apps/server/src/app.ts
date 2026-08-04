@@ -28,12 +28,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   const { registerDaemonRoutes } = await import("./routes/daemon.js");
   registerDaemonRoutes(app, db, hub);
   const { registerTaskRoutes } = await import("./routes/tasks.js");
-  registerTaskRoutes(app, db);
+  registerTaskRoutes(app, db, hub);
 
   const { sweepOfflineRuntimes } = await import("./services/runtimes.js");
+  const { sweepExpiredLeases } = await import("./services/tasks.js");
   const sweepTimer = setInterval(() => {
-    try { sweepOfflineRuntimes(db, new Date().toISOString()); }
-    catch (e) { app.log.error(e, "sweepOfflineRuntimes failed"); }
+    try {
+      sweepOfflineRuntimes(db, new Date().toISOString());
+      sweepExpiredLeases(db, new Date().toISOString());
+    } catch (e) { app.log.error(e, "sweep failed"); }
   }, 30_000);
   app.addHook("onClose", async () => clearInterval(sweepTimer));
   return app;

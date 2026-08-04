@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
 import { makeDaemonAuth, makeTaskAuth } from "../lib/auth.js";
-import { claimTasks, getTask } from "../services/tasks.js";
+import { claimTasks, getTask, startTask, completeTask, failTaskInternal, setIssueStatusFromAgent } from "../services/tasks.js";
+import { getIssue } from "../services/issues.js";
 import { registerRuntimes, heartbeat } from "../services/runtimes.js";
 import { appendTaskMessages } from "../services/messages.js";
 import type { ClaimRequest, DaemonHeartbeatRequest, DaemonRegisterRequest } from "@anvil/core";
@@ -45,5 +46,38 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const result = appendTaskMessages(db, hub, id, messages ?? []);
     if (!result.ok) return reply.code(409).send({ last_seq: result.last_seq });
     return result;
+  });
+
+  app.post("/api/daemon/tasks/:id/start", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { work_dir } = req.body as { work_dir: string };
+    if (!startTask(db, id, work_dir)) return reply.code(409).send({ error: "task not in dispatched state" });
+    return { ok: true };
+  });
+
+  app.post("/api/daemon/tasks/:id/complete", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!completeTask(db, id, req.body as any)) return reply.code(409).send({ error: "task not active" });
+    const task = getTask(db, id)!;
+    hub.broadcast({ type: "task.updated", data: task });
+    return { ok: true };
+  });
+
+  app.post("/api/daemon/tasks/:id/fail", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { failure_reason: string; error: string; work_dir?: string };
+    failTaskInternal(db, id, body.failure_reason, body.error, body.work_dir ?? null);
+    hub.broadcast({ type: "task.updated", data: getTask(db, id) });
+    return { ok: true };
+  });
+
+  app.post("/api/daemon/tasks/:id/issue-status", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { status: string; note?: string };
+    const r = setIssueStatusFromAgent(db, id, body.status, body.note);
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    const task = getTask(db, id)!;
+    hub.broadcast({ type: "issue.updated", data: getIssue(db, task.issue_id) });
+    return { ok: true };
   });
 }
