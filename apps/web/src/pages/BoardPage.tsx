@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { ISSUE_STATUSES, PRIORITIES, type Agent, type Issue, type IssueStatus, type Priority } from "@anvil/core";
+import { ISSUE_STATUSES, PRIORITIES, type Agent, type IssueStatus, type IssueWithTask, type LatestTaskSummary, type Priority } from "@anvil/core";
 import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
+import TaskPanel from "../components/TaskPanel.js";
 
 export default function BoardPage() {
   const [workspaceId, setWorkspaceId] = useState("");
   const workspaceIdRef = useRef("");
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [issues, setIssues] = useState<Issue[]>([]);
+  const [issues, setIssues] = useState<IssueWithTask[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const navigate = useNavigate();
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const wsId = workspaceIdRef.current;
@@ -35,51 +35,103 @@ export default function BoardPage() {
     reloadTimer.current = setTimeout(() => { reload().catch(() => {}); }, 300);
   }, [reload]));
 
-  const agentName = (issue: Issue) =>
+  const agentName = (issue: IssueWithTask) =>
     issue.assignee_type === "agent" ? agents.find((a) => a.id === issue.assignee_id)?.name ?? "agent" : null;
 
-  const openIssue = async (issue: Issue) => {
+  const openIssue = async (issue: IssueWithTask) => {
     const tasks = await api.getIssueTasks(issue.id);
     const active = tasks.find((t) => ["queued", "dispatched", "running"].includes(t.status)) ?? tasks[tasks.length - 1];
-    if (active) navigate(`/tasks/${active.id}`);
+    if (active) setSelectedTaskId(active.id);
   };
 
   return (
-    <div>
-      <div className="toolbar">
-        <h1>看板</h1>
-        <button onClick={() => setShowCreate(true)}>+ 新建 issue</button>
-      </div>
-      <div className="board">
-        {ISSUE_STATUSES.map((col: IssueStatus) => (
-          <div key={col} className="column">
-            <div className="column-title">{col.toUpperCase()}</div>
-            {issues.filter((i) => i.status === col).map((issue) => (
-              <div key={issue.id} className="card" onClick={() => openIssue(issue)}>
-                <div className="card-title">{issue.title}</div>
-                <div className="card-meta">
-                  <span className={`prio prio-${issue.priority}`}>{issue.priority}</span>
-                  {agentName(issue) && <span className="agent-tag">{agentName(issue)}</span>}
+    <div className={selectedTaskId ? "split" : ""}>
+      <div className="board-wrap">
+        <div className="toolbar">
+          <h1>看板</h1>
+          <button onClick={() => setShowCreate(true)}>+ 新建 issue</button>
+        </div>
+        <div className="board">
+          {ISSUE_STATUSES.map((col: IssueStatus) => (
+            <div key={col} className="column">
+              <div className="column-title">{col.toUpperCase()}</div>
+              {issues.filter((i) => i.status === col).map((issue) => (
+                <div key={issue.id} className={cardClass(issue.latest_task)} onClick={() => openIssue(issue)}>
+                  <div className="card-title">{issue.title}</div>
+                  <div className="card-meta">
+                    <span className={`prio prio-${issue.priority}`}>{issue.priority}</span>
+                    {agentName(issue) && <span className="agent-tag">{agentName(issue)}</span>}
+                  </div>
+                  <TaskChip task={issue.latest_task} />
+                  <div className="card-actions" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={issue.status}
+                      onChange={async (e) => { await api.updateIssue(issue.id, { status: e.target.value as IssueStatus }); reload(); }}
+                    >
+                      {ISSUE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    {issue.assignee_type === "agent" && (
+                      <button onClick={async () => { await api.rerunIssue(issue.id); reload(); }}>重跑</button>
+                    )}
+                  </div>
                 </div>
-                <div className="card-actions" onClick={(e) => e.stopPropagation()}>
-                  <select
-                    value={issue.status}
-                    onChange={async (e) => { await api.updateIssue(issue.id, { status: e.target.value as IssueStatus }); reload(); }}
-                  >
-                    {ISSUE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                  {issue.assignee_type === "agent" && (
-                    <button onClick={async () => { await api.rerunIssue(issue.id); reload(); }}>重跑</button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
+      {selectedTaskId && (
+        <TaskPanel
+          taskId={selectedTaskId}
+          onClose={() => setSelectedTaskId(null)}
+          onChanged={reload}
+          onSelectTask={setSelectedTaskId}
+        />
+      )}
       {showCreate && <CreateIssueModal workspaceId={workspaceId} agents={agents} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); reload(); }} />}
     </div>
   );
+}
+
+function cardClass(t: LatestTaskSummary | null): string {
+  if (!t) return "card";
+  if (t.status === "dispatched" || t.status === "running") return "card card-running";
+  if (t.status === "failed") return "card card-failed";
+  return "card";
+}
+
+function parseResult(resultJson: string | null): { branch?: string; diff_stat?: string } | null {
+  if (!resultJson) return null;
+  try { return JSON.parse(resultJson); } catch { return null; }
+}
+
+function TaskChip({ task }: { task: LatestTaskSummary | null }) {
+  if (!task) return null;
+  switch (task.status) {
+    case "queued":
+      return <span className="task-chip">⟳ 排队中</span>;
+    case "dispatched":
+    case "running":
+      return <span className="task-chip chip-running">▶ 执行中</span>;
+    case "failed":
+      return <span className="task-chip chip-failed">✗ 失败 {task.attempt}/{task.max_attempts}</span>;
+    case "completed": {
+      const r = parseResult(task.result_json);
+      if (r?.branch) {
+        return (
+          <>
+            <span className="task-chip chip-review">📦 待验收</span>
+            {r.diff_stat && <div className="diff-stat">{r.diff_stat}</div>}
+          </>
+        );
+      }
+      return <span className="task-chip">✓ 完成</span>;
+    }
+    case "cancelled":
+      return <span className="task-chip">⊘ 已取消</span>;
+    default:
+      return null;
+  }
 }
 
 function CreateIssueModal(props: { workspaceId: string; agents: Agent[]; onClose: () => void; onCreated: () => void }) {

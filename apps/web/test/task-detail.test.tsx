@@ -16,6 +16,8 @@ vi.mock("../src/api.js", () => ({
   cancelTask: vi.fn(),
   addComment: vi.fn(),
   rerunIssue: vi.fn(),
+  getTaskDiff: vi.fn(async () => { throw new Error("GET /api/tasks/t1/diff → 404"); }),
+  mergeTask: vi.fn(),
 }));
 
 vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
