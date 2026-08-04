@@ -78,4 +78,17 @@ describe("issue CRUD + enqueue triggers", () => {
     expect(detail.json().comments).toHaveLength(1);
     expect(detail.json().comments[0].body).toBe("补充说明");
   });
+
+  it("rejects invalid enum values", async () => {
+    const bad = await app.inject({ method: "POST", url: "/api/issues", payload: { title: "x", status: "bogus" } });
+    expect(bad.statusCode).toBe(400);
+    const issue = await createIssue();
+    const badPatch = await app.inject({ method: "PATCH", url: `/api/issues/${issue.id}`, payload: { status: "bogus" } });
+    expect(badPatch.statusCode).toBe(400);
+  });
+
+  it("rejects empty body on create", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/issues" });
+    expect(res.statusCode).toBe(400);
+  });
 });

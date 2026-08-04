@@ -3,7 +3,7 @@ import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
 import { addComment, createIssueRow, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
 import { seed } from "../db/client.js";
-import type { CreateIssueRequest, UpdateIssueRequest } from "@anvil/core";
+import { ISSUE_STATUSES, PRIORITIES, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
 
 export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
   app.get("/api/issues", async (req) => {
@@ -13,8 +13,15 @@ export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
   app.post("/api/issues", async (req, reply) => {
     const { user, workspace } = seed(db);
-    const body = req.body as CreateIssueRequest & { status?: string };
+    const body = req.body as (CreateIssueRequest & { status?: string }) | undefined;
+    if (!body) return reply.code(400).send({ error: "body required" });
     if (!body.title) return reply.code(400).send({ error: "title required" });
+    if (body.status !== undefined && !(ISSUE_STATUSES as readonly string[]).includes(body.status)) {
+      return reply.code(400).send({ error: "invalid status" });
+    }
+    if (body.priority !== undefined && !(PRIORITIES as readonly string[]).includes(body.priority)) {
+      return reply.code(400).send({ error: "invalid priority" });
+    }
     let issue = createIssueRow(db, workspace.id, user.id, body);
     const wasActive = issue.status !== "backlog";
     if (wasActive) {
@@ -29,7 +36,13 @@ export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const { id } = req.params as { id: string };
     const before = getIssue(db, id);
     if (!before) return reply.code(404).send({ error: "not found" });
-    const body = req.body as UpdateIssueRequest;
+    const body = (req.body ?? {}) as UpdateIssueRequest;
+    if (body.status !== undefined && !(ISSUE_STATUSES as readonly string[]).includes(body.status)) {
+      return reply.code(400).send({ error: "invalid status" });
+    }
+    if (body.priority !== undefined && !(PRIORITIES as readonly string[]).includes(body.priority)) {
+      return reply.code(400).send({ error: "invalid priority" });
+    }
     if (body.status && before.status !== body.status) {
       addComment(db, id, { author_type: "member", author_id: seed(db).user.id, type: "status_change", body: `${before.status} → ${body.status}` });
     }
