@@ -21,12 +21,15 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const bottomRef = useRef<HTMLDivElement>(null);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
+  const genRef = useRef(0);
 
   const reload = useCallback(async () => {
     if (!taskId || inFlight.current) return;
     inFlight.current = true;
+    const gen = genRef.current;
     try {
       const [detail, msgs] = await Promise.all([api.getTask(taskId), api.getTaskMessages(taskId, lastSeq.current)]);
+      if (gen !== genRef.current) return; // 任务已切换，丢弃旧结果
       setTask(detail.task);
       setIssue(detail.issue);
       const fresh = msgs.filter((m) => m.seq > lastSeq.current);
@@ -35,6 +38,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
         lastSeq.current = fresh[fresh.length - 1].seq;
       }
       const d = await api.getIssueDetail(detail.issue.id);
+      if (gen !== genRef.current) return;
       setComments(d.comments);
     } finally {
       inFlight.current = false;
@@ -48,8 +52,10 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
 
   useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
-  // 切换任务时清空状态，避免串任务
+  // 切换任务时清空状态，避免串任务；升 generation 使在途旧拉取失效，并清掉去抖定时器
   useEffect(() => {
+    genRef.current += 1;
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
     setTask(null); setIssue(null); setMessages([]); setComments([]);
     setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft("");
     lastSeq.current = -1;
