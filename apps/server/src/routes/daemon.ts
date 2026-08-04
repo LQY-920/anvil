@@ -41,8 +41,8 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
   app.post("/api/daemon/tasks/:id/messages", { preHandler: taskAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { messages } = req.body as { messages: any[] };
-    const result = appendTaskMessages(db, hub, id, messages);
+    const { messages } = (req.body ?? {}) as { messages?: any[] };
+    const result = appendTaskMessages(db, hub, id, messages ?? []);
     if (!result.ok) return reply.code(409).send({ last_seq: result.last_seq });
     return result;
   });

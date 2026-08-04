@@ -15,6 +15,8 @@ export function registerTaskRoutes(app: FastifyInstance, db: Db) {
   app.get("/api/tasks/:id/messages", async (req) => {
     const { id } = req.params as { id: string };
     const { after_seq } = req.query as { after_seq?: string };
-    return listMessages(db, id, after_seq !== undefined ? Number(after_seq) : -1);
+    const parsed = after_seq !== undefined ? Number(after_seq) : -1;
+    const afterSeq = Number.isFinite(parsed) ? parsed : -1;
+    return listMessages(db, id, afterSeq);
   });
 }
