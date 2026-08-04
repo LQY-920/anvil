@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ISSUE_STATUSES, PRIORITIES, type Agent, type Issue, type IssueStatus, type Priority } from "@anvil/core";
 import * as api from "../api.js";
@@ -6,22 +6,33 @@ import { useServerEvents } from "../ws.js";
 
 export default function BoardPage() {
   const [workspaceId, setWorkspaceId] = useState("");
+  const workspaceIdRef = useRef("");
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const navigate = useNavigate();
 
   const reload = useCallback(async () => {
-    const boot = await api.bootstrap();
-    setWorkspaceId(boot.workspace.id);
-    const [i, a] = await Promise.all([api.listIssues(boot.workspace.id), api.listAgents()]);
+    const wsId = workspaceIdRef.current;
+    if (!wsId) return;
+    const [i, a] = await Promise.all([api.listIssues(wsId), api.listAgents()]);
     setIssues(i);
     setAgents(a);
   }, []);
 
-  useEffect(() => { reload().catch(console.error); }, [reload]);
+  useEffect(() => {
+    (async () => {
+      const boot = await api.bootstrap();
+      workspaceIdRef.current = boot.workspace.id;
+      setWorkspaceId(boot.workspace.id);
+      await reload();
+    })().catch(console.error);
+  }, [reload]);
   useServerEvents(useCallback((e) => {
-    if (e.type === "issue.updated" || e.type === "task.updated") reload().catch(() => {});
+    if (e.type !== "issue.updated" && e.type !== "task.updated") return;
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(() => { reload().catch(() => {}); }, 300);
   }, [reload]));
 
   const agentName = (issue: Issue) =>
