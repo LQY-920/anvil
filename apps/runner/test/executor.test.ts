@@ -97,6 +97,50 @@ describe("executor", () => {
     expect(p).toContain("ANVIL_TOKEN");
   });
 
+  it("buildPrompt includes comments section between task and requirements", () => {
+    const p = buildPrompt(
+      { title: "标题", description: "描述" } as any,
+      { id: "t1" } as any,
+      [
+        { author_type: "member", body: "第一条评论内容", created_at: "2026-08-04T00:00:00Z" },
+        { author_type: "agent", body: "第二条评论内容", created_at: "2026-08-04T00:01:00Z" },
+        { author_type: "system", body: "任务失败（idle_timeout），自动重试 2/3", created_at: "2026-08-04T00:02:00Z" },
+      ],
+    );
+    expect(p).toContain("# 讨论与补充意见（按时间）");
+    expect(p).toContain("- [member] 第一条评论内容");
+    expect(p).toContain("- [agent] 第二条评论内容");
+    expect(p).toContain("- [system] 任务失败（idle_timeout），自动重试 2/3");
+    expect(p.indexOf("# 任务")).toBeLessThan(p.indexOf("# 讨论与补充意见（按时间）"));
+    expect(p.indexOf("# 讨论与补充意见（按时间）")).toBeLessThan(p.indexOf("# 要求"));
+  });
+
+  it("buildPrompt keeps each comment on one line and truncates body to 500 chars", () => {
+    const longBody = "x".repeat(600);
+    const p = buildPrompt(
+      { title: "标题", description: null } as any,
+      { id: "t1" } as any,
+      [
+        { author_type: "member", body: "第一行\n第二行", created_at: "2026-08-04T00:00:00Z" },
+        { author_type: "member", body: longBody, created_at: "2026-08-04T00:01:00Z" },
+      ],
+    );
+    const section = p.split("# 讨论与补充意见（按时间）")[1];
+    const commentLines = section.split("\n").filter((l) => l.startsWith("- ["));
+    expect(commentLines).toHaveLength(2);
+    expect(commentLines[0]).toBe("- [member] 第一行 第二行");
+    expect(commentLines[1]).toBe(`- [member] ${"x".repeat(500)}`);
+  });
+
+  it("buildPrompt omits comments section when comments is empty", () => {
+    const p = buildPrompt(
+      { title: "标题", description: "描述" } as any,
+      { id: "t1" } as any,
+      [],
+    );
+    expect(p).not.toContain("讨论与补充意见");
+  });
+
   it("does not leak daemon token into agent env", async () => {
     const { client, pkg, runnerRoot } = await setup();
     process.env.ANVIL_DAEMON_TOKEN = "anv_supersecret";

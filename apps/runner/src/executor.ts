@@ -1,4 +1,4 @@
-import type { Issue, Task, TaskPackage } from "@anvil/core";
+import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 import type { ApiClient } from "./client.js";
 import type { AgentBackend } from "./agents/backend.js";
 import { prepareWorkdir, gitDiffStat } from "./worktree.js";
@@ -19,13 +19,21 @@ export function killAllActiveSessions() {
   for (const s of activeSessions) s.kill();
 }
 
-export function buildPrompt(issue: Issue, task: Task): string {
+export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = []): string {
   const lines = [
     "你是 Anvil 平台上的编码 Agent，正在无人值守地执行任务。",
     "",
     "# 任务",
     `标题：${issue.title}`,
     issue.description ? `描述：\n${issue.description.slice(0, 8000)}` : null,
+    ...(comments.length > 0
+      ? [
+          "",
+          "# 讨论与补充意见（按时间）",
+          // 每条一行：body 压成单行并截断，防止超长评论撑爆 prompt
+          ...comments.map((c) => `- [${c.author_type}] ${c.body.replace(/\s+/g, " ").slice(0, 500)}`),
+        ]
+      : []),
     "",
     "# 要求",
     "- 在当前工作目录内完成编码，改动用 git commit 提交（保持当前分支）。",
@@ -64,7 +72,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     const session = backend.execute({
       workDir,
       env,
-      prompt: buildPrompt(issue, task),
+      prompt: buildPrompt(issue, task, pkg.comments ?? []),
       resume: prepared.resumed,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     });
