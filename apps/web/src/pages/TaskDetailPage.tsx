@@ -17,24 +17,33 @@ export default function TaskDetailPage() {
   const lastSeq = useRef(-1);
   const bottomRef = useRef<HTMLDivElement>(null);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlight = useRef(false);
 
   const reload = useCallback(async () => {
-    if (!id) return;
-    const [detail, msgs] = await Promise.all([api.getTask(id), api.getTaskMessages(id, lastSeq.current)]);
-    setTask(detail.task);
-    setIssue(detail.issue);
-    if (msgs.length > 0) {
-      setMessages((prev) => [...prev, ...msgs]);
-      lastSeq.current = msgs[msgs.length - 1].seq;
+    if (!id || inFlight.current) return;
+    inFlight.current = true;
+    try {
+      const [detail, msgs] = await Promise.all([api.getTask(id), api.getTaskMessages(id, lastSeq.current)]);
+      setTask(detail.task);
+      setIssue(detail.issue);
+      const fresh = msgs.filter((m) => m.seq > lastSeq.current);
+      if (fresh.length > 0) {
+        setMessages((prev) => [...prev, ...fresh]);
+        lastSeq.current = fresh[fresh.length - 1].seq;
+      }
+      const d = await api.getIssueDetail(detail.issue.id);
+      setComments(d.comments);
+    } finally {
+      inFlight.current = false;
     }
-    const d = await api.getIssueDetail(detail.issue.id);
-    setComments(d.comments);
   }, [id]);
 
   const scheduleReload = useCallback(() => {
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => { reload().catch(() => {}); }, 300);
   }, [reload]);
+
+  useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
   useEffect(() => { reload().catch(console.error); }, [reload]);
   useServerEvents(useCallback((e) => {
