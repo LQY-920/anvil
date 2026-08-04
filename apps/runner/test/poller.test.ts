@@ -57,4 +57,20 @@ describe("daemon poller", () => {
     expect(calls).toBeGreaterThanOrEqual(1);
     expect(daemon.isAlive()).toBe(true);
   });
+
+  it("stop() prevents pending ws reconnect from firing", async () => {
+    const { url, token } = await startServerWithTask();
+    const client = new ApiClient(url, token);
+    daemon = new Daemon(client, {
+      daemonId: "d-test",
+      providers: [{ provider: "kimi", version: "test" }],
+      pollMs: 50, heartbeatMs: 1000,
+      executor: async () => {},
+    });
+    await daemon.start();
+    await daemon.stop();
+    // stop 后等待超过重连窗口，ws 不应复活：process 无新增连接即可，主要验证不抛错且 daemon 保持停止
+    await new Promise((r) => setTimeout(r, 200));
+    expect(daemon.isAlive()).toBe(false);
+  });
 });

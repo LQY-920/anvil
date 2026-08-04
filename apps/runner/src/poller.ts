@@ -16,6 +16,7 @@ export class Daemon {
   private executing = new Set<string>();
   private timers: NodeJS.Timeout[] = [];
   private ws: WebSocket | null = null;
+  private wsReconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(private client: ApiClient, private opts: DaemonOptions) {}
 
@@ -33,17 +34,19 @@ export class Daemon {
   async stop() {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
+    if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
     this.ws?.close();
   }
 
   private connectHints() {
+    if (this.stopped) return;
     const base = (this.client as any).baseUrl as string | undefined;
     if (!base) return; // hint 非必需，轮询兜底
     try {
       const wsUrl = base.replace(/^http/, "ws") + "/api/daemon/ws";
       this.ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${(this.client as any).daemonToken}` } });
       this.ws.on("message", () => this.withGuard(() => this.pollOnce()));
-      this.ws.on("close", () => { if (!this.stopped) setTimeout(() => this.connectHints(), 5000); });
+      this.ws.on("close", () => { if (!this.stopped) this.wsReconnectTimer = setTimeout(() => this.connectHints(), 5000); });
       this.ws.on("error", () => { /* hint 丢失无害，轮询兜底 */ });
     } catch { /* ignore */ }
   }
@@ -55,7 +58,7 @@ export class Daemon {
       if (this.executing.has(pkg.task.id)) continue;
       this.executing.add(pkg.task.id);
       this.opts.executor(pkg)
-        .catch(() => { /* executor 内部已上报 fail；这里兜底不传播 */ })
+        .catch((e) => { console.error("[anvil-daemon] executor crashed:", (e as Error)?.message ?? e); }) // executor 内部已上报 fail；这里兜底不传播
         .finally(() => this.executing.delete(pkg.task.id));
     }
   }
