@@ -1,4 +1,4 @@
-import type { Agent, Comment, CreateIssueRequest, Issue, Runtime, Task, UpdateIssueRequest } from "@anvil/core";
+import type { Agent, Comment, CreateIssueRequest, Issue, IssueWithTask, MergeResponse, Runtime, Task, TaskDiffResponse, UpdateIssueRequest } from "@anvil/core";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -6,7 +6,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     headers: { "content-type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`);
+  if (!res.ok) {
+    let detail = "";
+    try { const j = await res.json(); if (j && typeof j.error === "string") detail = ` — ${j.error}`; } catch { /* ignore */ }
+    throw new Error(`${method} ${path} → ${res.status}${detail}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -15,7 +19,7 @@ export interface IssueDetail { issue: Issue; comments: Comment[]; }
 export interface TaskDetail { task: Task; issue: Issue; }
 
 export const bootstrap = () => req<Bootstrap>("GET", "/api/bootstrap");
-export const listIssues = (workspaceId: string) => req<Issue[]>("GET", `/api/issues?workspace_id=${workspaceId}`);
+export const listIssues = (workspaceId: string) => req<IssueWithTask[]>("GET", `/api/issues?workspace_id=${workspaceId}`);
 export const createIssue = (body: CreateIssueRequest) => req<Issue>("POST", "/api/issues", body);
 export const updateIssue = (id: string, body: UpdateIssueRequest) => req<Issue>("PATCH", `/api/issues/${id}`, body);
 export const rerunIssue = (id: string) => req<Task>("POST", `/api/issues/${id}/rerun`);
@@ -28,6 +32,8 @@ export const getTaskMessages = (id: string, afterSeq = -1) =>
     "GET", `/api/tasks/${id}/messages?after_seq=${afterSeq}`,
   );
 export const cancelTask = (id: string) => req("POST", `/api/tasks/${id}/cancel`);
+export const getTaskDiff = (id: string) => req<TaskDiffResponse>("GET", `/api/tasks/${id}/diff`);
+export const mergeTask = (id: string) => req<MergeResponse>("POST", `/api/tasks/${id}/merge`);
 export const listAgents = () => req<Agent[]>("GET", "/api/agents");
 export const createAgent = (body: { name: string; provider: string; max_concurrent_tasks?: number }) =>
   req<Agent>("POST", "/api/agents", body);

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { newId, type Db } from "../db/client.js";
 import { sha256Hex } from "../lib/hash.js";
 import { getIssue, addComment } from "./issues.js";
-import type { Task, TaskPackage } from "@anvil/core";
+import type { Task, TaskComment, TaskPackage } from "@anvil/core";
 
 export const LEASE_MS = 2 * 60 * 1000;
 
@@ -56,7 +56,12 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
       .get(cand.issue_id, cand.id) as any;
     const task = getTask(db, cand.id)!;
     const issue = getIssue(db, cand.issue_id)!;
-    out.push({ task, issue, prior_work_dir: prior?.work_dir ?? null, task_token: taskToken });
+    // issue 最近 10 条评论随任务包下发（组 prompt 用）；rowid 作 created_at 同毫秒的决胜序，返回反转为时间正序
+    const comments = (db.$client
+      .prepare(`SELECT author_type, body, created_at FROM comments WHERE issue_id = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT 10`)
+      .all(cand.issue_id) as TaskComment[]).reverse();
+    out.push({ task, issue, prior_work_dir: prior?.work_dir ?? null, task_token: taskToken, comments });
   }
   return out;
 }

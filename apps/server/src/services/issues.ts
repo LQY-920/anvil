@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { newId, type Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
-import { priorityWeight, type CreateIssueRequest, type Issue, type Task, type UpdateIssueRequest } from "@anvil/core";
+import { priorityWeight, type CreateIssueRequest, type Issue, type IssueWithTask, type LatestTaskSummary, type Task, type UpdateIssueRequest } from "@anvil/core";
 
 function rowToIssue(r: typeof schema.issues.$inferSelect): Issue {
   return r as unknown as Issue;
@@ -12,10 +12,19 @@ export function getIssue(db: Db, id: string): Issue | null {
   return rows[0] ? rowToIssue(rows[0]) : null;
 }
 
-export function listIssues(db: Db, workspaceId: string): Issue[] {
-  return db.select().from(schema.issues).where(eq(schema.issues.workspace_id, workspaceId)).all()
+export function listIssues(db: Db, workspaceId: string): IssueWithTask[] {
+  const issues = db.select().from(schema.issues).where(eq(schema.issues.workspace_id, workspaceId)).all()
     .map(rowToIssue)
     .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
+  // 看板卡片摘要：每个 issue 的最新一条任务。v1 数据量小，N+1 可接受；量大后改窗口函数 JOIN。
+  // rowid 作 created_at 同毫秒的决胜序，保证取到最新插入的任务。
+  const latest = db.$client
+    .prepare(`SELECT id, status, attempt, max_attempts, failure_reason, error, result_json FROM tasks
+              WHERE issue_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`);
+  return issues.map((issue) => ({
+    ...issue,
+    latest_task: (latest.get(issue.id) as LatestTaskSummary | undefined) ?? null,
+  }));
 }
 
 /** 入队判定（spec §6 三个入口共用的唯一函数）：assignee 是 agent 且状态非 backlog 才入队。 */
