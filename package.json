@@ -4,6 +4,9 @@
   "type": "module",
   "engines": { "node": ">=20" },
   "packageManager": "pnpm@10.0.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
+  },
   "scripts": {
     "dev:server": "pnpm --filter @anvil/server dev",
     "dev:runner": "pnpm --filter @anvil/runner dev",
