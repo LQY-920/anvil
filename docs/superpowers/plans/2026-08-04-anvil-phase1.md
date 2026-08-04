@@ -90,7 +90,7 @@ D:/anvil
 - Create: `apps/runner/package.json`, `apps/runner/tsconfig.json`
 - Create: `apps/web/package.json`, `apps/web/tsconfig.json`
 
-- [ ] **Step 1: 初始化 git 仓库与根文件**
+- [x] **Step 1: 初始化 git 仓库与根文件**
 
 ```bash
 cd /d/anvil && git init
@@ -153,7 +153,7 @@ packages:
 }
 ```
 
-- [ ] **Step 2: 写四个包的 package.json 与 tsconfig**
+- [x] **Step 2: 写四个包的 package.json 与 tsconfig**
 
 `packages/core/package.json`:
 
@@ -297,12 +297,12 @@ packages:
 }
 ```
 
-- [ ] **Step 3: 安装依赖并验证 workspace 链接**
+- [x] **Step 3: 安装依赖并验证 workspace 链接**
 
 Run: `cd /d/anvil && pnpm install`
 Expected: 四个包安装成功，`node_modules/@anvil/core` 为 workspace 软链。Windows 上 `better-sqlite3` 若触发编译失败，先执行 `pnpm approve-builds` 或安装预编译版本后重试；成功标志是 `pnpm --filter @anvil/server exec node -e "require('better-sqlite3');console.log('ok')"` 输出 `ok`。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A && git commit -m "chore: scaffold pnpm monorepo (core/server/runner/web)"
@@ -319,7 +319,7 @@ git add -A && git commit -m "chore: scaffold pnpm monorepo (core/server/runner/w
 - Create: `packages/core/src/index.ts`
 - Test: `packages/core/test/core.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `packages/core/test/core.test.ts`:
 
@@ -364,12 +364,12 @@ describe("parseAgentLine", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd /d/anvil && pnpm --filter @anvil/core test`
 Expected: FAIL，报 `../src/index.js` 不存在或导出缺失。
 
-- [ ] **Step 3: 实现 models.ts / messages.ts / protocol.ts / index.ts**
+- [x] **Step 3: 实现 models.ts / messages.ts / protocol.ts / index.ts**
 
 `packages/core/src/models.ts`:
 
@@ -518,12 +518,12 @@ export * from "./messages.js";
 export * from "./protocol.js";
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/core test`
 Expected: PASS（6 个用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/core && git commit -m "feat(core): domain models, message types, daemon protocol contracts"
@@ -540,7 +540,7 @@ git add packages/core && git commit -m "feat(core): domain models, message types
 - Create: `apps/server/drizzle/0000_*.sql`（由 drizzle-kit 生成）
 - Test: `apps/server/test/db.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/db.test.ts`:
 
@@ -584,12 +584,12 @@ describe("db", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL，`../src/db/client.js` 不存在。
 
-- [ ] **Step 3: 实现 schema.ts**
+- [x] **Step 3: 实现 schema.ts**
 
 `apps/server/src/db/schema.ts`:
 
@@ -747,7 +747,7 @@ export const agentSkills = sqliteTable("agent_skills", {
 });
 ```
 
-- [ ] **Step 4: 实现 client.ts 与 drizzle.config.ts，生成迁移**
+- [x] **Step 4: 实现 client.ts 与 drizzle.config.ts，生成迁移**
 
 `apps/server/drizzle.config.ts`:
 
@@ -827,7 +827,7 @@ export function newId(): string {
 }
 ```
 
-- [ ] **Step 5: 生成迁移文件并跑测试**
+- [x] **Step 5: 生成迁移文件并跑测试**
 
 Run:
 
@@ -837,7 +837,7 @@ cd /d/anvil/apps/server && pnpm db:generate && cd /d/anvil && pnpm --filter @anv
 
 Expected: `drizzle/` 下生成 `0000_*.sql`；测试 PASS（2 个用例）。若部分唯一索引未生成，检查 schema 中 `.where(sql\`...\`)` 是否生效，生成的 SQL 里应出现 `CREATE UNIQUE INDEX tasks_one_pending_per_issue ON tasks (issue_id) WHERE status IN ('queued','dispatched')`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/server && git commit -m "feat(server): drizzle schema (13 tables) + migrations + seed"
@@ -856,7 +856,7 @@ git add apps/server && git commit -m "feat(server): drizzle schema (13 tables) +
 - Create: `apps/server/src/app.ts`
 - Test: `apps/server/test/issues.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/issues.test.ts`:
 
@@ -944,12 +944,12 @@ describe("issue CRUD + enqueue triggers", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL，`../src/app.js` 不存在。
 
-- [ ] **Step 3: 实现 hash.ts、hub.ts、services/issues.ts**
+- [x] **Step 3: 实现 hash.ts、hub.ts、services/issues.ts**
 
 `apps/server/src/lib/hash.ts`:
 
@@ -1024,7 +1024,9 @@ export function enqueueForIssue(db: Db, issue: Issue, trigger: string): Task | n
       created_at: now,
     }).run();
   } catch (e: any) {
-    if (String(e?.message).includes("tasks_one_pending_per_issue")) return null; // 已有 pending，幂等
+    // better-sqlite3 对部分唯一索引的报错不含索引名（形如 UNIQUE constraint failed: tasks.issue_id），两种都匹配
+    const msg = String(e?.message);
+    if (msg.includes("tasks_one_pending_per_issue") || msg.includes("UNIQUE constraint failed: tasks.issue_id")) return null; // 已有 pending，幂等
     throw e;
   }
   addComment(db, issue.id, { author_type: "system", author_id: "system", type: "system", body: `任务已入队（触发：${trigger}）` });
@@ -1079,7 +1081,7 @@ export function listTasksForIssue(db: Db, issueId: string): Task[] {
 }
 ```
 
-- [ ] **Step 4: 实现路由与 app.ts**
+- [x] **Step 4: 实现路由与 app.ts**
 
 `apps/server/src/routes/issues.ts`:
 
@@ -1252,12 +1254,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: PASS（db 2 + issues 5 = 7 个用例）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/server && git commit -m "feat(server): issue CRUD + enqueue triggers + bootstrap/agents/runtimes routes"
@@ -1274,7 +1276,7 @@ git add apps/server && git commit -m "feat(server): issue CRUD + enqueue trigger
 - Modify: `apps/server/src/app.ts`（注册 daemon 路由）
 - Test: `apps/server/test/claim.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/claim.test.ts`:
 
@@ -1377,12 +1379,12 @@ describe("daemon auth + claim", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL（auth/claim 相关模块不存在）。
 
-- [ ] **Step 3: 实现 auth.ts 与 services/tasks.ts（claim 部分）**
+- [x] **Step 3: 实现 auth.ts 与 services/tasks.ts（claim 部分）**
 
 `apps/server/src/lib/auth.ts`:
 
@@ -1491,7 +1493,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
 }
 ```
 
-- [ ] **Step 4: 实现 routes/daemon.ts 并接入 app.ts**
+- [x] **Step 4: 实现 routes/daemon.ts 并接入 app.ts**
 
 `apps/server/src/routes/daemon.ts`:
 
@@ -1547,12 +1549,12 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
 （runner runtime 服务在下一个 Task 实现；此处 import 会在 Task 5 完成后通过编译，两个 Task 一起跑测试。）
 
-- [ ] **Step 5: 跑测试（预期仍失败，等 Task 5 补齐 runtimes 服务）**
+- [x] **Step 5: 跑测试（预期仍失败，等 Task 5 补齐 runtimes 服务）**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL，`./services/runtimes.js` 不存在——这是预期的，直接进入 Task 5。
 
-- [ ] **Step 6: （暂不 commit，与 Task 5 合并提交）**
+- [x] **Step 6: （暂不 commit，与 Task 5 合并提交）**
 
 ---
 
@@ -1563,7 +1565,7 @@ Expected: FAIL，`./services/runtimes.js` 不存在——这是预期的，直�
 - Modify: `apps/server/src/app.ts`（挂清扫定时器）
 - Test: `apps/server/test/runtimes.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/runtimes.test.ts`:
 
@@ -1627,12 +1629,12 @@ describe("runtimes", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL，`services/runtimes.js` 不存在。
 
-- [ ] **Step 3: 实现 services/runtimes.ts**
+- [x] **Step 3: 实现 services/runtimes.ts**
 
 `apps/server/src/services/runtimes.ts`:
 
@@ -1697,7 +1699,7 @@ export function sweepOfflineRuntimes(db: Db, nowIso: string): number {
 }
 ```
 
-- [ ] **Step 4: 在 tasks.ts 末尾补 failTaskInternal（完整版在 Task 7 扩展，此处先满足离线清扫）**
+- [x] **Step 4: 在 tasks.ts 末尾补 failTaskInternal（完整版在 Task 7 扩展，此处先满足离线清扫）**
 
 在 `apps/server/src/services/tasks.ts` 末尾追加：
 
@@ -1726,7 +1728,7 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
 
 并在 `apps/server/src/services/tasks.ts` 顶部 import 区补上 `newId`（已存在则跳过）。
 
-- [ ] **Step 5: app.ts 挂清扫定时器**
+- [x] **Step 5: app.ts 挂清扫定时器**
 
 `apps/server/src/app.ts` —— 在 `registerIssueRoutes(app, db, hub);` 之后追加：
 
@@ -1739,12 +1741,12 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
   app.addHook("onClose", async () => clearInterval(sweepTimer));
 ```
 
-- [ ] **Step 6: 跑全部 server 测试确认通过**
+- [x] **Step 6: 跑全部 server 测试确认通过**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: PASS（db 2 + issues 5 + claim 6 + runtimes 3 = 16 个用例）。
 
-- [ ] **Step 7: Commit（包含 Task 4）**
+- [x] **Step 7: Commit（包含 Task 4）**
 
 ```bash
 git add apps/server && git commit -m "feat(server): daemon auth, atomic claim with lease, runtime registry + offline sweep"
@@ -1761,7 +1763,7 @@ git add apps/server && git commit -m "feat(server): daemon auth, atomic claim wi
 - Modify: `apps/server/src/app.ts`（注册 task 查询路由）
 - Test: `apps/server/test/messages.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/messages.test.ts`:
 
@@ -1826,12 +1828,12 @@ describe("task messages", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL，`services/messages.js` 与消息路由不存在。
 
-- [ ] **Step 3: 实现 services/messages.ts**
+- [x] **Step 3: 实现 services/messages.ts**
 
 `apps/server/src/services/messages.ts`:
 
@@ -1880,7 +1882,7 @@ export function listMessages(db: Db, taskId: string, afterSeq: number) {
 }
 ```
 
-- [ ] **Step 4: 挂 daemon 消息路由 + web 侧任务查询路由**
+- [x] **Step 4: 挂 daemon 消息路由 + web 侧任务查询路由**
 
 `apps/server/src/routes/daemon.ts` —— 顶部 import 区追加：
 
@@ -1932,12 +1934,12 @@ export function registerTaskRoutes(app: FastifyInstance, db: Db) {
   registerTaskRoutes(app, db);
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: PASS（新增 3 个用例，累计 19）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/server && git commit -m "feat(server): transcript batch upload with seq check + WS broadcast + message read"
@@ -1954,7 +1956,7 @@ git add apps/server && git commit -m "feat(server): transcript batch upload with
 - Modify: `apps/server/src/app.ts`（租约清扫进定时器）
 - Test: `apps/server/test/lifecycle.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/server/test/lifecycle.test.ts`:
 
@@ -2065,12 +2067,12 @@ describe("task lifecycle", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: FAIL（start/complete/fail/issue-status/cancel 路由未实现）。
 
-- [ ] **Step 3: 扩展 services/tasks.ts**
+- [x] **Step 3: 扩展 services/tasks.ts**
 
 在 `apps/server/src/services/tasks.ts` 末尾追加：
 
@@ -2133,7 +2135,7 @@ export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, 
 
 并在文件顶部确认 `getIssue`/`addComment` 已从 `./issues.js` 导入（Task 4 已导入 `getIssue, addComment`，无遗漏）。
 
-- [ ] **Step 4: 挂路由**
+- [x] **Step 4: 挂路由**
 
 `apps/server/src/routes/daemon.ts` —— 顶部 import 区追加：
 
@@ -2222,12 +2224,12 @@ export function registerTaskRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
 （替换 Task 5 Step 5 的定时器代码块。）
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/server test`
 Expected: PASS（新增 5 个用例，累计 24）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/server && git commit -m "feat(server): task lifecycle (start/complete/fail/retry/lease-sweep/cancel) + agent issue-status callback"
@@ -2244,7 +2246,7 @@ git add apps/server && git commit -m "feat(server): task lifecycle (start/comple
 - Create: `apps/runner/src/poller.ts`
 - Test: `apps/runner/test/poller.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/runner/test/poller.test.ts`:
 
@@ -2313,12 +2315,12 @@ describe("daemon poller", () => {
 
 注：此测试需要 `@anvil/server` 能被 runner 引用。在 `apps/runner/package.json` 的 `devDependencies` 中追加 `"@anvil/server": "workspace:*"`（server 的 `package.json` 需补 `"main": "src/app.ts"`、`"types": "src/app.ts"` 与 `"exports": { ".": "./src/app.ts" }"`，tsx/vitest 直接跑 TS 源，无需构建）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: FAIL，`../src/client.js` 等不存在。
 
-- [ ] **Step 3: 实现 config.ts、probe.ts、client.ts**
+- [x] **Step 3: 实现 config.ts、probe.ts、client.ts**
 
 `apps/runner/src/config.ts`:
 
@@ -2440,7 +2442,7 @@ export class ApiClient {
 export type { TaskPackage };
 ```
 
-- [ ] **Step 4: 实现 poller.ts（daemon 主循环，永不退出）**
+- [x] **Step 4: 实现 poller.ts（daemon 主循环，永不退出）**
 
 `apps/runner/src/poller.ts`:
 
@@ -2514,12 +2516,12 @@ export class Daemon {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: PASS（2 个用例）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/runner apps/server/package.json && git commit -m "feat(runner): config/probe/api client + resilient daemon poll loop"
@@ -2535,7 +2537,7 @@ git add apps/runner apps/server/package.json && git commit -m "feat(runner): con
 - Create: `apps/runner/src/testing/fake-cli.mjs`
 - Test: `apps/runner/test/process.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/runner/test/process.test.ts`:
 
@@ -2607,12 +2609,12 @@ describe("runCliProcess", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: FAIL，`agents/process.js` 不存在。
 
-- [ ] **Step 3: 实现 backend.ts 与 fake-cli.mjs**
+- [x] **Step 3: 实现 backend.ts 与 fake-cli.mjs**
 
 `apps/runner/src/agents/backend.ts`:
 
@@ -2663,7 +2665,7 @@ async function main() {
 main();
 ```
 
-- [ ] **Step 4: 实现 process.ts**
+- [x] **Step 4: 实现 process.ts**
 
 `apps/runner/src/agents/process.ts`:
 
@@ -2793,12 +2795,12 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: PASS（新增 4 个用例，累计 6）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/runner && git commit -m "feat(runner): agent backend interface + process runner (watchdog, tree-kill) + fake cli"
@@ -2815,7 +2817,7 @@ git add apps/runner && git commit -m "feat(runner): agent backend interface + pr
 
 背景（Kimi Code 官方文档实证，`kimi` 命令参考页）：headless 模式为 `kimi -p "<prompt>" --output-format stream-json`，stdout 每行一个 JSON 对象（Assistant 消息 / 带 `tool_calls` 的 Assistant 消息 / Tool 消息）；`-p` 模式默认 auto 权限、不求人工确认；恢复会话用 `-c`（继续当前工作目录最近一次会话）。thinking 不进 JSONL，走 stderr——process.ts 已把 stderr 包成 `log` 消息。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/runner/test/kimi.test.ts`:
 
@@ -2876,12 +2878,12 @@ describe("kimi adapter", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: FAIL，`agents/kimi.js` 不存在；`backend.ts` 的 `AgentSession` 缺 `kill`。
 
-- [ ] **Step 3: 修改 backend.ts，实现 kimi.ts**
+- [x] **Step 3: 修改 backend.ts，实现 kimi.ts**
 
 `apps/runner/src/agents/backend.ts` —— `AgentSession` 接口改为：
 
@@ -2932,12 +2934,12 @@ export function createKimiBackend(opts: KimiBackendOptions = {}): AgentBackend {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: PASS（新增 3 个用例，累计 9）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/runner && git commit -m "feat(runner): kimi cli adapter (headless stream-json, resume via -c)"
@@ -2955,7 +2957,7 @@ git add apps/runner && git commit -m "feat(runner): kimi cli adapter (headless s
 - Test: `apps/runner/test/executor.test.ts`
 - Test: `apps/runner/test/uploader.test.ts`
 
-- [ ] **Step 1: 写失败测试（uploader）**
+- [x] **Step 1: 写失败测试（uploader）**
 
 `apps/runner/test/uploader.test.ts`:
 
@@ -3019,7 +3021,7 @@ describe("MessageUploader", () => {
 });
 ```
 
-- [ ] **Step 2: 写失败测试（executor 端到端，真 server + fake backend）**
+- [x] **Step 2: 写失败测试（executor 端到端，真 server + fake backend）**
 
 `apps/runner/test/executor.test.ts`:
 
@@ -3122,12 +3124,12 @@ describe("executor", () => {
 });
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: FAIL，`worktree.js` / `uploader.js` / `executor.js` 不存在。
 
-- [ ] **Step 4: 实现 worktree.ts 与 uploader.ts**
+- [x] **Step 4: 实现 worktree.ts 与 uploader.ts**
 
 `apps/runner/src/worktree.ts`:
 
@@ -3238,7 +3240,7 @@ export class MessageUploader {
 }
 ```
 
-- [ ] **Step 5: 实现 executor.ts 与 index.ts**
+- [x] **Step 5: 实现 executor.ts 与 index.ts**
 
 `apps/runner/src/executor.ts`:
 
@@ -3372,12 +3374,12 @@ async function main() {
 main().catch((e) => { console.error(e); process.exit(1); });
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: PASS（uploader 3 + executor 4 + 既有 9 = 16）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/runner && git commit -m "feat(runner): worktree prep, batched uploader with redact/resync, task executor + entrypoint"
@@ -3394,7 +3396,7 @@ git add apps/runner && git commit -m "feat(runner): worktree prep, batched uploa
 - Create: `apps/web/src/pages/BoardPage.tsx`
 - Test: `apps/web/test/board.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/board.test.tsx`:
 
@@ -3432,12 +3434,12 @@ describe("BoardPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，组件与 api 模块不存在。
 
-- [ ] **Step 3: 实现脚手架与 api/ws 封装**
+- [x] **Step 3: 实现脚手架与 api/ws 封装**
 
 `apps/web/vite.config.ts`:
 
@@ -3574,7 +3576,7 @@ export function useServerEvents(onEvent: (e: ServerEvent) => void) {
 }
 ```
 
-- [ ] **Step 4: 实现 BoardPage 与 styles.css**
+- [x] **Step 4: 实现 BoardPage 与 styles.css**
 
 `apps/web/src/pages/BoardPage.tsx`:
 
@@ -3733,12 +3735,12 @@ button.primary { background: #2563eb; border-color: #2563eb; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（1 个用例）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): scaffold + board page (columns, create modal, status select, rerun)"
@@ -3752,7 +3754,7 @@ git add apps/web && git commit -m "feat(web): scaffold + board page (columns, cr
 - Create: `apps/web/src/pages/TaskDetailPage.tsx`
 - Test: `apps/web/test/task-detail.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/task-detail.test.tsx`:
 
@@ -3794,12 +3796,12 @@ describe("TaskDetailPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，`TaskDetailPage` 不存在。
 
-- [ ] **Step 3: 实现 TaskDetailPage**
+- [x] **Step 3: 实现 TaskDetailPage**
 
 `apps/web/src/pages/TaskDetailPage.tsx`:
 
@@ -3919,12 +3921,12 @@ export default function TaskDetailPage() {
 .comment-form textarea { background: #0f1115; color: #e5e7eb; border: 1px solid #2a2f3a; border-radius: 6px; padding: 8px; }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（累计 2 个用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): task detail page (live transcript, cancel/rerun, comments)"
@@ -3938,7 +3940,7 @@ git add apps/web && git commit -m "feat(web): task detail page (live transcript,
 - Create: `apps/web/src/pages/AgentsPage.tsx`
 - Test: `apps/web/test/agents.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `apps/web/test/agents.test.tsx`:
 
@@ -3969,12 +3971,12 @@ describe("AgentsPage", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: FAIL，`AgentsPage` 不存在。
 
-- [ ] **Step 3: 实现 AgentsPage**
+- [x] **Step 3: 实现 AgentsPage**
 
 `apps/web/src/pages/AgentsPage.tsx`:
 
@@ -4051,12 +4053,12 @@ export default function AgentsPage() {
 .token-reveal { background: #0a0c10; padding: 10px; border-radius: 6px; user-select: all; }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pnpm --filter @anvil/web test`
 Expected: PASS（累计 3 个用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web && git commit -m "feat(web): agents/runtimes admin page + daemon token generation"
@@ -4070,7 +4072,7 @@ git add apps/web && git commit -m "feat(web): agents/runtimes admin page + daemo
 - Create: `apps/server/src/index.ts`
 - Test: `apps/runner/test/e2e.test.ts`
 
-- [ ] **Step 1: 写 server 入口**
+- [x] **Step 1: 写 server 入口**
 
 `apps/server/src/index.ts`:
 
@@ -4085,7 +4087,7 @@ await app.listen({ port, host: "127.0.0.1" });
 console.log(`anvil server listening on http://127.0.0.1:${port}`);
 ```
 
-- [ ] **Step 2: 写 E2E 测试**
+- [x] **Step 2: 写 E2E 测试**
 
 `apps/runner/test/e2e.test.ts`:
 
@@ -4164,12 +4166,12 @@ it("create issue → daemon claims → completes end to end", async () => {
 }, 10000);
 ```
 
-- [ ] **Step 3: 跑 E2E**
+- [x] **Step 3: 跑 E2E**
 
 Run: `pnpm --filter @anvil/runner test`
 Expected: 全部 PASS（含 E2E，累计 17）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/server/src/index.ts apps/runner/test/e2e.test.ts && git commit -m "feat: server entrypoint + end-to-end happy path test"
@@ -4183,7 +4185,7 @@ git add apps/server/src/index.ts apps/runner/test/e2e.test.ts && git commit -m "
 - Create: `README.md`, `LICENSE`
 - Test: 手动验收清单（spec §10）
 
-- [ ] **Step 1: 写 README**
+- [x] **Step 1: 写 README**
 
 `README.md`:
 
@@ -4229,7 +4231,7 @@ MIT（见 LICENSE）。本项目为独立实现，与 Multica 无代码继承关
 
 `LICENSE`：标准 MIT 文本（Copyright (c) 2026 Anvil contributors）。
 
-- [ ] **Step 2: 全量测试 + 类型检查**
+- [x] **Step 2: 全量测试 + 类型检查**
 
 Run:
 
@@ -4239,7 +4241,7 @@ cd /d/anvil && pnpm test && pnpm -r exec tsc --noEmit -p tsconfig.json
 
 Expected: 四个包测试全 PASS，tsc 无错误。
 
-- [ ] **Step 3: 手动验收（对照 spec §10 checklist）**
+- [ ] **Step 3: 手动验收（对照 spec §10 checklist）—— 留给用户手动执行**
 
 逐项人工执行并记录结果：
 
@@ -4249,7 +4251,7 @@ Expected: 四个包测试全 PASS，tsc 无错误。
 4. runner 断网/断心跳 60s+，确认 runtime 标 offline、任务按 `runtime_offline` 失败并自动重试。
 5. daemon 连续运行期间制造单任务崩溃（比如给一个不存在目录的 repo_path），确认 daemon 不退出、其他任务不受影响。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md LICENSE && git commit -m "docs: readme quickstart + MIT license"
