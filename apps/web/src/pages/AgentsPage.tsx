@@ -7,6 +7,8 @@ export default function AgentsPage() {
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [name, setName] = useState("");
   const [newToken, setNewToken] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   const reload = async () => {
     const [a, r] = await Promise.all([api.listAgents(), api.listRuntimes()]);
@@ -21,7 +23,7 @@ export default function AgentsPage() {
         <h2>Agents</h2>
         <div className="inline-form">
           <input placeholder="新 Agent 名字" value={name} onChange={(e) => setName(e.target.value)} />
-          <button onClick={async () => { if (!name.trim()) return; await api.createAgent({ name, provider: "kimi" }); setName(""); reload(); }}>
+          <button disabled={creating} onClick={async () => { const trimmed = name.trim(); if (!trimmed || creating) return; setCreating(true); try { await api.createAgent({ name: trimmed, provider: "kimi" }); setName(""); reload(); } finally { setCreating(false); } }}>
             创建（kimi）
           </button>
         </div>
@@ -48,7 +50,7 @@ export default function AgentsPage() {
       <section>
         <h2>Daemon Token</h2>
         <p className="hint">runner 启动需要 token。明文只显示这一次，请复制后配置到 runner 的 ANVIL_DAEMON_TOKEN。</p>
-        <button onClick={async () => { const t = await api.createDaemonToken("default"); setNewToken(t.token); }}>生成新 token</button>
+        <button disabled={generating} onClick={async () => { if (generating) return; setGenerating(true); try { const t = await api.createDaemonToken("default"); setNewToken(t.token); } finally { setGenerating(false); } }}>生成新 token</button>
         {newToken && <pre className="token-reveal">{newToken}</pre>}
       </section>
     </div>
