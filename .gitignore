@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.db
+*.db-journal
+.anvil/
+research/
+kimi-export-session_*.md
