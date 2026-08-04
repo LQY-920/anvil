@@ -47,7 +47,13 @@ export class MessageUploader {
         this.buffer.splice(0, batch.length);
       } catch (e: any) {
         if (e?.status === 409 && typeof e.body?.last_seq === "number") {
+          const before = this.buffer.length;
           this.buffer = this.buffer.filter((m) => m.seq > e.body.last_seq);
+          if (this.buffer.length === before) {
+            // 护栏：server last_seq 比 buffer 头部还旧（当前不可达），防热死循环
+            console.error("[anvil-uploader] 409 resync made no progress, dropping buffered messages");
+            break;
+          }
           continue;
         }
         throw e;

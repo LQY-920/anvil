@@ -96,4 +96,29 @@ describe("executor", () => {
     expect(p).toContain("issue-status");
     expect(p).toContain("ANVIL_TOKEN");
   });
+
+  it("does not leak daemon token into agent env", async () => {
+    const { client, pkg, runnerRoot } = await setup();
+    process.env.ANVIL_DAEMON_TOKEN = "anv_supersecret";
+    let capturedEnv: Record<string, string> | null = null;
+    const capturing: AgentBackend = {
+      provider: "kimi",
+      execute(opts) {
+        capturedEnv = opts.env;
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    try {
+      await executeTask({ client, backend: capturing, runnerRoot, cancelPollMs: 50 }, pkg);
+    } finally {
+      delete process.env.ANVIL_DAEMON_TOKEN;
+    }
+    expect(capturedEnv).not.toBeNull();
+    expect(capturedEnv!["ANVIL_DAEMON_TOKEN"]).toBeUndefined();
+    expect(capturedEnv!["ANVIL_TOKEN"]).toBe(pkg.task_token);
+  });
 });

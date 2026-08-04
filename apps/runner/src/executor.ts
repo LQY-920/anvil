@@ -18,7 +18,7 @@ export function buildPrompt(issue: Issue, task: Task): string {
     "",
     "# 任务",
     `标题：${issue.title}`,
-    issue.description ? `描述：\n${issue.description.slice(0, 8000)}` : "",
+    issue.description ? `描述：\n${issue.description.slice(0, 8000)}` : null,
     "",
     "# 要求",
     "- 在当前工作目录内完成编码，改动用 git commit 提交（保持当前分支）。",
@@ -26,7 +26,8 @@ export function buildPrompt(issue: Issue, task: Task): string {
     `  curl -X POST "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/issue-status" -H "Authorization: Bearer $ANVIL_TOKEN" -H "content-type: application/json" -d "{\\"status\\":\\"in_review\\"}"`,
     "- 遇到无法继续的阻塞，用同样方式上报 status=blocked 并附原因。",
   ];
-  return lines.filter((l) => l !== "").join("\n");
+  // 只剔除"无描述"占位，保留段落空行
+  return lines.filter((l) => l !== null).join("\n");
 }
 
 /** 单任务完整旅程：准备目录 → start → spawn → 流式上报 → complete/fail。任何异常收敛为 fail 上报，绝不外抛。 */
@@ -39,8 +40,10 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     workDir = prepared.workDir;
     await client.startTask(task.id, task_token, workDir);
 
+    // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
+    const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
     const env = {
-      ...process.env,
+      ...baseEnv,
       ANVIL_TOKEN: task_token,
       ANVIL_SERVER_URL: (client as any).baseUrl,
       ANVIL_WORKSPACE_ID: task.workspace_id,
@@ -48,7 +51,9 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       ANVIL_TASK_ID: task.id,
     } as Record<string, string>;
 
-    const uploader = new MessageUploader(client, task.id, task_token, [task_token], 500);
+    // 纵深防御：daemon token 若出现在消息流里同样抹掉
+    const secrets = [task_token, process.env.ANVIL_DAEMON_TOKEN ?? ""].filter(Boolean);
+    const uploader = new MessageUploader(client, task.id, task_token, secrets, 500);
     const session = backend.execute({
       workDir,
       env,
@@ -68,7 +73,12 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     try {
       for await (const m of session.messages) uploader.push(m);
       const result = await session.result;
-      await uploader.close();
+      try {
+        await uploader.close();
+      } catch (e: any) {
+        // 消息缺失可事后补拉，不能因此把已成功/已失败的任务结果报错
+        console.error("[anvil-executor] uploader.close failed, continuing with result report:", e?.message ?? e);
+      }
       if (result.status === "completed") {
         const diffStat = prepared.branch ? await gitDiffStat(workDir) : "";
         await client.complete(task.id, task_token, {
@@ -81,7 +91,8 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       } else if (result.status === "timeout") {
         await client.fail(task.id, task_token, "idle_timeout", result.error ?? "idle watchdog", workDir);
       } else {
-        await client.fail(task.id, task_token, "non_zero_exit", result.error ?? `exit ${result.exitCode}`, workDir);
+        const reason = result.error?.includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
+        await client.fail(task.id, task_token, reason, result.error ?? `exit ${result.exitCode}`, workDir);
       }
     } finally {
       clearInterval(cancelTimer);
