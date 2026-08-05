@@ -3,7 +3,7 @@
 > 单一事实来源：当前状态、里程碑、backlog、协作约定。每次合并到 main 时更新。
 > 新会话恢复上下文：先读本文件，再读 `docs/superpowers/specs/` 下的相关 spec。
 
-**当前阶段**：一期已完成并通过手动冒烟 → 即将进入 **UI/UX 迭代主题**
+**当前阶段**：一期 + 验收链路 + UI 重构（方向 C）均已完成，系统可用
 **仓库**：https://github.com/LQY-920/anvil ｜ 主干：`main`
 
 ## 里程碑
@@ -18,9 +18,13 @@
 - 交付区：diff 视图 + 合入 main（冲突自动 abort）+ 打回重跑（评论进 prompt）
 - 修复：git 探测注入 PATH（server/runner 双侧）、merge 后仓库清理、面板切任务竞态
 
-### 🔄 进行中：UI/UX 迭代
-- 方向待定（等用户参考物或我出原型）
-- 计划：design tokens + 基础组件 → 逐页换皮
+### ✅ 2026-08-05 UI/UX 重构：方向 C「工匠暖纸」（ui-redesign 分支，已合并）
+- 三路调研（Linear 体系 / Multica 源码 / Agent 平台模式）→ 形成 Anvil 专属设计系统：`PRODUCT.md` + `DESIGN.md`（双主题 tokens，浅色为主）
+- 原型三选一记录：`docs/ui-previews/`（A 灰阶 / B pastel / C 暖纸锻造台），选定 C + 左侧导航
+- 实施：tokens.css + useTheme + 左侧导航骨架；看板（列短粗线/状态 chip/待验收淡染）；任务面板锻造台（深色常驻、类型徽章、tool 折叠）；Agents 页迁移；旧 styles.css 删除
+- 修复：StrictMode 下 panel 加载死锁、视口高度链断裂、done 卡片语义
+
+### 🔄 进行中：无（等下一主题）
 
 ## Backlog（各轮审查接受的债务，按优先级）
 
