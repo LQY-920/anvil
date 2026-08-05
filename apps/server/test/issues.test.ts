@@ -92,6 +92,22 @@ describe("issue CRUD + enqueue triggers", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("stores acceptance on create and updates it on patch", async () => {
+    const issue = await createIssue({ acceptance: "1. 单测通过\n2. 改动已 commit" });
+    expect(issue.acceptance).toBe("1. 单测通过\n2. 改动已 commit");
+    const patched = await app.inject({ method: "PATCH", url: `/api/issues/${issue.id}`, payload: { acceptance: "新验收标准" } });
+    expect(patched.json().acceptance).toBe("新验收标准");
+    const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
+    expect(detail.json().issue.acceptance).toBe("新验收标准");
+  });
+
+  it("acceptance defaults to null and is untouched by unrelated patch", async () => {
+    const issue = await createIssue();
+    expect(issue.acceptance).toBeNull();
+    const patched = await app.inject({ method: "PATCH", url: `/api/issues/${issue.id}`, payload: { title: "改名" } });
+    expect(patched.json().acceptance).toBeNull();
+  });
+
   it("trims repo_path whitespace on create and patch", async () => {
     const issue = await createIssue({ repo_path: "  D:/anvil  " });
     expect(issue.repo_path).toBe("D:/anvil");

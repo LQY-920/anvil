@@ -113,6 +113,20 @@ describe("task lifecycle", () => {
     expect(bad.statusCode).toBe(400);
   });
 
+  it("delivery endpoint: false before issue-status callback, true after", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    const tget = (url: string, token: string) =>
+      app.inject({ method: "GET", url, headers: { authorization: `Bearer ${token}` } });
+    const before = await tget(`/api/daemon/tasks/${pkg.task.id}/delivery`, pkg.task_token);
+    expect(before.statusCode).toBe(200);
+    expect(before.json().delivered).toBe(false);
+    const cb = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "in_review" }, pkg.task_token);
+    expect(cb.statusCode).toBe(200);
+    const after = await tget(`/api/daemon/tasks/${pkg.task.id}/delivery`, pkg.task_token);
+    expect(after.json().delivered).toBe(true);
+  });
+
   it("skips retry child when a pending task already exists for the issue", async () => {
     const pkg = await claimOne();
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);

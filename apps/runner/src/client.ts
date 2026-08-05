@@ -43,6 +43,10 @@ export class ApiClient {
   fail(taskId: string, token: string, reason: string, error: string, workDir?: string) {
     return this.req("POST", `/api/daemon/tasks/${taskId}/fail`, { failure_reason: reason, error, work_dir: workDir }, token);
   }
+  async taskDelivered(taskId: string, token: string): Promise<boolean> {
+    const r = await this.req("GET", `/api/daemon/tasks/${taskId}/delivery`, undefined, token);
+    return r.delivered === true;
+  }
   async taskStatus(taskId: string, token: string): Promise<string | null> {
     try {
       const r = await this.req("GET", `/api/daemon/tasks/${taskId}/status`, undefined, token);

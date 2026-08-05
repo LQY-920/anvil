@@ -158,6 +158,8 @@ export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, 
   if (!issue) return { ok: false, error: "issue not found" };
   const now = new Date().toISOString();
   db.$client.prepare(`UPDATE issues SET status=?, updated_at=? WHERE id=?`).run(status, now, issue.id);
+  // 交付信号：Agent 回调成功才算交付（进程结束 ≠ 交付），runner 据此决定是否追问
+  db.$client.prepare(`UPDATE tasks SET delivered_at=? WHERE id=?`).run(now, taskId);
   addComment(db, issue.id, {
     author_type: "agent", author_id: task.agent_id, type: "status_change",
     body: note ? `${issue.status} → ${status}：${note}` : `${issue.status} → ${status}`,
