@@ -69,6 +69,7 @@ export function createIssueRow(db: Db, workspaceId: string, userId: string, req:
   const status = (req.status as any) ?? "todo";
   db.insert(schema.issues).values({
     id, workspace_id: workspaceId, title: req.title, description: req.description ?? null,
+    acceptance: req.acceptance ?? null,
     status, priority: req.priority ?? "medium",
     assignee_type: req.assignee_type ?? null, assignee_id: req.assignee_id ?? null,
     creator_type: "member", creator_id: userId,
@@ -84,6 +85,7 @@ export function updateIssueRow(db: Db, id: string, req: UpdateIssueRequest): Iss
   db.update(schema.issues).set({
     title: req.title ?? cur.title,
     description: req.description !== undefined ? req.description : cur.description,
+    acceptance: req.acceptance !== undefined ? req.acceptance : cur.acceptance,
     status: (req.status as any) ?? cur.status,
     priority: req.priority ?? cur.priority,
     assignee_type: req.assignee_type !== undefined ? req.assignee_type : cur.assignee_type,

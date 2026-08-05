@@ -30,6 +30,7 @@ export const issues = sqliteTable("issues", {
   workspace_id: text("workspace_id").notNull().references(() => workspaces.id),
   title: text("title").notNull(),
   description: text("description"),
+  acceptance: text("acceptance"), // 验收标准：Agent 自验 + 平台追问的依据
   status: text("status").notNull().default("todo"),
   priority: text("priority").notNull().default("medium"),
   assignee_type: text("assignee_type"), // member | agent | null
@@ -65,6 +66,7 @@ export const tasks = sqliteTable("tasks", {
   dispatched_at: text("dispatched_at"),
   started_at: text("started_at"),
   completed_at: text("completed_at"),
+  delivered_at: text("delivered_at"), // Agent 回调 issue-status 成功的时间；进程结束 ≠ 交付
   created_at: text("created_at").notNull(),
 }, (t) => [
   uniqueIndex("tasks_one_pending_per_issue").on(t.issue_id).where(sql`status IN ('queued','dispatched')`),

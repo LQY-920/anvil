@@ -25,6 +25,7 @@ export interface User { id: string; email: string; name: string; password_hash: 
 
 export interface Issue {
   id: string; workspace_id: string; title: string; description: string | null;
+  acceptance: string | null;
   status: IssueStatus; priority: Priority;
   assignee_type: "member" | "agent" | null; assignee_id: string | null;
   creator_type: "member" | "agent"; creator_id: string;
@@ -39,7 +40,7 @@ export interface Task {
   failure_reason: FailureReason | null; session_id: string | null; work_dir: string | null;
   task_token_hash: string | null; result_json: string | null; error: string | null;
   lease_expires_at: string | null; dispatched_at: string | null;
-  started_at: string | null; completed_at: string | null; created_at: string;
+  started_at: string | null; completed_at: string | null; delivered_at: string | null; created_at: string;
 }
 
 export interface Comment {

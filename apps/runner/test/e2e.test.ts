@@ -32,14 +32,23 @@ it("create issue → daemon claims → completes end to end", async () => {
 
   const fakeBackend: AgentBackend = {
     provider: "kimi",
-    execute() {
+    execute(opts) {
       const messages = (async function* (): AsyncGenerator<AgentMessage> {
         yield { type: "text", content: "e2e working" };
         yield { type: "tool_use", tool: "Bash", input: { command: "echo hi" } };
       })();
+      // 好 Agent：进程退出前按目标契约回调推进 issue（否则 executor 会发起未交付追问）
+      const result = (async () => {
+        await fetch(`${opts.env.ANVIL_SERVER_URL}/api/daemon/tasks/${opts.env.ANVIL_TASK_ID}/issue-status`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${opts.env.ANVIL_TOKEN}` },
+          body: JSON.stringify({ status: "in_review" }),
+        });
+        return { status: "completed" as const, exitCode: 0 };
+      })();
       return {
         messages,
-        result: Promise.resolve({ status: "completed", exitCode: 0 }),
+        result,
         kill: () => {},
       };
     },

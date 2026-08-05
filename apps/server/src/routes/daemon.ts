@@ -40,6 +40,13 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     return { status: task.status };
   });
 
+  app.get("/api/daemon/tasks/:id/delivery", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = getTask(db, id);
+    if (!task) return reply.code(404).send({ error: "not found" });
+    return { delivered: task.delivered_at != null };
+  });
+
   app.post("/api/daemon/tasks/:id/messages", { preHandler: taskAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { messages } = (req.body ?? {}) as { messages?: any[] };
