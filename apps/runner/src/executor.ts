@@ -1,6 +1,6 @@
 import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 import type { ApiClient } from "./client.js";
-import type { AgentBackend } from "./agents/backend.js";
+import type { AgentBackend, AgentResult } from "./agents/backend.js";
 import { prepareWorkdir, gitDiffStat } from "./worktree.js";
 import { MessageUploader } from "./uploader.js";
 
@@ -90,7 +90,6 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     };
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
     let session = backend.execute(execOpts);
-    activeSessions.add(session);
 
     // 取消轮询：server 端终态 → 杀进程组
     const cancelTimer = setInterval(async () => {
@@ -101,8 +100,15 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     }, deps.cancelPollMs ?? 5000);
 
     try {
-      for await (const m of session.messages) uploader.push(m);
-      const result = await session.result;
+      // 每轮会话的 add/delete 在同一 try/finally 里配对，追问轮换 session 后首轮注册不泄漏
+      let result: AgentResult;
+      activeSessions.add(session);
+      try {
+        for await (const m of session.messages) uploader.push(m);
+        result = await session.result;
+      } finally {
+        activeSessions.delete(session);
+      }
       try {
         await uploader.close();
       } catch (e: any) {
@@ -153,7 +159,6 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       }
     } finally {
       clearInterval(cancelTimer);
-      activeSessions.delete(session);
     }
   } catch (e: any) {
     const reason = String(e?.message ?? "").includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
