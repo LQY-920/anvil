@@ -6,6 +6,7 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/layout.css";
 import "./styles/board.css";
+import "./styles/panel.css";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(

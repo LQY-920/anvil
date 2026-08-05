@@ -29,7 +29,7 @@ export const getIssueTasks = (id: string) => req<Task[]>("GET", `/api/issues/${i
 export const addComment = (id: string, body: string) => req("POST", `/api/issues/${id}/comments`, { body });
 export const getTask = (id: string) => req<TaskDetail>("GET", `/api/tasks/${id}`);
 export const getTaskMessages = (id: string, afterSeq = -1) =>
-  req<{ seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null }[]>(
+  req<{ seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null; created_at: string }[]>(
     "GET", `/api/tasks/${id}/messages?after_seq=${afterSeq}`,
   );
 export const cancelTask = (id: string) => req("POST", `/api/tasks/${id}/cancel`);
