@@ -39,4 +39,24 @@ describe("worktree", () => {
     expect(prepared.branch).toBeNull();
     expect(fs.existsSync(prepared.workDir)).toBe(true);
   });
+
+  it("resume reuses workdir and recovers the existing task branch", async () => {
+    await ensureGitAvailable();
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-repo-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-runner-"));
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd-task", runnerRoot, null);
+    expect(first.branch).toBe("task/12345678");
+    // 第二次任务复用 first 的 work_dir：应读回已有分支而不是丢分支
+    const second = await prepareWorkdir(issue, "87654321-ffff-task", runnerRoot, first.workDir);
+    expect(second.resumed).toBe(true);
+    expect(second.branch).toBe("task/12345678");
+  });
 });

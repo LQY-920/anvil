@@ -51,7 +51,13 @@ export interface PreparedWorkdir { workDir: string; branch: string | null; resum
 export async function prepareWorkdir(issue: Issue, taskId: string, runnerRoot: string, priorWorkDir: string | null): Promise<PreparedWorkdir> {
   await ensureGitAvailable();
   if (priorWorkDir && fs.existsSync(priorWorkDir)) {
-    return { workDir: priorWorkDir, branch: null, resumed: true };
+    // 续跑：worktree 已在既有任务分支上，读回当前分支，否则 result_json 丢分支、验收区（diff/合入）不显示
+    let branch: string | null = null;
+    try {
+      const current = (await git(priorWorkDir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+      branch = current && current !== "HEAD" ? current : null;
+    } catch { /* 普通目录无分支 */ }
+    return { workDir: priorWorkDir, branch, resumed: true };
   }
   const short = taskId.slice(0, 8);
   const base = path.join(runnerRoot, "worktrees");
