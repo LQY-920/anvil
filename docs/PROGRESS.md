@@ -29,6 +29,12 @@
 - 未交付信号：Agent 回调 issue-status 时写 tasks.delivered_at；任务完成未回调 → resume 追问（≤2 轮）→ 仍无交付则 complete 标 undelivered
 - 新增 GET /api/daemon/tasks/:id/delivery；84 测试全绿
 
+### ✅ 2026-08-05 第1波：体验清扫（wave-1-polish 分支，已合并）
+- pnpm dev 一键拉起三端（scripts/dev.mjs 绕开本机 PATH 缺 System32 的问题）
+- daemon token 列表/吊销（端点 + Agents 页 UI）；agent.status 接真实状态（claim→working，终态→idle，含 lease sweep 回写）
+- claim/start/sweep 广播 task.updated，看板秒级刷新；创建 issue 表单补验收标准字段
+- 94 测试全绿
+
 ### 🔄 进行中：无（等下一主题）
 
 ## Backlog（各轮审查接受的债务，按优先级）
