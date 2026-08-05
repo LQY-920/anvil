@@ -77,6 +77,46 @@ describe("ensureRepoCache", () => {
     expect(cache2).toBe(cache);
     expect(await git(cache, ["rev-parse", "origin/main"])).toBe(seedHead);
   });
+
+  it("fetch 后快进本地分支到上游：缓存本地 main 包含远程新提交", { timeout: 30000 }, async () => {
+    const { url, bareDir, seedDir } = makeRemote();
+    const runnerRoot = tmp("anvil-runner-");
+    const cache = await ensureRepoCache(url, runnerRoot);
+    // 远程推进一笔
+    fs.writeFileSync(path.join(seedDir, "b.txt"), "new\n");
+    gitR(seedDir, ["add", "-A"]);
+    gitR(seedDir, ["commit", "-m", "second"]);
+    gitR(seedDir, ["push", bareDir, "main"]);
+    const seedHead = gitR(seedDir, ["rev-parse", "HEAD"]);
+    await ensureRepoCache(url, runnerRoot);
+    // 本地分支（不只是 origin/main）已快进到最新远程
+    expect(await git(cache, ["rev-parse", "HEAD"])).toBe(seedHead);
+    expect(await git(cache, ["log", "--oneline"])).toContain("second");
+  });
+
+  it("同 URL 并发调用复用同一 Promise（per-URL 互斥）", { timeout: 30000 }, async () => {
+    const { url } = makeRemote();
+    const runnerRoot = tmp("anvil-runner-");
+    const p1 = ensureRepoCache(url, runnerRoot);
+    const p2 = ensureRepoCache(url, runnerRoot);
+    expect(p1).toBe(p2);
+    const cache = await p1;
+    expect(await p2).toBe(cache);
+    expect(fs.existsSync(path.join(cache, ".git"))).toBe(true);
+  });
+
+  it("缓存损坏（假 .git）→ 删除残骸重新 clone 自愈", { timeout: 30000 }, async () => {
+    const { url } = makeRemote();
+    const runnerRoot = tmp("anvil-runner-");
+    const cache = await ensureRepoCache(url, runnerRoot);
+    // 破坏缓存：真 .git 换成普通文件（rev-parse 跑不通的残骸）
+    fs.rmSync(path.join(cache, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(cache, ".git"), "not a git dir");
+    const cache2 = await ensureRepoCache(url, runnerRoot);
+    expect(cache2).toBe(cache);
+    expect(fs.readFileSync(path.join(cache, "a.txt"), "utf8")).toContain("hi");
+    expect(await git(cache, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
 });
 
 describe("prepareWorkdir with repo URL", () => {

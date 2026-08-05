@@ -6,7 +6,11 @@ import { ensureRepoCache } from "./repocache.js";
 
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd, windowsHide: true, timeout: 30_000 }, (err, stdout, stderr) => {
+    execFile("git", args, {
+      cwd, windowsHide: true, timeout: 30_000,
+      // 无凭据时立即失败而非挂到超时：禁终端密码提示与 GCM 交互弹窗
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+    }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`git ${args.join(" ")}: ${stderr || err.message}`));
       resolve(stdout.trim());
     });

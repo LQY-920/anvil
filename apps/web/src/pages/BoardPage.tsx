@@ -382,7 +382,7 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
             <FolderGit2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <Input
               className="pl-9"
-              placeholder="目标仓库路径（可选，如 D:/projects/foo）"
+              placeholder="目标仓库：本地路径或 GitHub URL（可选）"
               value={repoPath}
               onChange={(e) => setRepoPath(e.target.value)}
             />
