@@ -35,6 +35,12 @@
 - claim/start/sweep 广播 task.updated，看板秒级刷新；创建 issue 表单补验收标准字段
 - 94 测试全绿
 
+### ✅ 2026-08-05 远程仓库支持（repo-url-support 分支，已合并）
+- issue 目标仓库支持本地路径或 git URL；runner repocache（~/.anvil/repos/<hash>，clone/fetch/ff/互斥/残骸自愈）
+- 任务完成自动推 task/* 分支到远程；merge 合入后推目标分支并删远程任务分支；失败保留现场可重试
+- 创建表单显示最近使用仓库快捷选择（settings_json.recent_repos，cap 8）
+- 113 测试全绿。注意：该 feature commit 混入了用户并行做的 shadcn 风格 UI 重构（功能已核实保留）
+
 ### 🔄 进行中：无（等下一主题）
 
 ## Backlog（各轮审查接受的债务，按优先级）
