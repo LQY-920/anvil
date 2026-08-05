@@ -144,3 +144,31 @@
   color: var(--forge-text-dim);
   user-select: none;
 }
+
+/* token 列表与生成按钮拉开间距 */
+.token-table {
+  margin-top: 12px;
+}
+
+/* 描边小按钮（表格行内操作） */
+.btn-sm {
+  padding: 2px 8px;
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+}
+
+/* destructive 描边：透明底 + destructive 色描边/文字，hover 淡染 */
+button.danger {
+  background: transparent;
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+button.danger:hover {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+button.danger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
