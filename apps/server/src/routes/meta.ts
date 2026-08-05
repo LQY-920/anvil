@@ -3,10 +3,15 @@ import { eq } from "drizzle-orm";
 import { seed, newId, type Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { sha256Hex } from "../lib/hash.js";
+import { parseRecentRepos } from "../services/issues.js";
 import crypto from "node:crypto";
 
 export function registerMetaRoutes(app: FastifyInstance, db: Db) {
-  app.get("/api/bootstrap", async () => seed(db));
+  app.get("/api/bootstrap", async () => {
+    const s = seed(db);
+    // 最近使用的仓库引用，供 web 创建模态框快捷选择
+    return { ...s, recent_repos: parseRecentRepos(s.workspace.settings_json) };
+  });
 
   app.get("/api/agents", async () => {
     return db.select().from(schema.agents).all();

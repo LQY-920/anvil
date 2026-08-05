@@ -67,16 +67,45 @@ export function createIssueRow(db: Db, workspaceId: string, userId: string, req:
   const now = new Date().toISOString();
   const id = newId();
   const status = (req.status as any) ?? "todo";
+  const repoPath = req.repo_path?.trim() ? req.repo_path.trim() : null;
   db.insert(schema.issues).values({
     id, workspace_id: workspaceId, title: req.title, description: req.description ?? null,
     acceptance: req.acceptance ?? null,
     status, priority: req.priority ?? "medium",
     assignee_type: req.assignee_type ?? null, assignee_id: req.assignee_id ?? null,
     creator_type: "member", creator_id: userId,
-    repo_path: req.repo_path?.trim() ? req.repo_path.trim() : null,
+    repo_path: repoPath,
     position: Date.now(), created_at: now, updated_at: now,
   }).run();
+  if (repoPath) recordRecentRepo(db, workspaceId, repoPath);
   return getIssue(db, id)!;
+}
+
+const MAX_RECENT_REPOS = 8;
+
+/** 从 workspace settings_json 解析 recent_repos（非法 JSON / 非数组 → []）。 */
+export function parseRecentRepos(settingsJson: string): string[] {
+  try {
+    const s = JSON.parse(settingsJson || "{}");
+    return Array.isArray(s?.recent_repos)
+      ? s.recent_repos.filter((x: unknown): x is string => typeof x === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把 repo_path 记入 workspace.settings_json 的 recent_repos（去重置顶，cap 8），供创建模态框快捷选择。 */
+function recordRecentRepo(db: Db, workspaceId: string, repoPath: string): void {
+  const ws = db.select().from(schema.workspaces).where(eq(schema.workspaces.id, workspaceId)).all()[0];
+  if (!ws) return;
+  let settings: Record<string, unknown> = {};
+  try { settings = JSON.parse(ws.settings_json || "{}"); } catch { settings = {}; }
+  const next = [repoPath, ...parseRecentRepos(ws.settings_json).filter((x) => x !== repoPath)].slice(0, MAX_RECENT_REPOS);
+  db.update(schema.workspaces)
+    .set({ settings_json: JSON.stringify({ ...settings, recent_repos: next }) })
+    .where(eq(schema.workspaces.id, workspaceId))
+    .run();
 }
 
 export function updateIssueRow(db: Db, id: string, req: UpdateIssueRequest): Issue | null {

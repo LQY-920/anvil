@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { Issue } from "@anvil/core";
+import { isRepoUrl, type Issue } from "@anvil/core";
+import { ensureRepoCache } from "./repocache.js";
 
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -42,7 +43,7 @@ export async function ensureGitAvailable(): Promise<void> {
 
 export interface PreparedWorkdir { workDir: string; branch: string | null; resumed: boolean; }
 
-/** 有 repo_path 则建 git worktree（分支 task/<shortId>）；否则用普通目录。prior_work_dir 存在则复用以恢复会话。 */
+/** 有 repo_path 则建 git worktree（分支 task/<shortId>）；URL 引用先落到本地缓存再从缓存建 worktree；否则用普通目录。prior_work_dir 存在则复用以恢复会话。 */
 export async function prepareWorkdir(issue: Issue, taskId: string, runnerRoot: string, priorWorkDir: string | null): Promise<PreparedWorkdir> {
   await ensureGitAvailable();
   if (priorWorkDir && fs.existsSync(priorWorkDir)) {
@@ -57,6 +58,13 @@ export async function prepareWorkdir(issue: Issue, taskId: string, runnerRoot: s
     return { workDir: dir, branch: null, resumed: false };
   }
   const branch = `task/${short}`;
+  if (isRepoUrl(issue.repo_path)) {
+    const cacheDir = await ensureRepoCache(issue.repo_path, runnerRoot);
+    // clone 下来的默认分支（rev-parse 在缓存上是本地分支名）
+    const defaultBranch = await git(cacheDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    await git(cacheDir, ["worktree", "add", "-b", branch, dir, defaultBranch]);
+    return { workDir: dir, branch, resumed: false };
+  }
   await git(issue.repo_path, ["worktree", "add", "-b", branch, dir, "HEAD"]);
   return { workDir: dir, branch, resumed: false };
 }

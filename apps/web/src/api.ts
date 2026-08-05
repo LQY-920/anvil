@@ -15,7 +15,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return res.json() as Promise<T>;
 }
 
-export interface Bootstrap { workspace: { id: string; name: string; slug: string }; user: { id: string; name: string }; }
+export interface Bootstrap { workspace: { id: string; name: string; slug: string }; user: { id: string; name: string }; recent_repos: string[]; }
 export interface IssueDetail { issue: Issue; comments: Comment[]; }
 export interface TaskDetail { task: Task; issue: Issue; }
 
