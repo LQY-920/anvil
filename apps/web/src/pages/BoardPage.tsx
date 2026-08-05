@@ -76,7 +76,7 @@ export default function BoardPage() {
                             </span>
                           )}
                         </div>
-                        <TaskChip task={issue.latest_task} />
+                        <TaskChip task={issue.latest_task} issueStatus={issue.status} />
                         {issue.assignee_type === "agent" && (
                           <button
                             className="card-rerun"
@@ -119,8 +119,11 @@ function parseResult(resultJson: string | null): { branch?: string; diff_stat?: 
   try { return JSON.parse(resultJson); } catch { return null; }
 }
 
-function TaskChip({ task }: { task: LatestTaskSummary | null }) {
+function TaskChip({ task, issueStatus }: { task: LatestTaskSummary | null; issueStatus: IssueStatus }) {
   if (!task) return null;
+  // issue 已 done：不再提示“待验收”，统一显示已完成；已取消的 issue 不显示任务 chip
+  if (issueStatus === "done") return <span className="task-chip chip-done">✓ 已完成</span>;
+  if (issueStatus === "cancelled") return null;
   switch (task.status) {
     case "queued":
       return <span className="task-chip">⟳ 排队中</span>;

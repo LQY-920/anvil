@@ -76,6 +76,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
   const genRef = useRef(0);
+  const prevTaskId = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!taskId || inFlight.current) return;
@@ -106,8 +107,12 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
 
   useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
-  // 切换任务时清空状态，避免串任务；升 generation 使在途旧拉取失效，并清掉去抖定时器
+  // 切换任务时清空状态，避免串任务；升 generation 使在途旧拉取失效，并清掉去抖定时器。
+  // taskId 不变的重跑（StrictMode 双跑）直接跳过：否则第二次升 gen 会丢弃首次 reload 的结果，
+  // 而第二次 reload 又被 inFlight 挡掉，dev 下永远停在“加载中…”。
   useEffect(() => {
+    if (prevTaskId.current === taskId) return;
+    prevTaskId.current = taskId;
     genRef.current += 1;
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     setTask(null); setIssue(null); setMessages([]); setComments([]);
