@@ -64,7 +64,7 @@ describe("task lifecycle", () => {
     const past = new Date(Date.now() - 1000).toISOString();
     app.db.$client.prepare(`UPDATE tasks SET lease_expires_at = ? WHERE id = ?`).run(past, pkg.task.id);
     const { sweepExpiredLeases } = await import("../src/services/tasks.js");
-    expect(sweepExpiredLeases(app.db, new Date().toISOString())).toBe(1);
+    expect(sweepExpiredLeases(app.db, new Date().toISOString())).toEqual([pkg.task.id]);
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("queued");
     expect(got.json().task.attempt).toBe(2); // 重派计入 attempt，防无限重派
@@ -80,7 +80,7 @@ describe("task lifecycle", () => {
     const past = new Date(Date.now() - 1000).toISOString();
     app.db.$client.prepare(`UPDATE tasks SET lease_expires_at = ? WHERE id = ?`).run(past, pkg.task.id);
     const { sweepExpiredLeases } = await import("../src/services/tasks.js");
-    expect(sweepExpiredLeases(app.db, new Date().toISOString())).toBe(1);
+    expect(sweepExpiredLeases(app.db, new Date().toISOString())).toEqual([pkg.task.id]);
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("failed");
     expect(got.json().task.failure_reason).toBe("lease_expired");

@@ -129,28 +129,33 @@ export function completeTask(db: Db, taskId: string, result: { branch?: string; 
   return res.changes === 1;
 }
 
-/** 租约清扫：dispatched 且租约过期 → attempt+1 回 queued，token 作废；attempt 已满 → failed/lease_expired，不再重派（防无限重派）。 */
-export function sweepExpiredLeases(db: Db, nowIso: string): number {
+/** 租约清扫：dispatched 且租约过期 → attempt+1 回 queued，token 作废；attempt 已满 → failed/lease_expired，不再重派（防无限重派）。
+ *  返回实际处理的任务 id（供调用方广播）；涉及 agent 无其他活跃任务时置回 idle（daemon 死亡场景防卡 working）。 */
+export function sweepExpiredLeases(db: Db, nowIso: string): string[] {
   const expired = db.$client
-    .prepare(`SELECT id, attempt, max_attempts FROM tasks WHERE status='dispatched' AND lease_expires_at < ?`)
+    .prepare(`SELECT id, agent_id, attempt, max_attempts FROM tasks WHERE status='dispatched' AND lease_expires_at < ?`)
     .all(nowIso) as any[];
-  let handled = 0;
+  const swept: string[] = [];
+  const agentIds = new Set<string>();
   for (const t of expired) {
     if (t.attempt >= t.max_attempts) {
-      handled += db.$client
+      const changes = db.$client
         .prepare(`UPDATE tasks SET status='failed', failure_reason='lease_expired', error='lease expired, max attempts reached',
                   completed_at=?, runtime_id=NULL, task_token_hash=NULL, lease_expires_at=NULL, dispatched_at=NULL
                   WHERE id=? AND status='dispatched'`)
         .run(nowIso, t.id).changes;
+      if (changes === 1) { swept.push(t.id); agentIds.add(t.agent_id); }
     } else {
-      handled += db.$client
+      const changes = db.$client
         .prepare(`UPDATE tasks SET status='queued', attempt=attempt+1, runtime_id=NULL, task_token_hash=NULL,
                   lease_expires_at=NULL, dispatched_at=NULL
                   WHERE id=? AND status='dispatched'`)
         .run(t.id).changes;
+      if (changes === 1) { swept.push(t.id); agentIds.add(t.agent_id); }
     }
   }
-  return handled;
+  for (const agentId of agentIds) syncAgentIdle(db, agentId);
+  return swept;
 }
 
 /** 看板取消：置 cancelled + failure_reason=cancelled_by_user。保留 token 让 runner 轮询能读到终态。 */

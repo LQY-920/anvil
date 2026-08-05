@@ -84,4 +84,14 @@ describe("agent status reflects real work", () => {
     expect(res.statusCode).toBe(200);
     expect(await agentStatus()).toBe("idle");
   });
+
+  it("lease sweep sets agent back to idle when no other active tasks", async () => {
+    const [pkg] = await claim();
+    expect(await agentStatus()).toBe("working");
+    const past = new Date(Date.now() - 1000).toISOString();
+    app.db.$client.prepare(`UPDATE tasks SET lease_expires_at = ? WHERE id = ?`).run(past, pkg.task.id);
+    const { sweepExpiredLeases } = await import("../src/services/tasks.js");
+    expect(sweepExpiredLeases(app.db, new Date().toISOString())).toEqual([pkg.task.id]);
+    expect(await agentStatus()).toBe("idle");
+  });
 });

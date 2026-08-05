@@ -8,7 +8,7 @@
     "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   },
   "scripts": {
-    "dev": "concurrently -n server,web,runner -c blue,green,yellow \"pnpm dev:server\" \"pnpm dev:web\" \"pnpm dev:runner\"",
+    "dev": "node scripts/dev.mjs",
     "dev:server": "pnpm --filter @anvil/server dev",
     "dev:runner": "pnpm --filter @anvil/runner dev",
     "dev:web": "pnpm --filter @anvil/web dev",
