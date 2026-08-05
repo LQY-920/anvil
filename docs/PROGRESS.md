@@ -24,6 +24,11 @@
 - 实施：tokens.css + useTheme + 左侧导航骨架；看板（列短粗线/状态 chip/待验收淡染）；任务面板锻造台（深色常驻、类型徽章、tool 折叠）；Agents 页迁移；旧 styles.css 删除
 - 修复：StrictMode 下 panel 加载死锁、视口高度链断裂、done 卡片语义
 
+### ✅ 2026-08-05 第0波：目标契约 + 未交付追问（goal-contract 分支，已合并）
+- issue 新增验收标准字段（acceptance），任务 prompt 按目标契约组装（目标/完成标准/边界/停止规则）
+- 未交付信号：Agent 回调 issue-status 时写 tasks.delivered_at；任务完成未回调 → resume 追问（≤2 轮）→ 仍无交付则 complete 标 undelivered
+- 新增 GET /api/daemon/tasks/:id/delivery；84 测试全绿
+
 ### 🔄 进行中：无（等下一主题）
 
 ## Backlog（各轮审查接受的债务，按优先级）
