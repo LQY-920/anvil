@@ -1,0 +1,144 @@
+/* Agents 管理页：--page-canvas 上的 surface 卡片区块 + 徽章状态列 + 深色常驻 token 展示区。
+   全部引用 tokens.css 变量，禁止硬编码色值。 */
+
+.admin {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 960px;
+}
+
+/* 区块卡片：--surface + 1px --surface-border + --radius-md */
+.admin-section {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+}
+
+.admin-section-title {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.admin-section-desc {
+  margin: 4px 0 12px;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--faint-foreground);
+}
+
+/* 内联表单（输入框/按钮样式继承 base.css 的 token 化规则） */
+.admin-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.admin-form input {
+  flex: 0 1 240px;
+}
+
+/* 表格：表头 caption faint、行分割线 --surface-border、字号 label */
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+}
+
+.admin-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  font-weight: 500;
+  color: var(--faint-foreground);
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.admin-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* 状态徽章：语义色 12% alpha 底 + 实色文字 + 圆点（DESIGN.md 徽章公式，图标+文字双编码）；
+   默认（idle/offline 等）muted 灰 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  font-weight: 500;
+  white-space: nowrap;
+  background: color-mix(in oklch, var(--muted-foreground) 12%, transparent);
+  color: var(--muted-foreground);
+}
+
+.status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-pill[data-status="online"] {
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+  color: var(--success);
+}
+
+.status-pill[data-status="working"] {
+  background: color-mix(in oklch, var(--info) 12%, transparent);
+  color: var(--info);
+}
+
+.status-pill[data-status="blocked"] {
+  background: color-mix(in oklch, var(--attention) 12%, transparent);
+  color: var(--attention);
+}
+
+.status-pill[data-status="error"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+
+/* token 展示区：深色常驻小块（--forge-*），呼应锻造台；点击复制 */
+.token-reveal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: var(--forge-bg);
+  color: var(--forge-text);
+  border-radius: var(--radius-md);
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  cursor: pointer;
+  user-select: all;
+}
+
+.token-reveal code {
+  word-break: break-all;
+}
+
+.token-reveal-hint {
+  flex-shrink: 0;
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  color: var(--forge-text-dim);
+  user-select: none;
+}
