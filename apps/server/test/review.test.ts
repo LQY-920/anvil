@@ -169,4 +169,18 @@ describe("POST /api/tasks/:id/merge", () => {
     // merge 失败已 abort，仓库不留 MERGING 状态
     expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
   });
+
+  it("回归：带 content-type: application/json 但 body 为空的 POST 不返回 400", async () => {
+    const repo = makeRepo();
+    makeTaskBranch(repo);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/tasks/${taskId}/merge`,
+      headers: { "content-type": "application/json" }, // 模拟修复前 web 客户端的空 body 请求
+    });
+    expect(res.statusCode).toBe(200);
+  });
 });

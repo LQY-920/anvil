@@ -13,6 +13,13 @@ export interface BuildAppOptions { dbPath: string; logger?: boolean; }
 
 export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? true });
+  // 容忍"带 content-type: application/json 但 body 为空"的请求（默认解析器会 400），
+  // 无 body 的 POST（merge/cancel/rerun 等）应能到达路由
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    if (typeof body !== "string" || body.trim() === "") return done(null, undefined);
+    try { done(null, JSON.parse(body)); }
+    catch (e: any) { e.statusCode = 400; done(e); }
+  });
   const db = createDb(opts.dbPath);
   runMigrations(db);
   seed(db);

@@ -3,7 +3,8 @@ import type { Agent, Comment, CreateIssueRequest, Issue, IssueWithTask, MergeRes
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
-    headers: { "content-type": "application/json" },
+    // 注意：无 body 时不能带 content-type: application/json，否则 fastify 会因空 JSON body 返回 400
+    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
