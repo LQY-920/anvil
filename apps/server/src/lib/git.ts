@@ -6,7 +6,8 @@ import path from "node:path";
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
+      // git 的冲突/失败详情常打在 stdout（如 merge CONFLICT），stderr 为空时 err.message 只有 "Command failed"——把 stdout 也带上
+      if (err) return reject(new Error([stderr, stdout, err?.message].filter(Boolean).join("\n").trim()));
       resolve(stdout);
     });
   });

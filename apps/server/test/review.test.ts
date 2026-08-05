@@ -166,6 +166,7 @@ describe("POST /api/tasks/:id/merge", () => {
     const res = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBeTruthy();
+    expect(res.json().error).toContain("CONFLICT"); // git 冲突详情在 stdout，必须透出给用户
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
     expect(detail.json().issue.status).not.toBe("done");
     // merge 失败已 abort，仓库不留 MERGING 状态
