@@ -65,7 +65,7 @@ export default function BoardPage() {
                     const agent = agentOf(issue);
                     const selected = selectedTaskId !== null && issue.latest_task?.id === selectedTaskId;
                     return (
-                      <article key={issue.id} className={cardClass(issue.latest_task, selected)} onClick={() => openIssue(issue)}>
+                      <article key={issue.id} className={cardClass(issue.latest_task, selected, issue.status)} onClick={() => openIssue(issue)}>
                         <div className="card-title">{issue.title}</div>
                         <div className="card-meta">
                           <span className={`prio prio-${issue.priority}`}>{issue.priority}</span>
@@ -107,9 +107,10 @@ export default function BoardPage() {
   );
 }
 
-function cardClass(t: LatestTaskSummary | null, selected: boolean): string {
+function cardClass(t: LatestTaskSummary | null, selected: boolean, issueStatus: IssueStatus): string {
   let cls = "card";
-  if (t?.status === "completed" && parseResult(t.result_json)?.branch) cls += " card-attention";
+  // 染色即"看我"：只有未完成流程的交付物才用 attention 淡染
+  if (issueStatus !== "done" && issueStatus !== "cancelled" && t?.status === "completed" && parseResult(t.result_json)?.branch) cls += " card-attention";
   if (selected) cls += " is-selected";
   return cls;
 }
