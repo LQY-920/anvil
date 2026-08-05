@@ -11,19 +11,21 @@
 ```bash
 pnpm install
 
-# 1. 启动 server（127.0.0.1:3100，SQLite 文件 anvil.db）
-pnpm dev:server
+# 一条命令同时启动 server / web / runner
+pnpm dev
 
-# 2. 打开 web（127.0.0.1:5173），在 Agents 页：
-#    a. 创建一个 Agent（provider=kimi）
-#    b. 生成 daemon token 并复制
-pnpm dev:web
-
-# 3. 启动 runner（另一个终端）
+# runner 需要 daemon token（在 web 的 Agents 页生成并复制）：
 set ANVIL_DAEMON_TOKEN=anv_xxx   # Windows cmd；PowerShell 用 $env:ANVIL_DAEMON_TOKEN="anv_xxx"
-pnpm dev:runner
 
-# 4. 看板新建 issue → 指派给 Agent → 观察自动执行
+# 看板新建 issue → 指派给 Agent → 观察自动执行
+```
+
+也可以分终端启动（便于单独看日志）：
+
+```bash
+pnpm dev:server   # 127.0.0.1:3100，SQLite 文件 anvil.db
+pnpm dev:web      # 127.0.0.1:5173
+pnpm dev:runner   # 需先设置 ANVIL_DAEMON_TOKEN
 ```
 
 ## 测试

@@ -12,6 +12,8 @@ vi.mock("../src/api.js", () => ({
   ]),
   createAgent: vi.fn(),
   createDaemonToken: vi.fn(async () => ({ id: "t", token: "anv_secret" })),
+  listDaemonTokens: vi.fn(async () => []),
+  revokeDaemonToken: vi.fn(),
 }));
 
 describe("AgentsPage", () => {

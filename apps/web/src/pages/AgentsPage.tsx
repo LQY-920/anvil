@@ -1,23 +1,39 @@
 import { useEffect, useState } from "react";
 import type { Agent, Runtime } from "@anvil/core";
 import * as api from "../api.js";
+import type { DaemonTokenInfo } from "../api.js";
 import { AGENT_STATUS_LABELS, RUNTIME_STATUS_LABELS } from "../labels.js";
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
+  const [tokens, setTokens] = useState<DaemonTokenInfo[]>([]);
   const [name, setName] = useState("");
   const [newToken, setNewToken] = useState("");
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const reload = async () => {
-    const [a, r] = await Promise.all([api.listAgents(), api.listRuntimes()]);
+    const [a, r, t] = await Promise.all([api.listAgents(), api.listRuntimes(), api.listDaemonTokens()]);
     setAgents(a);
     setRuntimes(r);
+    setTokens(t);
   };
   useEffect(() => { reload().catch(console.error); }, []);
+
+  const revokeToken = async (t: DaemonTokenInfo) => {
+    if (revokingId) return;
+    if (!window.confirm(`确定吊销 token「${t.label}」？使用该 token 的 runner 将无法再连接。`)) return;
+    setRevokingId(t.id);
+    try {
+      await api.revokeDaemonToken(t.id);
+      await reload();
+    } finally {
+      setRevokingId(null);
+    }
+  };
 
   const copyToken = async () => {
     if (!newToken) return;
@@ -65,13 +81,34 @@ export default function AgentsPage() {
       <section className="admin-section">
         <h2 className="admin-section-title">Daemon Token</h2>
         <p className="admin-section-desc">runner 启动需要 token。明文只显示这一次，请复制后配置到 runner 的 ANVIL_DAEMON_TOKEN。</p>
-        <button className="primary" disabled={generating} onClick={async () => { if (generating) return; setGenerating(true); try { const t = await api.createDaemonToken("default"); setNewToken(t.token); setCopied(false); } finally { setGenerating(false); } }}>生成新 token</button>
+        <button className="primary" disabled={generating} onClick={async () => { if (generating) return; setGenerating(true); try { const t = await api.createDaemonToken("default"); setNewToken(t.token); setCopied(false); reload(); } finally { setGenerating(false); } }}>生成新 token</button>
         {newToken && (
           <pre className="token-reveal" onClick={copyToken} title="点击复制">
             <code>{newToken}</code>
             <span className="token-reveal-hint">{copied ? "已复制" : "点击复制"}</span>
           </pre>
         )}
+        <table className="admin-table token-table">
+          <thead><tr><th>label</th><th>创建时间</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            {tokens.map((t) => (
+              <tr key={t.id}>
+                <td>{t.label}</td>
+                <td>{new Date(t.created_at).toLocaleString()}</td>
+                <td>
+                  {t.revoked_at
+                    ? <span className="status-pill">已吊销</span>
+                    : <span className="status-pill" data-status="online">有效</span>}
+                </td>
+                <td>
+                  {!t.revoked_at && (
+                    <button className="danger btn-sm" disabled={revokingId === t.id} onClick={() => revokeToken(t)}>吊销</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </section>
     </div>
   );

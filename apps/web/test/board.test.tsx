@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import BoardPage from "../src/pages/BoardPage.js";
 
@@ -22,6 +22,8 @@ vi.mock("../src/api.js", () => ({
 
 vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
 
+afterEach(cleanup);
+
 describe("BoardPage", () => {
   it("renders issue in its status column with agent name", async () => {
     render(<MemoryRouter><BoardPage /></MemoryRouter>);
@@ -29,5 +31,12 @@ describe("BoardPage", () => {
     expect(screen.getByText("小K")).toBeTruthy();
     expect(screen.getByText("待办")).toBeTruthy();
     expect(screen.getByText("▶ 执行中")).toBeTruthy();
+  });
+
+  it("create modal has acceptance field", async () => {
+    render(<MemoryRouter><BoardPage /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
+    fireEvent.click(screen.getByText("+ 新建 issue"));
+    expect(screen.getByPlaceholderText(/验收标准/)).toBeTruthy();
   });
 });

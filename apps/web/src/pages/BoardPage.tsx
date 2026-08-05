@@ -156,6 +156,7 @@ function TaskChip({ task, issueStatus }: { task: LatestTaskSummary | null; issue
 function CreateIssueModal(props: { workspaceId: string; agents: Agent[]; onClose: () => void; onCreated: () => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [acceptance, setAcceptance] = useState("");
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState("");
   const [repoPath, setRepoPath] = useState("");
@@ -163,7 +164,7 @@ function CreateIssueModal(props: { workspaceId: string; agents: Agent[]; onClose
   const submit = async () => {
     if (!title.trim()) return;
     await api.createIssue({
-      title, description: description || undefined, priority,
+      title, description: description || undefined, acceptance: acceptance || undefined, priority,
       assignee_type: assigneeId ? "agent" : undefined,
       assignee_id: assigneeId || undefined,
       repo_path: repoPath || undefined,
@@ -177,6 +178,7 @@ function CreateIssueModal(props: { workspaceId: string; agents: Agent[]; onClose
         <h2>新建 issue</h2>
         <input placeholder="标题" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
         <textarea placeholder="描述（可选）" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} />
+        <textarea placeholder="验收标准（可选），例：pnpm test 全绿；页面无 console 报错" value={acceptance} onChange={(e) => setAcceptance(e.target.value)} rows={2} />
         <label>优先级
           <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
             {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}

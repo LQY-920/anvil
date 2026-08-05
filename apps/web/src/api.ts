@@ -40,3 +40,6 @@ export const createAgent = (body: { name: string; provider: string; max_concurre
   req<Agent>("POST", "/api/agents", body);
 export const listRuntimes = () => req<Runtime[]>("GET", "/api/runtimes");
 export const createDaemonToken = (label: string) => req<{ id: string; token: string }>("POST", "/api/daemon-tokens", { label });
+export interface DaemonTokenInfo { id: string; label: string; revoked_at: string | null; created_at: string; }
+export const listDaemonTokens = () => req<DaemonTokenInfo[]>("GET", "/api/daemon-tokens");
+export const revokeDaemonToken = (id: string) => req<{ ok: true }>("POST", `/api/daemon-tokens/${id}/revoke`);
