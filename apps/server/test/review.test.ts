@@ -5,6 +5,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { repoCachePath } from "@anvil/core";
 
 let app: FastifyInstance;
 let workspaceId: string;
@@ -182,5 +184,127 @@ describe("POST /api/tasks/:id/merge", () => {
       headers: { "content-type": "application/json" }, // 模拟修复前 web 客户端的空 body 请求
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+/** 本机 bare 仓库当"远程"：main + 一个初始提交，返回 file:// URL。 */
+function makeBareRemote(): { url: string; bareDir: string } {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-remote-"));
+  tmpDirs.push(base);
+  const seedDir = path.join(base, "seed");
+  const bareDir = path.join(base, "bare.git");
+  fs.mkdirSync(seedDir);
+  gitR(seedDir, ["init", "-b", "main"]);
+  gitR(seedDir, ["config", "user.email", "test@anvil.local"]);
+  gitR(seedDir, ["config", "user.name", "Anvil Test"]);
+  fs.writeFileSync(path.join(seedDir, "file.txt"), "line1\n");
+  gitR(seedDir, ["add", "."]);
+  gitR(seedDir, ["commit", "-m", "init"]);
+  gitR(base, ["init", "--bare", "-b", "main", bareDir]);
+  gitR(seedDir, ["push", bareDir, "main"]);
+  return { url: pathToFileURL(bareDir).href, bareDir };
+}
+
+/** 模拟 runner：clone URL 到缓存路径，建任务分支（file.txt 加 line2）并推到远程。返回缓存路径。 */
+function makeUrlTaskBranch(url: string, runnerRoot: string, branch: string): string {
+  const cache = repoCachePath(url, runnerRoot);
+  fs.mkdirSync(path.dirname(cache), { recursive: true });
+  gitR(path.dirname(cache), ["clone", url, cache]);
+  gitR(cache, ["config", "user.email", "test@anvil.local"]);
+  gitR(cache, ["config", "user.name", "Anvil Test"]);
+  gitR(cache, ["checkout", "-b", branch]);
+  fs.writeFileSync(path.join(cache, "file.txt"), "line1\nline2\n");
+  gitR(cache, ["add", "."]);
+  gitR(cache, ["commit", "-m", "task work"]);
+  gitR(cache, ["checkout", "main"]);
+  gitR(cache, ["push", "origin", branch]);
+  return cache;
+}
+
+/** 在 ANVIL_RUNNER_ROOT 指向 runnerRoot 的环境下跑 fn（server 与 runner 同机共享缓存的单机版假设）。 */
+async function withRunnerRoot<T>(runnerRoot: string, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.ANVIL_RUNNER_ROOT;
+  process.env.ANVIL_RUNNER_ROOT = runnerRoot;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.ANVIL_RUNNER_ROOT;
+    else process.env.ANVIL_RUNNER_ROOT = prev;
+  }
+}
+
+describe("URL 仓库（缓存路径解析）", () => {
+  it("diff：URL repo_path 解析到本地缓存", async () => {
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
+    tmpDirs.push(runnerRoot);
+    await withRunnerRoot(runnerRoot, async () => {
+      const { url } = makeBareRemote();
+      makeUrlTaskBranch(url, runnerRoot, "task/test123");
+      const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: url });
+      const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+
+      const res = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/diff` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().base).toBe("main");
+      expect(res.json().diff_text).toContain("+line2");
+    });
+  });
+
+  it("diff：缓存不存在 → 404 repo cache not found", async () => {
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
+    tmpDirs.push(runnerRoot);
+    await withRunnerRoot(runnerRoot, async () => {
+      const issue = await createIssue({
+        assignee_type: "agent", assignee_id: agentId,
+        repo_path: "https://github.com/user/never-cloned.git",
+      });
+      const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+      const res = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/diff` });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toBe("repo cache not found");
+    });
+  });
+
+  it("merge：合入后推送 main 到远程，并删除远程任务分支", async () => {
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
+    tmpDirs.push(runnerRoot);
+    await withRunnerRoot(runnerRoot, async () => {
+      const { url, bareDir } = makeBareRemote();
+      const cache = makeUrlTaskBranch(url, runnerRoot, "task/test123");
+      const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: url });
+      const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+
+      const res = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, merged_branch: "task/test123", target: "main" });
+      // 远程 main 包含任务改动
+      expect(gitR(bareDir, ["show", "main:file.txt"])).toContain("line2");
+      // 远程任务分支被删除
+      expect(gitR(bareDir, ["branch", "--list", "task/test123"])).toBe("");
+      // 缓存本地分支也被清理
+      expect(gitR(cache, ["branch", "--list", "task/test123"])).toBe("");
+      const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
+      expect(detail.json().issue.status).toBe("done");
+    });
+  });
+
+  it("merge：推送失败 → 409 且 issue 仍置 done（本地已合入）", async () => {
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
+    tmpDirs.push(runnerRoot);
+    await withRunnerRoot(runnerRoot, async () => {
+      const { url, bareDir } = makeBareRemote();
+      makeUrlTaskBranch(url, runnerRoot, "task/test123");
+      const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: url });
+      const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+      // 删掉远程让 push 失败
+      fs.rmSync(bareDir, { recursive: true, force: true });
+
+      const res = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toContain("已合入本地");
+      expect(res.json().error).toContain("推送");
+      const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
+      expect(detail.json().issue.status).toBe("done");
+    });
   });
 });

@@ -1,5 +1,8 @@
-/* 全局基础样式，全部引用 tokens.css 变量 */
+/* 全局基础样式，全部引用 tokens.css 变量。
+   置于 legacy 层（层级顺序在 globals.css 顶部声明），
+   使未迁移页面保持原样，同时不覆盖新组件的 Tailwind 工具类。 */
 
+@layer legacy {
 *,
 *::before,
 *::after {
@@ -127,4 +130,5 @@ textarea::placeholder {
 code,
 pre {
   font-family: var(--font-mono);
+}
 }

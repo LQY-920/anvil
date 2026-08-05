@@ -117,3 +117,25 @@ describe("issue CRUD + enqueue triggers", () => {
     expect(cleared.json().repo_path).toBeNull();
   });
 });
+
+describe("recent_repos", () => {
+  it("createIssue 带 repo_path → bootstrap 返回 recent_repos（最新在前、去重）", async () => {
+    await createIssue({ repo_path: "D:/a" });
+    await createIssue({ repo_path: "https://github.com/u/r.git" });
+    await createIssue({ repo_path: "D:/a" }); // 重复 → 去重置顶
+    const boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(boot.json().recent_repos).toEqual(["D:/a", "https://github.com/u/r.git"]);
+  });
+
+  it("无 repo_path 不记录；上限 8 条", async () => {
+    await createIssue();
+    let boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(boot.json().recent_repos).toEqual([]);
+    for (let i = 0; i < 10; i++) await createIssue({ repo_path: `D:/r${i}` });
+    boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const rr = boot.json().recent_repos;
+    expect(rr).toHaveLength(8);
+    expect(rr[0]).toBe("D:/r9");
+    expect(rr[7]).toBe("D:/r2");
+  });
+});

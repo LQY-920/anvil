@@ -7,6 +7,7 @@ vi.mock("../src/api.js", () => ({
   bootstrap: vi.fn(async () => ({
     workspace: { id: "ws1", name: "Default", slug: "default" },
     user: { id: "u1", name: "Owner" },
+    recent_repos: ["D:/projects/foo", "https://github.com/u/r.git"],
   })),
   listIssues: vi.fn(async () => [
     { id: "i1", workspace_id: "ws1", title: "修 bug", status: "todo", priority: "high", assignee_type: "agent", assignee_id: "a1", creator_type: "member", creator_id: "u1", repo_path: null, position: 1, created_at: "x", updated_at: "x", description: null,
@@ -30,13 +31,23 @@ describe("BoardPage", () => {
     await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
     expect(screen.getByText("小K")).toBeTruthy();
     expect(screen.getByText("待办")).toBeTruthy();
-    expect(screen.getByText("▶ 执行中")).toBeTruthy();
+    expect(screen.getByText("执行中")).toBeTruthy();
   });
 
   it("create modal has acceptance field", async () => {
     render(<MemoryRouter><BoardPage /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
-    fireEvent.click(screen.getByText("+ 新建 issue"));
+    fireEvent.click(screen.getByText("新建 Issue"));
     expect(screen.getByPlaceholderText(/验收标准/)).toBeTruthy();
+  });
+
+  it("create modal shows recent repo chips; clicking one fills the repo_path input", async () => {
+    render(<MemoryRouter><BoardPage /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
+    fireEvent.click(screen.getByText("新建 Issue"));
+    const chip = await screen.findByRole("button", { name: "https://github.com/u/r.git" });
+    expect(screen.getByRole("button", { name: "D:/projects/foo" })).toBeTruthy();
+    fireEvent.click(chip);
+    expect((screen.getByPlaceholderText(/目标仓库/) as HTMLInputElement).value).toBe("https://github.com/u/r.git");
   });
 });

@@ -1,7 +1,8 @@
 import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
+import { isRepoUrl } from "@anvil/core";
 import type { ApiClient } from "./client.js";
 import type { AgentBackend, AgentResult } from "./agents/backend.js";
-import { prepareWorkdir, gitDiffStat } from "./worktree.js";
+import { prepareWorkdir, gitDiffStat, git } from "./worktree.js";
 import { MessageUploader } from "./uploader.js";
 
 export interface ExecutorDeps {
@@ -143,10 +144,22 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         }
         if (!delivered) console.error(`[anvil-executor] task ${task.id} completed undelivered after ${followups} follow-up(s)`);
         const diffStat = prepared.branch ? await gitDiffStat(workDir) : "";
+        // URL 仓库：把任务分支推回远程，server 验收合并时用。推送失败不阻断 complete（分支仍在本地缓存）。
+        let pushed: boolean | undefined;
+        if (prepared.branch && issue.repo_path && isRepoUrl(issue.repo_path)) {
+          try {
+            await git(workDir, ["push", "-u", "origin", prepared.branch]);
+            pushed = true;
+          } catch (e: any) {
+            console.error(`[anvil-executor] push ${prepared.branch} failed, continuing with complete:`, e?.message ?? e);
+            pushed = false;
+          }
+        }
         await client.complete(task.id, task_token, {
           branch: prepared.branch ?? undefined,
           diff_stat: diffStat || undefined,
           work_dir: workDir,
+          ...(pushed === undefined ? {} : { pushed }),
           ...(delivered ? {} : { undelivered: true }),
         });
       } else if (result.status === "cancelled") {
