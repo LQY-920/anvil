@@ -1,0 +1,130 @@
+/* 全局基础样式，全部引用 tokens.css 变量 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--page-canvas);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 6px 细滚动条，颜色跟随 color-scheme */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-border);
+  border-radius: 3px;
+}
+
+/* focus ring（DESIGN.md 公式） */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 主题切换时临时禁用一切过渡，防闪烁（useTheme 双 rAF 后移除） */
+.no-transitions,
+.no-transitions *,
+.no-transitions *::before,
+.no-transitions *::after {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--brand-hover);
+}
+
+button {
+  font-family: inherit;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+button:hover {
+  background: var(--surface-hover);
+}
+
+button.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-foreground);
+}
+
+button.primary:hover {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint-foreground);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}

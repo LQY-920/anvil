@@ -1,0 +1,463 @@
+/* 任务面板「锻造台」：浅色办公区里常驻的深炭工作台（DESIGN.md 最终方向）
+   面板内把通用语义变量别名到 --forge-*（= 深色主题值），
+   base.css 的全局 button / textarea / focus 规则随之自动适配深底。 */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--forge-bg);
+  color: var(--forge-text);
+  scrollbar-color: color-mix(in oklch, var(--forge-text) 25%, transparent) transparent;
+
+  --foreground: var(--forge-text);
+  --muted-foreground: var(--forge-text-dim);
+  --faint-foreground: var(--forge-text-dim);
+  --surface: var(--forge-surface);
+  --surface-border: var(--forge-border);
+  --surface-hover: color-mix(in oklch, var(--forge-text) 10%, transparent);
+  --brand: var(--forge-brand);
+  --brand-hover: var(--forge-brand-hover);
+  --brand-foreground: var(--forge-brand-fg);
+  --info: var(--forge-info);
+  --review: var(--forge-review);
+  --success: var(--forge-success);
+  --attention: var(--forge-attention);
+  --destructive: var(--forge-destructive);
+  --diff-add-line-bg: var(--forge-diff-add-line-bg);
+  --diff-del-line-bg: var(--forge-diff-del-line-bg);
+  --diff-hunk-bg: var(--forge-diff-hunk-bg);
+}
+
+.panel ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--forge-text) 25%, transparent);
+}
+
+.panel :focus-visible {
+  box-shadow: 0 0 0 2px var(--forge-bg),
+    0 0 0 4px color-mix(in oklch, var(--forge-brand) 45%, transparent);
+}
+
+/* 两种挂载方式的高度约束：看板分栏（.split，宽度见 board.css）与路由全宽 */
+.split .panel {
+  overflow: hidden; /* 滚动交给 .panel-body，头部固定 */
+}
+
+.page-main > .panel {
+  height: 100%;
+}
+
+.panel-loading {
+  padding: 20px 16px;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--forge-text-dim);
+}
+
+/* ---- 头部：issue 标题 + 状态徽章 + 取消 / 关闭 ---- */
+
+.panel-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--forge-border);
+}
+
+.panel-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-title-sm);
+  line-height: var(--leading-title-sm);
+  font-weight: 600;
+  color: var(--forge-text);
+}
+
+/* 状态徽章：12% alpha 底 + 实色字 + 图标（pill 只给状态徽章） */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  font-weight: 500;
+  white-space: nowrap;
+  background: color-mix(in oklch, var(--forge-text-dim) 14%, transparent);
+  color: var(--forge-text-dim);
+}
+
+.status-badge[data-status="running"],
+.status-badge[data-status="dispatched"] {
+  background: color-mix(in oklch, var(--forge-info) 14%, transparent);
+  color: var(--forge-info);
+}
+
+.status-badge[data-status="completed"] {
+  background: color-mix(in oklch, var(--forge-success) 14%, transparent);
+  color: var(--forge-success);
+}
+
+.status-badge[data-status="failed"] {
+  background: color-mix(in oklch, var(--forge-destructive) 14%, transparent);
+  color: var(--forge-destructive);
+}
+
+/* 关闭 ✕：幽灵图标按钮 */
+.icon-btn {
+  padding: 3px 7px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--forge-text-dim);
+}
+
+.icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--forge-text);
+}
+
+/* destructive 描边（取消任务 / 打回重跑） */
+.btn-destructive {
+  background: transparent;
+  border-color: color-mix(in oklch, var(--forge-destructive) 45%, transparent);
+  color: var(--forge-destructive);
+}
+
+.btn-destructive:hover {
+  background: color-mix(in oklch, var(--forge-destructive) 12%, transparent);
+}
+
+/* ---- 面板体：独立滚动 ---- */
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 16px 16px;
+}
+
+.error-banner {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in oklch, var(--forge-destructive) 30%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--forge-destructive) 14%, transparent);
+  color: var(--forge-destructive);
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  white-space: pre-wrap;
+}
+
+/* 小节标题：琥珀 + 大写 + 2px 短粗线 */
+.forge-section {
+  margin-top: 16px;
+}
+
+.forge-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--forge-title);
+}
+
+.forge-h::after {
+  content: "";
+  width: 16px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--forge-title);
+}
+
+/* ---- 交付区 ---- */
+
+.delivery {
+  background: var(--forge-surface);
+  border: 1px solid var(--forge-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+/* 分支行：等宽 micro，base（main）用琥珀 */
+.branch-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+}
+
+.branch-line code {
+  padding: 2px 8px;
+  background: var(--forge-bg);
+  border: 1px solid var(--forge-border);
+  border-radius: var(--radius-sm);
+  color: var(--forge-text);
+}
+
+.branch-line .branch-base {
+  color: var(--forge-title);
+}
+
+.branch-arrow {
+  color: var(--forge-text-dim);
+}
+
+/* diff stat：+ 绿 / - 红（board.css 已有基础排版，这里覆盖面板内配色） */
+.panel .diff-stat {
+  margin-top: 8px;
+  color: var(--forge-text-dim);
+}
+
+.stat-add {
+  color: var(--forge-success);
+}
+
+.stat-del {
+  color: var(--forge-destructive);
+}
+
+.delivery > button {
+  margin-top: 8px;
+}
+
+/* diff 视图：深色 diff 行底 + 行首 gutter +/- 常显（双编码） */
+.diff-view {
+  margin: 10px 0 0;
+  padding: 6px 0;
+  background: var(--forge-bg);
+  border: 1px solid var(--forge-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  max-height: 400px;
+  overflow: auto;
+}
+
+.diff-line {
+  display: flex;
+  min-width: max-content;
+}
+
+.diff-g {
+  flex: none;
+  width: 22px;
+  text-align: center;
+  user-select: none;
+  color: var(--forge-text-dim);
+}
+
+.diff-c {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--forge-text);
+}
+
+.diff-line[data-kind="add"] { background: var(--diff-add-line-bg); }
+.diff-line[data-kind="add"] .diff-g { color: var(--forge-success); }
+.diff-line[data-kind="del"] { background: var(--diff-del-line-bg); }
+.diff-line[data-kind="del"] .diff-g { color: var(--forge-destructive); }
+.diff-line[data-kind="hunk"] { background: var(--diff-hunk-bg); }
+.diff-line[data-kind="hunk"] .diff-c { color: var(--forge-info); }
+
+.merge-ok {
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--forge-success);
+}
+
+.merge-error {
+  margin-top: 8px;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--forge-destructive);
+  white-space: pre-wrap;
+}
+
+.forge-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.comment-form textarea {
+  resize: vertical;
+}
+
+/* ---- 执行日志：等宽 micro，时间戳 + 类型徽章 + 内容 ---- */
+
+.log {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 64px auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.log-time {
+  color: var(--forge-text-dim);
+}
+
+/* 类型徽章（DESIGN.md 组件约定配色；默认灰，text/agent=绿） */
+.log-badge {
+  justify-self: start;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: color-mix(in oklch, var(--forge-text-dim) 14%, transparent);
+  color: var(--forge-text-dim);
+}
+
+.log-badge[data-type="text"] {
+  background: color-mix(in oklch, var(--forge-success) 14%, transparent);
+  color: var(--forge-success);
+}
+
+.log-badge[data-type="thinking"] {
+  background: color-mix(in oklch, var(--forge-review) 14%, transparent);
+  color: var(--forge-review);
+}
+
+.log-badge[data-type="tool_use"] {
+  background: color-mix(in oklch, var(--forge-info) 14%, transparent);
+  color: var(--forge-info);
+}
+
+.log-badge[data-type="error"] {
+  background: color-mix(in oklch, var(--forge-destructive) 14%, transparent);
+  color: var(--forge-destructive);
+}
+
+.log-body {
+  min-width: 0;
+}
+
+.log-content {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--forge-text);
+}
+
+/* 长输出：截断 200px +「展开全部」 */
+.log-content.is-clipped {
+  max-height: 200px;
+  overflow: hidden;
+}
+
+.log-expand {
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  color: var(--forge-text-dim);
+}
+
+.log-expand:hover {
+  background: transparent;
+  color: var(--forge-title);
+}
+
+/* tool_result：默认折叠成一行摘要 */
+.log-detail summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--forge-text-dim);
+}
+
+.log-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-detail summary::before {
+  content: "▸ ";
+  color: var(--forge-text-dim);
+}
+
+.log-detail[open] summary::before {
+  content: "▾ ";
+}
+
+.log-detail summary:hover {
+  color: var(--forge-title);
+}
+
+/* ---- 评论区 ---- */
+
+.comment {
+  background: var(--forge-surface);
+  border: 1px solid var(--forge-border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.comment-meta {
+  margin-bottom: 2px;
+}
+
+/* author 徽章：member=ember / agent=info / system=灰 */
+.comment-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  background: color-mix(in oklch, var(--forge-text-dim) 14%, transparent);
+  color: var(--forge-text-dim);
+}
+
+.comment-author[data-author="member"] {
+  background: color-mix(in oklch, var(--forge-brand) 14%, transparent);
+  color: var(--forge-brand);
+}
+
+.comment-author[data-author="agent"] {
+  background: color-mix(in oklch, var(--forge-info) 14%, transparent);
+  color: var(--forge-info);
+}
+
+.comment p {
+  margin: 2px 0 0;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--forge-text);
+  white-space: pre-wrap;
+}

@@ -1,0 +1,144 @@
+/* Anvil Design Tokens — 唯一色值来源（DESIGN.md）。界面代码只允许引用变量，禁止硬编码色值。 */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --app-shell: oklch(0.955 0.006 70);
+  --page-canvas: oklch(0.975 0.010 75); /* 方向 C：暖纸画布，比中性值更暖一档 */
+  --surface: oklch(0.995 0.002 70);
+  --surface-raised: oklch(1 0 0); /* 纯白仅此处 */
+  --surface-hover: oklch(0.955 0.008 60);
+  --surface-border: oklch(0.905 0.006 60);
+
+  /* Text */
+  --foreground: oklch(0.20 0.008 60);
+  --foreground-secondary: oklch(0.38 0.01 60);
+  --muted-foreground: oklch(0.47 0.012 60);
+  --faint-foreground: oklch(0.58 0.01 60); /* 仅图标/装饰/禁用，禁用于正文 */
+
+  /* Brand & Semantic */
+  --brand: oklch(0.47 0.10 45); /* forge ember */
+  --brand-hover: oklch(0.42 0.10 45);
+  --brand-foreground: oklch(0.99 0.003 70);
+  --info: oklch(0.50 0.11 255);
+  --review: oklch(0.48 0.12 295);
+  --success: oklch(0.52 0.11 150);
+  --attention: oklch(0.55 0.12 80);
+  --destructive: oklch(0.50 0.16 25);
+  --muted: oklch(0.93 0.006 60);
+
+  /* 看板列底色（语义色 alpha，Multica 方案） */
+  --col-neutral-bg: color-mix(in oklch, var(--muted) 40%, transparent);
+  --col-in-progress-bg: color-mix(in oklch, var(--info) 5%, transparent);
+  --col-in-review-bg: color-mix(in oklch, var(--review) 5%, transparent);
+  --col-done-bg: color-mix(in oklch, var(--success) 5%, transparent);
+  --col-blocked-bg: color-mix(in oklch, var(--destructive) 5%, transparent);
+  /* "📦 待验收"卡片：染色即"看我" */
+  --card-attention-bg: color-mix(in oklch, var(--attention) 8%, transparent);
+  --card-attention-border: color-mix(in oklch, var(--attention) 30%, transparent);
+
+  /* Diff 配色（GitHub Primer 三层强调法） */
+  --diff-add-line-bg: #dafbe1;
+  --diff-add-word-bg: #aceebb;
+  --diff-del-line-bg: #ffebe9;
+  --diff-del-word-bg: #ffcecb;
+  --diff-hunk-bg: #ddf4ff;
+
+  /* 锻造台（两主题相同的深炭工作台） */
+  --forge-bg: oklch(0.19 0.007 60);
+  --forge-surface: oklch(0.24 0.008 60);
+  --forge-border: oklch(1 0 0 / 9%);
+  --forge-text: oklch(0.92 0.005 60);
+  --forge-text-dim: oklch(0.65 0.008 60);
+  --forge-title: oklch(0.75 0.12 70);
+  --console-bg: var(--forge-bg); /* 等宽区深色常驻 */
+
+  /* 锻造台内语义色与 diff 色（面板深色常驻，两主题均取深色主题值以保证对比） */
+  --forge-brand: oklch(0.72 0.11 55);
+  --forge-brand-hover: oklch(0.77 0.11 55);
+  --forge-brand-fg: oklch(0.20 0.01 60);
+  --forge-info: oklch(0.72 0.10 255);
+  --forge-review: oklch(0.72 0.11 295);
+  --forge-success: oklch(0.72 0.11 150);
+  --forge-attention: oklch(0.75 0.12 80);
+  --forge-destructive: oklch(0.68 0.15 25);
+  --forge-diff-add-line-bg: oklch(0.60 0.12 150 / 15%);
+  --forge-diff-del-line-bg: oklch(0.62 0.15 25 / 15%);
+  --forge-diff-hunk-bg: oklch(0.65 0.10 240 / 15%);
+
+  /* Typography */
+  --font-sans: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  --text-micro: 11px;
+  --leading-micro: 15px;
+  --text-caption: 12px;
+  --leading-caption: 16px;
+  --text-label: 13px;
+  --leading-label: 18px;
+  --text-body: 14px;
+  --leading-body: 20px;
+  --text-title-sm: 16px;
+  --leading-title-sm: 24px;
+  --text-title: 18px;
+  --leading-title: 26px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px; /* 只给状态徽章 */
+
+  /* Shadow（只给浮层） */
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 8%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 12%);
+
+  /* Motion（只用于状态变化，禁回弹） */
+  --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --dur-fast: 120ms;
+  --dur-med: 180ms;
+
+  /* focus ring（DESIGN.md 组件约定公式） */
+  --focus-ring: 0 0 0 2px var(--page-canvas),
+    0 0 0 4px color-mix(in oklch, var(--brand) 40%, transparent);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces —— 深色不是反色，是偏暖深炭，表面逐级提亮 */
+  --app-shell: oklch(0.165 0.006 60);
+  --page-canvas: oklch(0.185 0.006 60);
+  --surface: oklch(0.215 0.007 60);
+  --surface-raised: oklch(0.245 0.008 60);
+  --surface-hover: oklch(0.26 0.008 60);
+  --surface-border: oklch(1 0 0 / 7%);
+
+  /* Text */
+  --foreground: oklch(0.97 0.003 60);
+  --foreground-secondary: oklch(0.82 0.006 60);
+  --muted-foreground: oklch(0.70 0.008 60);
+  --faint-foreground: oklch(0.60 0.008 60);
+
+  /* Brand & Semantic */
+  --brand: oklch(0.72 0.11 55);
+  --brand-hover: oklch(0.77 0.11 55);
+  --brand-foreground: oklch(0.20 0.01 60);
+  --info: oklch(0.72 0.10 255);
+  --review: oklch(0.72 0.11 295);
+  --success: oklch(0.72 0.11 150);
+  --attention: oklch(0.75 0.12 80);
+  --destructive: oklch(0.68 0.15 25);
+  --muted: oklch(0.28 0.008 60);
+
+  /* Diff */
+  --diff-add-line-bg: oklch(0.60 0.12 150 / 15%);
+  --diff-add-word-bg: oklch(0.60 0.12 150 / 35%);
+  --diff-del-line-bg: oklch(0.62 0.15 25 / 15%);
+  --diff-del-word-bg: oklch(0.62 0.15 25 / 35%);
+  --diff-hunk-bg: oklch(0.65 0.10 240 / 15%);
+
+  /* Shadow（深色版 alpha 加倍） */
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 16%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 24%);
+}
