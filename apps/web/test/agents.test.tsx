@@ -19,6 +19,6 @@ describe("AgentsPage", () => {
     render(<MemoryRouter><AgentsPage /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("小K")).toBeTruthy());
     expect(screen.getByText("daemon-abc")).toBeTruthy();
-    expect(screen.getByText("online")).toBeTruthy();
+    expect(screen.getByText("在线")).toBeTruthy();
   });
 });

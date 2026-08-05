@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Agent, Runtime } from "@anvil/core";
 import * as api from "../api.js";
+import { AGENT_STATUS_LABELS, RUNTIME_STATUS_LABELS } from "../labels.js";
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -44,7 +45,7 @@ export default function AgentsPage() {
           <thead><tr><th>名字</th><th>provider</th><th>状态</th><th>并发上限</th></tr></thead>
           <tbody>
             {agents.map((a) => (
-              <tr key={a.id}><td>{a.name}</td><td>{a.provider}</td><td><span className="status-pill" data-status={a.status}>{a.status}</span></td><td>{a.max_concurrent_tasks}</td></tr>
+              <tr key={a.id}><td>{a.name}</td><td>{a.provider}</td><td><span className="status-pill" data-status={a.status}>{AGENT_STATUS_LABELS[a.status] ?? a.status}</span></td><td>{a.max_concurrent_tasks}</td></tr>
             ))}
           </tbody>
         </table>
@@ -56,7 +57,7 @@ export default function AgentsPage() {
           <thead><tr><th>daemon</th><th>provider</th><th>版本</th><th>状态</th><th>最后心跳</th></tr></thead>
           <tbody>
             {runtimes.map((r) => (
-              <tr key={r.id}><td>{r.daemon_id}</td><td>{r.provider}</td><td>{r.version}</td><td><span className="status-pill" data-status={r.status}>{r.status}</span></td><td>{r.last_seen_at}</td></tr>
+              <tr key={r.id}><td>{r.daemon_id}</td><td>{r.provider}</td><td>{r.version}</td><td><span className="status-pill" data-status={r.status}>{RUNTIME_STATUS_LABELS[r.status] ?? r.status}</span></td><td>{r.last_seen_at}</td></tr>
             ))}
           </tbody>
         </table>

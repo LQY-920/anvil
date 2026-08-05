@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Comment, Issue, Task, TaskDiffResponse } from "@anvil/core";
 import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
+import { TASK_STATUS_LABELS } from "../labels.js";
 
 interface Msg { seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null; created_at?: string | null; }
 
@@ -168,7 +169,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     <div className="panel">
       <header className="panel-header">
         <h1 className="panel-title">{issue.title}</h1>
-        <span className="status-badge" data-status={task.status}>{STATUS_ICONS[task.status] ?? "•"} {task.status}</span>
+        <span className="status-badge" data-status={task.status}>{STATUS_ICONS[task.status] ?? "•"} {TASK_STATUS_LABELS[task.status] ?? task.status}</span>
         {active && <button className="btn-destructive" onClick={async () => { await api.cancelTask(task.id); reload(); }}>取消任务</button>}
         {props.onClose && <button className="icon-btn" aria-label="关闭" onClick={props.onClose}>✕</button>}
       </header>

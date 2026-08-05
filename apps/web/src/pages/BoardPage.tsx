@@ -3,6 +3,7 @@ import { ISSUE_STATUSES, PRIORITIES, type Agent, type IssueStatus, type IssueWit
 import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
 import TaskPanel from "../components/TaskPanel.js";
+import { ISSUE_STATUS_LABELS } from "../labels.js";
 
 export default function BoardPage() {
   const [workspaceId, setWorkspaceId] = useState("");
@@ -56,7 +57,7 @@ export default function BoardPage() {
             return (
               <section key={col} className="column" data-status={col}>
                 <header className="column-title">
-                  <span className="column-name">{col}</span>
+                  <span className="column-name">{ISSUE_STATUS_LABELS[col]}</span>
                   <span className="column-count">{colIssues.length}</span>
                 </header>
                 <div className="column-cards">

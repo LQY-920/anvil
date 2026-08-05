@@ -27,7 +27,7 @@ describe("BoardPage", () => {
     render(<MemoryRouter><BoardPage /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
     expect(screen.getByText("小K")).toBeTruthy();
-    expect(screen.getByText("todo")).toBeTruthy();
+    expect(screen.getByText("待办")).toBeTruthy();
     expect(screen.getByText("▶ 执行中")).toBeTruthy();
   });
 });
