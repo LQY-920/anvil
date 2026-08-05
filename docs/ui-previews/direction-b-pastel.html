@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Anvil · 看板 — 方向 B「Pastel 列」预览</title>
+<!--
+  Anvil · 看板原型 — 方向 B「Pastel 列」（Multica 截图风）
+  · 列底 = 语义色 5% alpha（in_progress 蓝 / in_review 紫 / done 绿 / blocked 红），其余列 --muted 40% alpha
+  · 列标题图标 = 对应语义色实色；卡片保持白底（--surface）
+  · 全部颜色 / 字阶 / 圆角引用 DESIGN.md token；:root = 浅色，[data-theme="dark"] = 深色
+-->
+<style>
+/* ============ Tokens（DESIGN.md） ============ */
+:root {
+  color-scheme: light;
+  /* Surfaces */
+  --app-shell: oklch(0.955 0.006 70);
+  --page-canvas: oklch(0.982 0.004 70);
+  --surface: oklch(0.995 0.002 70);
+  --surface-raised: oklch(1 0 0);
+  --surface-hover: oklch(0.955 0.008 60);
+  --surface-border: oklch(0.905 0.006 60);
+  /* Text */
+  --foreground: oklch(0.20 0.008 60);
+  --foreground-secondary: oklch(0.38 0.01 60);
+  --muted-foreground: oklch(0.47 0.012 60);
+  --faint-foreground: oklch(0.58 0.01 60);
+  /* Brand & Semantic */
+  --brand: oklch(0.47 0.10 45);
+  --brand-hover: oklch(0.42 0.10 45);
+  --brand-foreground: oklch(0.99 0.003 70);
+  --info: oklch(0.50 0.11 255);
+  --review: oklch(0.48 0.12 295);
+  --success: oklch(0.52 0.11 150);
+  --attention: oklch(0.55 0.12 80);
+  --destructive: oklch(0.50 0.16 25);
+  --muted: oklch(0.93 0.006 60);
+  /* Diff */
+  --diff-add-line-bg: #dafbe1;
+  --diff-add-word-bg: #aceebb;
+  --diff-del-line-bg: #ffebe9;
+  --diff-del-word-bg: #ffcecb;
+  --diff-hunk-bg: #ddf4ff;
+  /* Console（等宽区深色常驻） */
+  --console-bg: oklch(0.235 0.008 60);
+  --console-fg: oklch(0.88 0.005 60);
+  --console-muted: oklch(0.65 0.008 60);
+  --console-ok: oklch(0.72 0.11 150);
+  --console-err: oklch(0.68 0.15 25);
+  /* Type */
+  --font-sans: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  --text-micro: 11px/15px;
+  --text-caption: 12px/16px;
+  --text-label: 13px/18px;
+  --text-body: 14px/20px;
+  --text-title-sm: 16px/24px;
+  --text-title: 18px/26px;
+  /* Radius / Shadow / Motion */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 8%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 12%);
+  --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --dur: 160ms;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --app-shell: oklch(0.165 0.006 60);
+  --page-canvas: oklch(0.185 0.006 60);
+  --surface: oklch(0.215 0.007 60);
+  --surface-raised: oklch(0.245 0.008 60);
+  --surface-hover: oklch(0.26 0.008 60);
+  --surface-border: oklch(1 0 0 / 7%);
+  --foreground: oklch(0.97 0.003 60);
+  --foreground-secondary: oklch(0.82 0.006 60);
+  --muted-foreground: oklch(0.70 0.008 60);
+  --faint-foreground: oklch(0.60 0.008 60);
+  --brand: oklch(0.72 0.11 55);
+  --brand-hover: oklch(0.77 0.11 55);
+  --brand-foreground: oklch(0.20 0.01 60);
+  --info: oklch(0.72 0.10 255);
+  --review: oklch(0.72 0.11 295);
+  --success: oklch(0.72 0.11 150);
+  --attention: oklch(0.75 0.12 80);
+  --destructive: oklch(0.68 0.15 25);
+  --muted: oklch(0.28 0.008 60);
+  --diff-add-line-bg: oklch(0.60 0.12 150 / 15%);
+  --diff-add-word-bg: oklch(0.60 0.12 150 / 35%);
+  --diff-del-line-bg: oklch(0.62 0.15 25 / 15%);
+  --diff-del-word-bg: oklch(0.62 0.15 25 / 35%);
+  --diff-hunk-bg: oklch(0.65 0.10 240 / 15%);
+  --console-bg: oklch(0.15 0.006 60);
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 16%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 24%);
+}
+
+/* ============ Base ============ */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: var(--text-body) var(--font-sans);
+  color: var(--foreground);
+  background: var(--app-shell);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.grow { flex: 1; }
+button { font-family: inherit; cursor: pointer; }
+a { text-decoration: none; color: inherit; }
+
+/* focus ring（DESIGN.md 统一规格） */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--page-canvas), 0 0 0 4px color-mix(in oklch, var(--brand) 40%, transparent);
+}
+
+/* 6px 细滚动条 */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--muted-foreground) 30%, transparent); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--muted-foreground) 45%, transparent); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 主题切换防闪烁 */
+.no-transitions, .no-transitions *, .no-transitions *::before, .no-transitions *::after {
+  transition: none !important; animation: none !important;
+}
+
+@keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.pulse { display: inline-block; animation: pulse-soft 1.6s var(--ease) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ============ Buttons / Inputs / Badges ============ */
+.btn {
+  font: var(--text-label) var(--font-sans); font-weight: 500;
+  border-radius: var(--radius-sm); border: 1px solid transparent;
+  padding: 6px 12px; white-space: nowrap;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.btn-primary { background: var(--brand); color: var(--brand-foreground); }
+.btn-primary:hover { background: var(--brand-hover); }
+.btn-ghost { background: transparent; color: var(--foreground-secondary); border-color: var(--surface-border); }
+.btn-ghost:hover { background: var(--surface-hover); color: var(--foreground); }
+
+.icon-btn {
+  width: 28px; height: 28px; display: grid; place-items: center;
+  border: none; background: transparent; color: var(--muted-foreground);
+  border-radius: var(--radius-sm); font-size: 13px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.icon-btn:hover { background: var(--surface-hover); color: var(--foreground); }
+
+.input {
+  font: var(--text-label) var(--font-sans);
+  background: var(--surface); color: var(--foreground);
+  border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+  padding: 6px 10px; width: 100%;
+  transition: border-color var(--dur) var(--ease);
+}
+.input::placeholder { color: var(--faint-foreground); }
+.input:hover { border-color: color-mix(in oklch, var(--muted-foreground) 40%, var(--surface-border)); }
+
+/* 状态徽章：pill + 图标 + 文字双编码，底 = 语义色 12% alpha */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: var(--text-micro) var(--font-sans); font-weight: 600;
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+}
+.badge.info    { background: color-mix(in oklch, var(--info) 12%, transparent);        color: var(--info); }
+.badge.success { background: color-mix(in oklch, var(--success) 12%, transparent);     color: var(--success); }
+.badge.review  { background: color-mix(in oklch, var(--review) 12%, transparent);      color: var(--review); }
+.badge.danger  { background: color-mix(in oklch, var(--destructive) 12%, transparent); color: var(--destructive); }
+.badge.muted   { background: color-mix(in oklch, var(--muted-foreground) 10%, transparent); color: var(--muted-foreground); }
+
+/* 优先级 chip（非状态徽章，用 radius-sm） */
+.chip {
+  font: var(--text-micro) var(--font-sans); font-weight: 600;
+  padding: 1px 6px; border-radius: var(--radius-sm);
+}
+.chip.p0 { background: color-mix(in oklch, var(--destructive) 12%, transparent); color: var(--destructive); }
+.chip.p1 { background: color-mix(in oklch, var(--attention) 14%, transparent);   color: var(--attention); }
+.chip.p2 { background: color-mix(in oklch, var(--muted-foreground) 10%, transparent); color: var(--muted-foreground); }
+
+/* Agent 身份：圆形头像 + 锤子图标 + presence 圆点 */
+.agent-tag { display: inline-flex; align-items: center; gap: 6px; }
+.agent-avatar {
+  position: relative; width: 18px; height: 18px; flex: none;
+  border-radius: 50%; background: var(--muted); color: var(--foreground-secondary);
+  display: grid; place-items: center; font-size: 10px;
+}
+.agent-avatar.human { background: color-mix(in oklch, var(--brand) 16%, transparent); color: var(--brand); font-size: 9px; font-weight: 600; }
+.presence {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--surface);
+}
+.presence.running { background: var(--success); animation: pulse-soft 1.6s var(--ease) infinite; }
+.presence.idle { background: var(--faint-foreground); }
+.agent-name { font-size: 11px; color: var(--muted-foreground); }
+
+/* ============ 顶栏 ============ */
+.topbar {
+  height: 52px; display: flex; align-items: center; gap: 20px;
+  padding: 0 16px; background: var(--app-shell);
+  border-bottom: 1px solid var(--surface-border);
+}
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-mark { color: var(--brand); font-size: 16px; }
+.brand-name { font: var(--text-title-sm) var(--font-sans); font-weight: 600; letter-spacing: 0.01em; }
+.nav { display: flex; align-items: center; gap: 4px; height: 100%; }
+.nav-item {
+  display: flex; align-items: center; height: 100%; padding: 0 10px;
+  font: var(--text-label) var(--font-sans); color: var(--muted-foreground);
+  box-shadow: inset 0 -2px 0 transparent;
+  transition: color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.nav-item:hover { color: var(--foreground); }
+.nav-item.active { color: var(--foreground); font-weight: 500; box-shadow: inset 0 -2px 0 var(--brand); }
+
+/* ============ 主区布局 ============ */
+.main { display: flex; height: calc(100vh - 52px); }
+.board {
+  flex: 1; min-width: 0; background: var(--page-canvas);
+  display: flex; gap: 12px; align-items: stretch;
+  padding: 16px; overflow-x: auto; overflow-y: hidden;
+}
+
+/* ============ 看板列（方向 B 核心：语义色 5% alpha 列底） ============ */
+.col {
+  flex: 0 0 280px; max-height: 100%;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--surface-border); border-radius: var(--radius-lg);
+  /* backlog / todo / cancelled 默认：--muted 40% alpha */
+  background: color-mix(in oklch, var(--muted) 40%, transparent);
+}
+.col[data-status="in_progress"] { background: color-mix(in oklch, var(--info) 5%, transparent); }
+.col[data-status="in_review"]   { background: color-mix(in oklch, var(--review) 5%, transparent); }
+.col[data-status="done"]        { background: color-mix(in oklch, var(--success) 5%, transparent); }
+.col[data-status="blocked"]     { background: color-mix(in oklch, var(--destructive) 5%, transparent); }
+
+.col-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 12px 9px; flex: none;
+}
+.col-icon { font-size: 13px; line-height: 1; color: var(--faint-foreground); }
+.col[data-status="in_progress"] .col-icon { color: var(--info); }
+.col[data-status="in_review"]   .col-icon { color: var(--review); }
+.col[data-status="done"]        .col-icon { color: var(--success); }
+.col[data-status="blocked"]     .col-icon { color: var(--destructive); }
+.col-name { font: var(--text-caption) var(--font-sans); font-weight: 600; color: var(--foreground-secondary); }
+.col-count {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 11px; line-height: 15px; color: var(--muted-foreground);
+  background: color-mix(in oklch, var(--muted-foreground) 10%, transparent);
+  border-radius: var(--radius-sm); padding: 0 6px;
+}
+
+.col-cards {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  padding: 2px 8px 10px;
+}
+
+/* ============ 卡片（白底） ============ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--surface-border); border-radius: var(--radius-md);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.card:hover { border-color: color-mix(in oklch, var(--foreground) 22%, var(--surface-border)); }
+.card.is-selected { outline: 2px solid color-mix(in oklch, var(--brand) 55%, transparent); outline-offset: 1px; }
+/* “📦 待验收”整卡淡染：--attention 8% 底 + 同色 30% 边框（染色即“看我”） */
+.card.needs-you {
+  background: color-mix(in oklch, var(--attention) 8%, var(--surface));
+  border-color: color-mix(in oklch, var(--attention) 30%, transparent);
+}
+.card.needs-you:hover { border-color: color-mix(in oklch, var(--attention) 45%, transparent); }
+
+.card-row { display: flex; align-items: center; gap: 8px; }
+.card-no { font-size: 11px; color: var(--faint-foreground); }
+.card-title { margin: 0; font: var(--text-body) var(--font-sans); font-weight: 500; color: var(--foreground); }
+.card-meta { font: var(--text-micro) var(--font-sans); color: var(--faint-foreground); }
+
+/* 任务状态带：12% alpha 底 + 实色文字 + 图标 */
+.band {
+  display: flex; align-items: center; gap: 6px;
+  font: var(--text-micro) var(--font-sans); font-weight: 500;
+  padding: 4px 8px; border-radius: var(--radius-sm);
+}
+.band.running { background: color-mix(in oklch, var(--info) 12%, transparent);        color: var(--info); }
+.band.review  { background: color-mix(in oklch, var(--success) 12%, transparent);     color: var(--success); }
+.band.done    { background: color-mix(in oklch, var(--success) 12%, transparent);     color: var(--success); }
+.band.failed  { background: color-mix(in oklch, var(--destructive) 12%, transparent); color: var(--destructive); }
+.band.queued  { background: color-mix(in oklch, var(--muted-foreground) 10%, transparent); color: var(--muted-foreground); }
+.band .band-stat { font-size: 11px; }
+.band .ok { color: var(--success); font-weight: 600; }
+.band .no { color: var(--destructive); font-weight: 600; }
+.band .dim { color: var(--muted-foreground); }
+
+/* 空列占位：虚线圆角容器 + 32px muted 图标 + 一句正文 */
+.col-empty {
+  border: 1.5px dashed color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  border-radius: var(--radius-md); padding: 22px 12px; text-align: center;
+  color: var(--faint-foreground);
+}
+.col-empty .icon { display: block; font-size: 32px; line-height: 1; margin-bottom: 8px; }
+.col-empty p { margin: 0; font: var(--text-caption) var(--font-sans); }
+
+/* ============ 右侧任务面板 ============ */
+.panel {
+  flex: 0 0 42%; min-width: 440px; max-width: 660px;
+  background: var(--surface); border-left: 1px solid var(--surface-border);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel.is-closed { display: none; }
+
+.panel-head { padding: 14px 16px 12px; border-bottom: 1px solid var(--surface-border); flex: none; }
+.ph-title-row { display: flex; align-items: center; gap: 10px; }
+.ph-title-row h2 { margin: 0; font: var(--text-title-sm) var(--font-sans); font-weight: 600; }
+.ph-meta {
+  margin-top: 8px; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted-foreground);
+}
+.panel-body { flex: 1; overflow-y: auto; min-height: 0; }
+.p-section { padding: 14px 16px 16px; }
+.p-section + .p-section { border-top: 1px solid var(--surface-border); }
+.sec-title {
+  margin: 0 0 10px; font: var(--text-micro) var(--font-sans); font-weight: 600;
+  color: var(--muted-foreground); letter-spacing: 0.08em; text-transform: uppercase;
+}
+
+.branch-row {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--foreground-secondary);
+  background: var(--page-canvas); border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm); padding: 4px 9px; margin-bottom: 10px;
+}
+.branch-row .arrow { color: var(--faint-foreground); }
+.branch-row .br-main { color: var(--muted-foreground); }
+
+/* diff 盒：头部可折叠 */
+.diffbox { border: 1px solid var(--surface-border); border-radius: var(--radius-md); overflow: hidden; }
+.diff-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: var(--page-canvas); border: none; padding: 7px 10px;
+  font: var(--text-caption) var(--font-sans); font-weight: 500; color: var(--foreground-secondary);
+  text-align: left; transition: background var(--dur) var(--ease);
+}
+.diff-head:hover { background: var(--surface-hover); }
+.diff-head .chev { color: var(--faint-foreground); font-size: 10px; width: 10px; }
+.diff-head .add { color: var(--success); font-weight: 600; font-size: 11px; }
+.diff-head .del { color: var(--destructive); font-weight: 600; font-size: 11px; }
+.statbar { display: inline-flex; gap: 2px; margin-left: 2px; }
+.statbar i { width: 8px; height: 8px; border-radius: 2px; display: block; }
+.statbar i.a { background: var(--success); }
+.statbar i.d { background: var(--destructive); }
+
+.diff { font: 12px/20px var(--font-mono); font-variant-numeric: tabular-nums; overflow-x: auto; }
+.diff-file + .diff-file { border-top: 1px solid var(--surface-border); }
+.diff-file-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; background: var(--page-canvas);
+  border-top: 1px solid var(--surface-border);
+  font-size: 11px; color: var(--foreground-secondary);
+}
+.diff-file:first-child .diff-file-head { border-top: none; }
+.diff-file-head .add { color: var(--success); }
+.diff-file-head .del { color: var(--destructive); }
+.tag-new {
+  font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--success) 12%, transparent); color: var(--success); font-weight: 600;
+}
+.diff-line { display: grid; grid-template-columns: 34px 34px 18px 1fr; min-width: max-content; }
+.diff-line .ln { text-align: right; padding-right: 8px; color: var(--faint-foreground); user-select: none; }
+.diff-line .sign { text-align: center; user-select: none; font-weight: 600; }
+.diff-line .code { padding-right: 12px; white-space: pre; color: var(--foreground); }
+.diff-line.add { background: var(--diff-add-line-bg); }
+.diff-line.add .sign { color: var(--success); }
+.diff-line.del { background: var(--diff-del-line-bg); }
+.diff-line.del .sign { color: var(--destructive); }
+.diff-line.hunk { background: var(--diff-hunk-bg); }
+.diff-line.hunk .code { color: var(--info); }
+.diff-line em.w { font-style: normal; border-radius: 2px; padding: 0 1px; }
+.diff-line.add em.w { background: var(--diff-add-word-bg); }
+.diff-line.del em.w { background: var(--diff-del-word-bg); }
+
+/* 交付操作 */
+.actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.reject-row { display: flex; gap: 8px; }
+.reject-row .input { flex: 1; }
+.reject-row .btn { flex: none; }
+
+/* ============ 日志流 ============ */
+.log { display: flex; flex-direction: column; gap: 2px; }
+.log-row {
+  display: grid; grid-template-columns: 56px auto 1fr; gap: 8px; align-items: start;
+  padding: 5px 6px; border-radius: var(--radius-sm);
+}
+.log-time { font-size: 11px; line-height: 18px; color: var(--faint-foreground); user-select: none; }
+.log-text { margin: 0; font: var(--text-label) var(--font-sans); color: var(--foreground-secondary); line-height: 18px; }
+.log-text b { font-weight: 600; color: var(--foreground); }
+.log-text.thinking-text { color: var(--muted-foreground); }
+.code-chip {
+  font-size: 11px; background: color-mix(in oklch, var(--muted-foreground) 10%, transparent);
+  border-radius: var(--radius-sm); padding: 1px 5px; color: var(--foreground-secondary);
+}
+.tr-block { border-radius: var(--radius-sm); }
+.tr-toggle {
+  width: 100%; border: none; background: transparent; text-align: left;
+  transition: background var(--dur) var(--ease);
+}
+.tr-toggle:hover { background: var(--surface-hover); }
+.tr-summary { font-size: 11px; line-height: 18px; color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 5px; }
+.tr-summary .chev { color: var(--faint-foreground); font-size: 9px; width: 10px; }
+.tr-detail { padding: 2px 6px 8px 120px; }
+
+/* 等宽区深色常驻（--console-bg） */
+.console {
+  background: var(--console-bg); color: var(--console-fg);
+  border-radius: var(--radius-sm); padding: 8px 12px;
+  font: 12px/18px var(--font-mono); font-variant-numeric: tabular-nums;
+  overflow-x: auto; white-space: pre;
+}
+.console .c-muted { color: var(--console-muted); }
+.console .c-ok { color: var(--console-ok); }
+.console .c-err { color: var(--console-err); }
+
+/* ============ 面板底部评论 ============ */
+.panel-foot { flex: none; border-top: 1px solid var(--surface-border); padding: 10px 16px; }
+.comment-row { display: flex; align-items: center; gap: 8px; }
+
+/* ============ 响应式：<1100px 面板变 fixed 抽屉 ============ */
+@media (max-width: 1100px) {
+  .panel {
+    position: fixed; top: 52px; right: 0; bottom: 0; z-index: 50;
+    width: min(600px, 94vw); min-width: 0; max-width: none;
+    box-shadow: var(--shadow-modal);
+    transform: translateX(0);
+    transition: transform var(--dur) var(--ease);
+  }
+  .panel.is-closed { display: flex; transform: translateX(103%); pointer-events: none; }
+}
+</style>
+<script>
+/* 首帧前确定主题，避免闪烁：localStorage 优先，否则跟随系统 */
+(function () {
+  try {
+    var t = localStorage.getItem('anvil-theme');
+    if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+  } catch (e) {
+    document.documentElement.dataset.theme = 'light';
+  }
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">⚒</span>
+    <span class="brand-name">Anvil</span>
+  </div>
+  <nav class="nav" aria-label="主导航">
+    <a class="nav-item active" href="#" aria-current="page">看板</a>
+    <a class="nav-item" href="#">Agents</a>
+  </nav>
+  <div class="grow"></div>
+  <button class="btn btn-ghost" id="themeToggle" type="button" aria-label="切换到深色主题">
+    <span id="themeLabel">☾ 深色</span>
+  </button>
+  <button class="btn btn-primary" type="button">＋ 新建 issue</button>
+</header>
+
+<main class="main">
+
+  <!-- ================= 看板 ================= -->
+  <section class="board" aria-label="任务看板">
+
+    <!-- backlog -->
+    <div class="col" data-status="backlog">
+      <div class="col-head">
+        <span class="col-icon">◌</span>
+        <span class="col-name">Backlog</span>
+        <span class="grow"></span>
+        <span class="col-count">3</span>
+      </div>
+      <div class="col-cards">
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p2">P2</span>
+            <span class="grow"></span>
+            <span class="card-no mono">#58</span>
+          </div>
+          <h4 class="card-title">调研 multimodal embedding 方案选型</h4>
+          <div class="card-meta">3 天前创建</div>
+        </article>
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p2">P2</span>
+            <span class="grow"></span>
+            <span class="card-no mono">#61</span>
+          </div>
+          <h4 class="card-title">整理 8 月内容选题池</h4>
+          <div class="card-meta">昨天创建</div>
+        </article>
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="card-no mono">#63</span>
+          </div>
+          <h4 class="card-title">评估 runner 并发上限（2 → 4）</h4>
+          <div class="card-meta">5 小时前创建</div>
+        </article>
+      </div>
+    </div>
+
+    <!-- todo -->
+    <div class="col" data-status="todo">
+      <div class="col-head">
+        <span class="col-icon">○</span>
+        <span class="col-name">Todo</span>
+        <span class="grow"></span>
+        <span class="col-count">2</span>
+      </div>
+      <div class="col-cards">
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-02</span>
+            </span>
+          </div>
+          <h4 class="card-title">生成周三选题清单</h4>
+          <div class="band queued">⟳ 排队中 · 第 2 位</div>
+        </article>
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p2">P2</span>
+            <span class="grow"></span>
+            <span class="card-no mono">#65</span>
+          </div>
+          <h4 class="card-title">重构 issue 状态机（抽出 reducer）</h4>
+          <div class="band queued">⟳ 排队中 · 第 3 位</div>
+        </article>
+      </div>
+    </div>
+
+    <!-- in_progress -->
+    <div class="col" data-status="in_progress">
+      <div class="col-head">
+        <span class="col-icon">◐</span>
+        <span class="col-name">In Progress</span>
+        <span class="grow"></span>
+        <span class="col-count">2</span>
+      </div>
+      <div class="col-cards">
+        <article class="card is-selected" tabindex="0" aria-current="true">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence running" title="执行中"></i></span>
+              <span class="agent-name mono">anvil-01</span>
+            </span>
+          </div>
+          <h4 class="card-title">新增 CONTRIBUTING.md</h4>
+          <div class="band running"><span class="pulse">▶</span> 执行中 · 12:40</div>
+        </article>
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p2">P2</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence running" title="执行中"></i></span>
+              <span class="agent-name mono">anvil-03</span>
+            </span>
+          </div>
+          <h4 class="card-title">修复登录页样式（移动端溢出）</h4>
+          <div class="band running"><span class="pulse">▶</span> 执行中 · 03:12</div>
+        </article>
+      </div>
+    </div>
+
+    <!-- in_review -->
+    <div class="col" data-status="in_review">
+      <div class="col-head">
+        <span class="col-icon">◉</span>
+        <span class="col-name">In Review</span>
+        <span class="grow"></span>
+        <span class="col-count">2</span>
+      </div>
+      <div class="col-cards">
+        <article class="card needs-you" tabindex="0">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-01</span>
+            </span>
+          </div>
+          <h4 class="card-title">看板卡片增加 diff 摘要</h4>
+          <div class="band review">
+            <span>📦 待验收</span>
+            <span class="grow"></span>
+            <span class="band-stat mono"><span class="dim">3 files</span> <span class="ok">+46</span> <span class="no">-12</span></span>
+          </div>
+        </article>
+        <article class="card needs-you" tabindex="0">
+          <div class="card-row">
+            <span class="chip p2">P2</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-02</span>
+            </span>
+          </div>
+          <h4 class="card-title">更新 README 快速开始</h4>
+          <div class="band review">
+            <span>📦 待验收</span>
+            <span class="grow"></span>
+            <span class="band-stat mono"><span class="dim">2 files</span> <span class="ok">+18</span> <span class="no">-4</span></span>
+          </div>
+        </article>
+      </div>
+    </div>
+
+    <!-- done -->
+    <div class="col" data-status="done">
+      <div class="col-head">
+        <span class="col-icon">✓</span>
+        <span class="col-name">Done</span>
+        <span class="grow"></span>
+        <span class="col-count">2</span>
+      </div>
+      <div class="col-cards">
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p0">P0</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-01</span>
+            </span>
+          </div>
+          <h4 class="card-title">接入 Kimi Code CLI 流式输出</h4>
+          <div class="band done">✓ 已完成 · 昨天 16:20</div>
+        </article>
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-03</span>
+            </span>
+          </div>
+          <h4 class="card-title">修复日志流重复渲染</h4>
+          <div class="band done">✓ 已完成 · 2 天前</div>
+        </article>
+      </div>
+    </div>
+
+    <!-- blocked -->
+    <div class="col" data-status="blocked">
+      <div class="col-head">
+        <span class="col-icon">⊘</span>
+        <span class="col-name">Blocked</span>
+        <span class="grow"></span>
+        <span class="col-count">1</span>
+      </div>
+      <div class="col-cards">
+        <article class="card" tabindex="0">
+          <div class="card-row">
+            <span class="chip p1">P1</span>
+            <span class="grow"></span>
+            <span class="agent-tag">
+              <span class="agent-avatar">⚒<i class="presence idle" title="空闲"></i></span>
+              <span class="agent-name mono">anvil-02</span>
+            </span>
+          </div>
+          <h4 class="card-title">自动发布到公众号草稿</h4>
+          <div class="band failed">✗ 失败 2/3 · 凭证已过期</div>
+        </article>
+      </div>
+    </div>
+
+    <!-- cancelled（空列：虚线占位） -->
+    <div class="col" data-status="cancelled">
+      <div class="col-head">
+        <span class="col-icon">–</span>
+        <span class="col-name">Cancelled</span>
+        <span class="grow"></span>
+        <span class="col-count">0</span>
+      </div>
+      <div class="col-cards">
+        <div class="col-empty">
+          <span class="icon">◌</span>
+          <p>无任务</p>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ================= 任务面板 ================= -->
+  <aside class="panel" id="taskPanel" aria-label="任务详情">
+    <div class="panel-head">
+      <div class="ph-title-row">
+        <h2>新增 CONTRIBUTING.md</h2>
+        <span class="badge info"><span class="pulse">▶</span> 执行中</span>
+        <span class="grow"></span>
+        <button class="icon-btn" id="panelClose" type="button" aria-label="关闭面板">✕</button>
+      </div>
+      <div class="ph-meta mono">
+        <span>#64</span>
+        <span class="agent-tag">
+          <span class="agent-avatar">⚒<i class="presence running" title="执行中"></i></span>
+          <span class="agent-name mono">anvil-01</span>
+        </span>
+        <span>· 12 分钟前开始</span>
+      </div>
+    </div>
+
+    <div class="panel-body">
+
+      <!-- 交付区 -->
+      <section class="p-section" aria-label="交付">
+        <h3 class="sec-title">交付</h3>
+        <div class="branch-row mono">
+          <span>⑂</span>
+          <span>task/9dd718c9</span>
+          <span class="arrow">→</span>
+          <span class="br-main">main</span>
+        </div>
+
+        <div class="diffbox">
+          <button class="diff-head" id="diffToggle" type="button" aria-expanded="true" aria-controls="diffBody">
+            <span class="chev">▾</span>
+            <span>3 个文件变更</span>
+            <span class="grow"></span>
+            <span class="mono"><span class="add">+46</span>&nbsp;<span class="del">-12</span></span>
+            <span class="statbar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="d"></i></span>
+          </button>
+          <div id="diffBody">
+            <div class="diff">
+
+              <div class="diff-file">
+                <div class="diff-file-head mono">
+                  <span>CONTRIBUTING.md</span>
+                  <span class="tag-new">新增</span>
+                  <span class="grow"></span>
+                  <span class="add">+28</span>
+                </div>
+                <div class="diff-line hunk"><span class="ln"></span><span class="ln"></span><span class="sign"></span><span class="code">@@ -0,0 +1,28 @@</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">1</span><span class="sign">+</span><span class="code"># Contributing to Anvil</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">2</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">3</span><span class="sign">+</span><span class="code">感谢你愿意为 Anvil 贡献代码。补丁越小，越容易评审。</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">4</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">5</span><span class="sign">+</span><span class="code">## 开发环境</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">6</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">7</span><span class="sign">+</span><span class="code">- Node.js ≥ 20</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">8</span><span class="sign">+</span><span class="code">- pnpm ≥ 9</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">9</span><span class="sign">+</span><span class="code">- 克隆后执行 `pnpm install`</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">10</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">11</span><span class="sign">+</span><span class="code">## 分支命名</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">12</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">13</span><span class="sign">+</span><span class="code">- `feat/xxx`、`fix/xxx`、`docs/xxx`</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">14</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">15</span><span class="sign">+</span><span class="code">## 提交规范</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">16</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">17</span><span class="sign">+</span><span class="code">- commit message 用英文祈使句</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">18</span><span class="sign">+</span><span class="code">- 一个 PR 只做一件事</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">19</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">20</span><span class="sign">+</span><span class="code">## PR 流程</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">21</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">22</span><span class="sign">+</span><span class="code">1. 关联 issue</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">23</span><span class="sign">+</span><span class="code">2. 通过 CI 后请求 review</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">24</span><span class="sign">+</span><span class="code">3. 合入后删除分支</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">25</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">26</span><span class="sign">+</span><span class="code">## 行为准则</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">27</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">28</span><span class="sign">+</span><span class="code">保持友善，就事论事。</span></div>
+              </div>
+
+              <div class="diff-file">
+                <div class="diff-file-head mono">
+                  <span>README.md</span>
+                  <span class="grow"></span>
+                  <span class="add">+2</span>&nbsp;<span class="del">-1</span>
+                </div>
+                <div class="diff-line hunk"><span class="ln"></span><span class="ln"></span><span class="sign"></span><span class="code">@@ -10,5 +10,6 @@</span></div>
+                <div class="diff-line"><span class="ln">10</span><span class="ln">10</span><span class="sign"></span><span class="code"> ## 快速开始</span></div>
+                <div class="diff-line"><span class="ln">11</span><span class="ln">11</span><span class="sign"></span><span class="code"> </span></div>
+                <div class="diff-line del"><span class="ln">12</span><span class="ln"></span><span class="sign">-</span><span class="code"><em class="w">pnpm dev</em></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">12</span><span class="sign">+</span><span class="code"><em class="w">pnpm install</em></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">13</span><span class="sign">+</span><span class="code">pnpm dev</span></div>
+                <div class="diff-line"><span class="ln">13</span><span class="ln">14</span><span class="sign"></span><span class="code"> </span></div>
+                <div class="diff-line"><span class="ln">14</span><span class="ln">15</span><span class="sign"></span><span class="code"> 启动后访问 http://localhost:3000</span></div>
+              </div>
+
+              <div class="diff-file">
+                <div class="diff-file-head mono">
+                  <span>docs/onboarding.md</span>
+                  <span class="grow"></span>
+                  <span class="add">+16</span>&nbsp;<span class="del">-11</span>
+                </div>
+                <div class="diff-line hunk"><span class="ln"></span><span class="ln"></span><span class="sign"></span><span class="code">@@ -1,13 +1,18 @@</span></div>
+                <div class="diff-line"><span class="ln">1</span><span class="ln">1</span><span class="sign"></span><span class="code"> # 新人上手</span></div>
+                <div class="diff-line"><span class="ln">2</span><span class="ln">2</span><span class="sign"></span><span class="code"> </span></div>
+                <div class="diff-line del"><span class="ln">3</span><span class="ln"></span><span class="sign">-</span><span class="code">## 环境准备<em class="w">（已过时）</em></span></div>
+                <div class="diff-line del"><span class="ln">4</span><span class="ln"></span><span class="sign">-</span><span class="code">- 安装 nvm，再装 Node 18</span></div>
+                <div class="diff-line del"><span class="ln">5</span><span class="ln"></span><span class="sign">-</span><span class="code">- 全局安装 pnpm 8</span></div>
+                <div class="diff-line del"><span class="ln">6</span><span class="ln"></span><span class="sign">-</span><span class="code">- 全局安装 turbo</span></div>
+                <div class="diff-line del"><span class="ln">7</span><span class="ln"></span><span class="sign">-</span><span class="code">- 复制 .env.example 并索要密钥</span></div>
+                <div class="diff-line del"><span class="ln">8</span><span class="ln"></span><span class="sign">-</span><span class="code">- 首次运行 `pnpm bootstrap`</span></div>
+                <div class="diff-line del"><span class="ln">9</span><span class="ln"></span><span class="sign">-</span><span class="code">- 启动前手动创建数据库</span></div>
+                <div class="diff-line del"><span class="ln">10</span><span class="ln"></span><span class="sign">-</span><span class="code"></span></div>
+                <div class="diff-line del"><span class="ln">11</span><span class="ln"></span><span class="sign">-</span><span class="code">## 常用命令</span></div>
+                <div class="diff-line del"><span class="ln">12</span><span class="ln"></span><span class="sign">-</span><span class="code">- `pnpm dev`（端口 3000）</span></div>
+                <div class="diff-line del"><span class="ln">13</span><span class="ln"></span><span class="sign">-</span><span class="code">- `pnpm build`</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">3</span><span class="sign">+</span><span class="code">## 环境准备</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">4</span><span class="sign">+</span><span class="code">见根目录 <em class="w">CONTRIBUTING.md</em>（Node ≥ 20 / pnpm ≥ 9）。</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">5</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">6</span><span class="sign">+</span><span class="code">## 常用命令</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">7</span><span class="sign">+</span><span class="code">- `pnpm dev` 启动全部应用</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">8</span><span class="sign">+</span><span class="code">- `pnpm build` 构建产物</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">9</span><span class="sign">+</span><span class="code">- `pnpm test` 运行测试</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">10</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">11</span><span class="sign">+</span><span class="code">## 目录速览</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">12</span><span class="sign">+</span><span class="code">- `apps/server` API 服务</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">13</span><span class="sign">+</span><span class="code">- `apps/runner` 执行器</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">14</span><span class="sign">+</span><span class="code">- `apps/web` 前端</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">15</span><span class="sign">+</span><span class="code">- `packages/core` 共享逻辑</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">16</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">17</span><span class="sign">+</span><span class="code">## 提问</span></div>
+                <div class="diff-line add"><span class="ln"></span><span class="ln">18</span><span class="sign">+</span><span class="code">直接在 issue 中 @ 维护者。</span></div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-primary" type="button">✓ 合入 main</button>
+          <div class="reject-row">
+            <input class="input" type="text" placeholder="打回理由（会作为反馈注入重跑）…" aria-label="打回理由">
+            <button class="btn btn-ghost" type="button">⟳ 打回重跑</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 执行日志 -->
+      <section class="p-section" aria-label="执行日志">
+        <h3 class="sec-title">执行日志</h3>
+        <div class="log">
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:11</span>
+            <span class="badge success">agent</span>
+            <p class="log-text">我来起草 CONTRIBUTING.md，先看一眼仓库已有的约定和语气。</p>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:14</span>
+            <span class="badge review">thinking</span>
+            <p class="log-text thinking-text">需要覆盖：开发环境、分支命名、提交规范、PR 流程。README 的「快速开始」有点旧，顺手对齐。</p>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:15</span>
+            <span class="badge info">tool_use</span>
+            <p class="log-text"><b>Read</b> <span class="code-chip mono">docs/PROGRESS.md</span></p>
+          </div>
+
+          <div class="tr-block">
+            <button class="log-row tr-toggle" type="button" data-tr-toggle aria-expanded="false">
+              <span class="log-time mono">14:02:15</span>
+              <span class="badge muted">tool_result</span>
+              <span class="tr-summary mono"><span class="chev">▸</span> 读取 42 行 · 0.28s</span>
+            </button>
+            <div class="tr-detail" hidden>
+              <div class="console"><span class="c-muted"> 1  # Anvil 开发进展
+ 2
+ 3  ## 已完成
+ 4  - 看板 UI 初版
+<span class="c-err">…</span> <span class="c-muted">其余 38 行省略</span></span></div>
+            </div>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:18</span>
+            <span class="badge info">tool_use</span>
+            <p class="log-text"><b>Grep</b> <span class="code-chip mono">"commit" path="docs/**"</span></p>
+          </div>
+
+          <div class="tr-block">
+            <button class="log-row tr-toggle" type="button" data-tr-toggle aria-expanded="false">
+              <span class="log-time mono">14:02:18</span>
+              <span class="badge muted">tool_result</span>
+              <span class="tr-summary mono"><span class="chev">▸</span> 3 处匹配 · 0.19s</span>
+            </button>
+            <div class="tr-detail" hidden>
+              <div class="console"><span class="c-muted">docs/PROGRESS.md:12  commit message 统一英文
+docs/PROGRESS.md:31  提交前跑 pnpm lint
+docs/DESIGN.md:97     组件约定</span></div>
+            </div>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:31</span>
+            <span class="badge info">tool_use</span>
+            <p class="log-text"><b>Write</b> <span class="code-chip mono">CONTRIBUTING.md (+28)</span></p>
+          </div>
+
+          <div class="tr-block">
+            <button class="log-row tr-toggle" type="button" data-tr-toggle aria-expanded="true">
+              <span class="log-time mono">14:02:31</span>
+              <span class="badge muted">tool_result</span>
+              <span class="tr-summary mono"><span class="chev">▾</span> 3 个文件已写入 · 1.04s</span>
+            </button>
+            <div class="tr-detail">
+              <div class="console"><span class="c-muted">$ apply 3 个文件变更</span>
+write  CONTRIBUTING.md       <span class="c-ok">✓</span> <span class="c-muted">28 行</span>
+edit   README.md             <span class="c-ok">✓</span> <span class="c-muted">+2 -1</span>
+edit   docs/onboarding.md    <span class="c-ok">✓</span> <span class="c-muted">+16 -11</span></div>
+            </div>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:44</span>
+            <span class="badge info">tool_use</span>
+            <p class="log-text"><b>Bash</b> <span class="code-chip mono">pnpm exec prettier --check CONTRIBUTING.md</span></p>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:45</span>
+            <span class="badge danger">error</span>
+            <p class="log-text">prettier --check 未通过（exit 1）：行尾缺少换行。</p>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:47</span>
+            <span class="badge success">agent</span>
+            <p class="log-text">已用 --write 修好格式，复检通过。再自 review 一遍就提交验收。</p>
+          </div>
+
+          <div class="log-row">
+            <span class="log-time mono">14:02:52</span>
+            <span class="badge info">tool_use</span>
+            <p class="log-text"><b>Bash</b> <span class="code-chip mono">git diff --stat</span></p>
+          </div>
+
+          <div class="tr-block">
+            <button class="log-row tr-toggle" type="button" data-tr-toggle aria-expanded="false">
+              <span class="log-time mono">14:02:52</span>
+              <span class="badge muted">tool_result</span>
+              <span class="tr-summary mono"><span class="chev">▸</span> 3 files changed, +46 -12 · 0.11s</span>
+            </button>
+            <div class="tr-detail" hidden>
+              <div class="console"><span class="c-muted"> CONTRIBUTING.md    | 28 </span><span class="c-ok">++++++++++++++++++++</span>
+<span class="c-muted"> README.md          |  3 </span><span class="c-ok">++</span><span class="c-err">-</span>
+<span class="c-muted"> docs/onboarding.md | 27 </span><span class="c-ok">++++++++++++++</span><span class="c-err">-----------</span>
+<span class="c-muted"> 3 files changed, 46 insertions(+), 12 deletions(-)</span></div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <div class="panel-foot">
+      <div class="comment-row">
+        <span class="agent-avatar human">K</span>
+        <input class="input" type="text" placeholder="给 anvil-01 留言…" aria-label="评论输入框">
+        <button class="btn btn-ghost" type="button">发送</button>
+      </div>
+    </div>
+  </aside>
+
+</main>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  /* ---- 主题切换（localStorage 记忆 + 防闪烁） ---- */
+  var btn = document.getElementById('themeToggle');
+  var label = document.getElementById('themeLabel');
+  function renderTheme() {
+    var dark = root.dataset.theme === 'dark';
+    label.textContent = dark ? '☀ 浅色' : '☾ 深色';
+    btn.setAttribute('aria-label', dark ? '切换到浅色主题' : '切换到深色主题');
+  }
+  btn.addEventListener('click', function () {
+    var next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    root.classList.add('no-transitions');
+    root.dataset.theme = next;
+    try { localStorage.setItem('anvil-theme', next); } catch (e) {}
+    renderTheme();
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { root.classList.remove('no-transitions'); });
+    });
+  });
+  renderTheme();
+
+  /* ---- diff 视图折叠 ---- */
+  var diffToggle = document.getElementById('diffToggle');
+  var diffBody = document.getElementById('diffBody');
+  diffToggle.addEventListener('click', function () {
+    var willOpen = diffBody.hidden;
+    diffBody.hidden = !willOpen;
+    diffToggle.setAttribute('aria-expanded', String(willOpen));
+    diffToggle.querySelector('.chev').textContent = willOpen ? '▾' : '▸';
+  });
+
+  /* ---- tool_result 折叠/展开 ---- */
+  document.querySelectorAll('[data-tr-toggle]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var detail = el.closest('.tr-block').querySelector('.tr-detail');
+      var willOpen = detail.hidden;
+      detail.hidden = !willOpen;
+      el.setAttribute('aria-expanded', String(willOpen));
+      el.querySelector('.chev').textContent = willOpen ? '▾' : '▸';
+    });
+  });
+
+  /* ---- 面板开关：✕ 关闭，点任意卡片重新打开 ---- */
+  var panel = document.getElementById('taskPanel');
+  document.getElementById('panelClose').addEventListener('click', function () {
+    panel.classList.add('is-closed');
+  });
+  document.querySelectorAll('.card').forEach(function (card) {
+    function open() { panel.classList.remove('is-closed'); }
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

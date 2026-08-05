@@ -1,0 +1,1143 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anvil 看板 · 方向 C「工匠暖纸」</title>
+<script>
+/* 首屏前确定主题：localStorage 优先，否则默认浅色（本原型要求浅色默认打开） */
+(function () {
+  var t = 'light';
+  try { t = localStorage.getItem('anvil-theme') || 'light'; } catch (e) {}
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+/* ============================================================
+   Anvil · 方向 C「工匠暖纸」
+   基础 token 全部取自 DESIGN.md（双主题、OKLCH、语义变量）。
+   方向 C 的三处个性覆盖：
+   1) 浅色 --page-canvas 调暖 → oklch(0.975 0.010 75)（暖纸画布）
+   2) 看板列底色保持中性，列标题下方加 2px 语义色短粗线
+   3) 日志流 / diff 做成深色常驻「锻造台」面板（深炭底 + 琥珀标题）
+   forge ember 用量略增：链接、导航选中态、列标题计数、选中卡片。
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces（DESIGN.md；--page-canvas 按方向 C 调暖） */
+  --app-shell: oklch(0.955 0.006 70);
+  --page-canvas: oklch(0.975 0.010 75); /* 方向 C：暖纸画布 */
+  --surface: oklch(0.995 0.002 70);
+  --surface-raised: oklch(1 0 0);
+  --surface-hover: oklch(0.955 0.008 60);
+  --surface-border: oklch(0.905 0.006 60);
+
+  /* Text */
+  --foreground: oklch(0.20 0.008 60);
+  --foreground-secondary: oklch(0.38 0.01 60);
+  --muted-foreground: oklch(0.47 0.012 60);
+  --faint-foreground: oklch(0.58 0.01 60);
+
+  /* Brand & Semantic */
+  --brand: oklch(0.47 0.10 45);
+  --brand-hover: oklch(0.42 0.10 45);
+  --brand-foreground: oklch(0.99 0.003 70);
+  --info: oklch(0.50 0.11 255);
+  --review: oklch(0.48 0.12 295);
+  --success: oklch(0.52 0.11 150);
+  --attention: oklch(0.55 0.12 80);
+  --destructive: oklch(0.50 0.16 25);
+  --muted: oklch(0.93 0.006 60);
+
+  /* 锻造台（深色常驻，浅色主题下同样是深炭底；数值对齐 DESIGN.md 深色侧） */
+  --console-bg: oklch(0.205 0.007 60);
+  --console-raised: oklch(0.245 0.008 60);
+  --console-border: oklch(1 0 0 / 8%);
+  --console-fg: oklch(0.88 0.006 60);
+  --console-fg-dim: oklch(0.66 0.008 60);
+  --console-amber: oklch(0.78 0.115 75);          /* 琥珀标题 */
+  --console-brand: oklch(0.72 0.11 55);           /* 深底上的 ember 主按钮 */
+  --console-brand-hover: oklch(0.77 0.11 55);
+  --console-brand-fg: oklch(0.20 0.01 60);
+  --console-green: oklch(0.72 0.11 150);
+  --console-purple: oklch(0.72 0.11 295);
+  --console-blue: oklch(0.72 0.10 255);
+  --console-red: oklch(0.68 0.15 25);
+  --console-diff-add-bg: oklch(0.60 0.12 150 / 15%);
+  --console-diff-del-bg: oklch(0.62 0.15 25 / 15%);
+  --console-diff-hunk-bg: oklch(0.65 0.10 240 / 15%);
+
+  /* 字阶（工具型高密度） */
+  --fs-micro: 11px;  --lh-micro: 15px;
+  --fs-caption: 12px; --lh-caption: 16px;
+  --fs-label: 13px;  --lh-label: 18px;
+  --fs-body: 14px;   --lh-body: 20px;
+  --fs-title-sm: 16px; --lh-title-sm: 24px;
+  --fs-title: 18px;  --lh-title: 26px;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 8%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 12%);
+
+  --dur: 140ms;
+  --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+  --focus-ring: 0 0 0 2px var(--page-canvas),
+                0 0 0 4px color-mix(in oklch, var(--brand) 40%, transparent);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --app-shell: oklch(0.165 0.006 60);
+  --page-canvas: oklch(0.185 0.006 60);
+  --surface: oklch(0.215 0.007 60);
+  --surface-raised: oklch(0.245 0.008 60);
+  --surface-hover: oklch(0.26 0.008 60);
+  --surface-border: oklch(1 0 0 / 7%);
+
+  --foreground: oklch(0.97 0.003 60);
+  --foreground-secondary: oklch(0.82 0.006 60);
+  --muted-foreground: oklch(0.70 0.008 60);
+  --faint-foreground: oklch(0.60 0.008 60);
+
+  --brand: oklch(0.72 0.11 55);
+  --brand-hover: oklch(0.77 0.11 55);
+  --brand-foreground: oklch(0.20 0.01 60);
+  --info: oklch(0.72 0.10 255);
+  --review: oklch(0.72 0.11 295);
+  --success: oklch(0.72 0.11 150);
+  --attention: oklch(0.75 0.12 80);
+  --destructive: oklch(0.68 0.15 25);
+  --muted: oklch(0.28 0.008 60);
+
+  /* 深色主题里锻造台再深半级，保住「深色工作台」的材质对比 */
+  --console-bg: oklch(0.15 0.006 60);
+  --console-raised: oklch(0.19 0.006 60);
+  --console-border: oklch(1 0 0 / 9%);
+
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 16%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 24%);
+}
+
+/* ---------- Base ---------- */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  background: var(--app-shell);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+code, pre, .mono {
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+}
+button, input { font: inherit; color: inherit; }
+h2, h3, h4, p { margin: 0; }
+a { color: var(--brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.no-transitions, .no-transitions * { transition: none !important; }
+
+/* 6px 细滚动条，跟随 color-scheme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
+}
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ---------- App 骨架 ---------- */
+.app { height: 100vh; display: flex; flex-direction: column; }
+.main { flex: 1; display: flex; min-height: 0; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  flex: none;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 16px;
+  background: var(--app-shell);
+  border-bottom: 1px solid var(--surface-border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-title-sm);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.brand-mark { color: var(--brand); } /* ember：品牌符号 */
+.nav { display: flex; gap: 4px; height: 100%; }
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: var(--fs-label);
+  color: var(--muted-foreground);
+  border-radius: var(--radius-sm);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.nav-item:hover {
+  color: var(--foreground);
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+.nav-item.is-active { color: var(--brand); font-weight: 500; } /* ember：选中态 */
+.nav-item.is-active::after {
+  content: "";
+  position: absolute;
+  left: 10px; right: 10px; bottom: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--brand);
+}
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease),
+              color var(--dur) var(--ease);
+}
+.btn-primary { background: var(--brand); color: var(--brand-foreground); }
+.btn-primary:hover { background: var(--brand-hover); }
+.btn-ghost {
+  background: transparent;
+  border-color: var(--surface-border);
+  color: var(--foreground-secondary);
+}
+.btn-ghost:hover { background: var(--surface-hover); color: var(--foreground); }
+.icon-btn {
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.icon-btn:hover { background: var(--surface-hover); color: var(--foreground); }
+
+/* ---------- 看板 ---------- */
+.board {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--page-canvas); /* 暖纸画布 */
+}
+.cols {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  height: 100%;
+  min-width: max-content;
+  padding: 16px;
+}
+.col {
+  width: 272px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  /* 方向 C：列底色中性（不随状态染色），个性交给列头短粗线 */
+  background: color-mix(in oklch, var(--muted) 40%, transparent);
+  border-radius: var(--radius-lg);
+}
+.col-head { padding: 10px 12px 9px; }
+.col-head-row { display: flex; align-items: center; gap: 6px; }
+.col-icon {
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--col-accent, var(--faint-foreground));
+}
+.col-name {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: 600;
+  color: var(--foreground-secondary);
+}
+.col-count {
+  margin-left: auto;
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  font-weight: 600;
+  color: var(--brand); /* ember：列标题计数 */
+  font-variant-numeric: tabular-nums;
+}
+/* 方向 C：列标题下方的 2px 语义色短粗线 */
+.col-bar {
+  width: 24px;
+  height: 2px;
+  margin-top: 6px;
+  border-radius: 1px;
+  background: var(--col-accent, var(--faint-foreground));
+}
+.col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 8px 10px;
+  overflow-y: auto;
+}
+.col-empty {
+  border: 1px dashed color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  border-radius: var(--radius-md);
+  padding: 18px 12px;
+  text-align: center;
+  font-size: var(--fs-caption);
+  color: var(--faint-foreground);
+}
+
+/* ---------- 卡片 ---------- */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease),
+              background var(--dur) var(--ease);
+}
+.card:hover {
+  border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--surface-border));
+}
+.card:hover .card-title { color: var(--brand); } /* ember：链接式悬停 */
+.card.is-selected {
+  border-color: color-mix(in oklch, var(--brand) 55%, var(--surface-border));
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--brand) 35%, transparent);
+}
+/* 「📦 待验收」整卡淡染：attention 8% 底 + 30% 边框（染色即"看我"） */
+.card-attention {
+  background: color-mix(in oklch, var(--attention) 8%, var(--surface));
+  border-color: color-mix(in oklch, var(--attention) 30%, transparent);
+}
+.card-top { display: flex; align-items: center; gap: 6px; }
+.chip {
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  font-weight: 500;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.card-id {
+  margin-left: auto;
+  font-size: var(--fs-micro);
+  color: var(--faint-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.card-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: 500;
+  color: var(--foreground);
+  transition: color var(--dur) var(--ease);
+}
+.card-meta { display: flex; align-items: center; gap: 8px; }
+.agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--fs-micro);
+  color: var(--foreground-secondary);
+}
+.agent-avatar {
+  position: relative;
+  width: 18px; height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--muted) 80%, transparent);
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.presence {
+  position: absolute;
+  right: -1px; bottom: -1px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface);
+  background: var(--faint-foreground); /* idle 灰 */
+}
+.presence.running {
+  background: var(--success);
+  animation: pulse 1.6s var(--ease) infinite; /* running 绿脉冲 */
+}
+.card-unassigned { font-size: var(--fs-micro); color: var(--faint-foreground); }
+.card-note { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--muted-foreground); }
+.done-note { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--success); }
+
+/* 任务状态带：徽章公式 = 语义色 12% 底 + 实色文字 + 图标（双编码） */
+.band {
+  --band-color: var(--muted-foreground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--band-color) 12%, transparent);
+  color: var(--band-color);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.band-icon { font-style: normal; }
+.band-running { --band-color: var(--info); }
+.band-running .band-icon { display: inline-block; animation: pulse 1.6s var(--ease) infinite; }
+.band-failed { --band-color: var(--destructive); }
+.band-review { --band-color: var(--success); }
+.band-queued { --band-color: var(--muted-foreground); }
+.diff-mini {
+  margin-left: auto;
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-weight: 400;
+}
+.diff-mini .a { color: var(--success); }
+.diff-mini .d { color: var(--destructive); }
+
+/* ---------- 右侧任务面板 ---------- */
+.panel {
+  width: clamp(420px, 42%, 660px);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--surface-border);
+}
+.panel.is-hidden { display: none; }
+.panel-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--surface-border);
+}
+.panel-head-main { flex: 1; min-width: 0; }
+.panel-eyebrow {
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.panel-title {
+  margin-top: 2px;
+  font-size: var(--fs-title-sm);
+  line-height: var(--lh-title-sm);
+  font-weight: 600;
+}
+.badge {
+  --badge-color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px; /* pill 只给状态徽章 */
+  background: color-mix(in oklch, var(--badge-color) 12%, transparent);
+  color: var(--badge-color);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.badge-running { --badge-color: var(--info); }
+.badge-icon { display: inline-block; animation: pulse 1.6s var(--ease) infinite; }
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---------- 锻造台（深色常驻面板） ---------- */
+.forge {
+  margin: 16px;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--console-bg);
+  border: 1px solid var(--console-border);
+  border-radius: var(--radius-lg);
+  color: var(--console-fg);
+  scrollbar-color: color-mix(in oklch, var(--console-fg) 25%, transparent) transparent;
+}
+.forge ::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--console-fg) 25%, transparent); }
+.forge :focus-visible {
+  box-shadow: 0 0 0 2px var(--console-bg),
+              0 0 0 4px color-mix(in oklch, var(--console-brand) 45%, transparent);
+}
+.forge .dim { color: var(--console-fg-dim); }
+.forge .a { color: var(--console-green); }
+.forge .d { color: var(--console-red); }
+.forge-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--console-amber); /* 琥珀标题 */
+}
+.forge-sub {
+  margin-left: auto;
+  font-size: var(--fs-micro);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--console-fg-dim);
+}
+.forge-section + .forge-section {
+  border-top: 1px solid var(--console-border);
+  padding-top: 14px;
+}
+.forge-h {
+  margin-bottom: 10px;
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--console-amber); /* 琥珀标题 */
+}
+.branch-line { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); }
+.branch-line code {
+  padding: 2px 8px;
+  border: 1px solid var(--console-border);
+  border-radius: var(--radius-sm);
+  background: var(--console-raised);
+  font-size: 12px;
+  color: var(--console-fg);
+}
+.branch-line code b { color: var(--console-amber); font-weight: 500; }
+.diff-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: var(--fs-micro);
+  color: var(--console-fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* diff 视图（深炭底，gutter +/- 双编码常驻） */
+.diff {
+  margin-top: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.diff summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  background: var(--console-raised);
+  font-size: var(--fs-caption);
+  color: var(--console-fg);
+  transition: background var(--dur) var(--ease);
+}
+.diff summary::-webkit-details-marker { display: none; }
+.diff summary:hover { background: color-mix(in oklch, var(--console-fg) 6%, var(--console-raised)); }
+.diff .chev { font-size: 10px; color: var(--console-fg-dim); transition: transform var(--dur) var(--ease); }
+.diff[open] .chev { transform: rotate(90deg); }
+.diff .stat { margin-left: auto; font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.diff-body {
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  overflow-x: auto;
+}
+.diff-file-head {
+  display: flex;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--console-raised);
+  border-top: 1px solid var(--console-border);
+  font-size: 11px;
+  color: var(--console-fg-dim);
+}
+.diff-file-head .file { color: var(--console-fg); }
+.diff-file-head .stat { margin-left: auto; }
+.diff-line { display: flex; min-width: max-content; }
+.diff-line .g {
+  flex: none;
+  width: 22px;
+  text-align: center;
+  user-select: none;
+  color: var(--console-fg-dim);
+}
+.diff-line .c { padding-right: 12px; white-space: pre; color: var(--console-fg); }
+.diff-line.add { background: var(--console-diff-add-bg); }
+.diff-line.add .g { color: var(--console-green); }
+.diff-line.del { background: var(--console-diff-del-bg); }
+.diff-line.del .g { color: var(--console-red); }
+.diff-line.hunk { background: var(--console-diff-hunk-bg); }
+.diff-line.hunk .c { color: var(--console-blue); }
+
+.forge-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.forge .btn-primary { background: var(--console-brand); color: var(--console-brand-fg); }
+.forge .btn-primary:hover { background: var(--console-brand-hover); }
+.forge-actions .hint { font-size: var(--fs-micro); color: var(--console-fg-dim); }
+.reject-row { display: flex; gap: 8px; margin-top: 8px; }
+.reject-row input {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--console-border);
+  border-radius: var(--radius-sm);
+  background: var(--console-raised);
+  font-size: var(--fs-label);
+  color: var(--console-fg);
+  transition: border-color var(--dur) var(--ease);
+}
+.reject-row input::placeholder { color: var(--console-fg-dim); }
+.btn-reject {
+  border-color: color-mix(in oklch, var(--console-red) 45%, transparent);
+  color: var(--console-red);
+  background: transparent;
+}
+.btn-reject:hover { background: color-mix(in oklch, var(--console-red) 12%, transparent); }
+
+/* 日志流：类型徽章（DESIGN.md 组件约定）+ 默认折叠 */
+.log {
+  display: flex;
+  flex-direction: column;
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.log-row {
+  display: grid;
+  grid-template-columns: 58px 92px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+.log-time { color: var(--console-fg-dim); }
+.log-badge {
+  --lb: var(--console-fg-dim);
+  justify-self: start;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--lb) 14%, transparent);
+  color: var(--lb);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.log-badge.agent { --lb: var(--console-green); }
+.log-badge.thinking { --lb: var(--console-purple); }
+.log-badge.tool_use { --lb: var(--console-blue); }
+.log-badge.tool_result { --lb: var(--console-fg-dim); }
+.log-badge.error { --lb: var(--console-red); }
+.log-text { color: var(--console-fg); word-break: break-word; }
+.log-detail summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--console-fg);
+}
+.log-detail summary::-webkit-details-marker { display: none; }
+.log-detail summary::before {
+  content: "▸";
+  margin-right: 6px;
+  font-size: 10px;
+  color: var(--console-fg-dim);
+}
+.log-detail[open] summary::before { content: "▾"; }
+.log-detail summary:hover .t { color: var(--console-amber); }
+.log-detail pre {
+  margin: 6px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--console-border);
+  border-radius: var(--radius-sm);
+  background: var(--console-raised);
+  color: var(--console-fg-dim);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-x: auto;
+}
+
+/* ---------- 评论区（浅色办公区） ---------- */
+.comments { margin: 0 16px 16px; }
+.comments-h {
+  margin-bottom: 8px;
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: 600;
+  color: var(--foreground-secondary);
+}
+.comment { display: flex; gap: 8px; margin-bottom: 10px; }
+.comment-main { min-width: 0; }
+.comment-meta { font-size: var(--fs-micro); color: var(--muted-foreground); }
+.comment-text { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--foreground); }
+.avatar-user {
+  flex: none;
+  width: 26px; height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+}
+.comment-row { display: flex; align-items: center; gap: 8px; }
+.comment-row input {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  background: var(--page-canvas);
+  font-size: var(--fs-label);
+  color: var(--foreground);
+  transition: border-color var(--dur) var(--ease);
+}
+.comment-row input::placeholder { color: var(--faint-foreground); }
+
+/* ---------- 响应式：<1100px 面板变固定抽屉 ---------- */
+@media (max-width: 1100px) {
+  .panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: min(560px, 94vw);
+    z-index: 50;
+    box-shadow: var(--shadow-modal);
+  }
+}
+
+/* ---------- 动效降级 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">⚒</span> Anvil</div>
+    <nav class="nav" aria-label="主导航">
+      <a class="nav-item is-active" href="#" aria-current="page">看板</a>
+      <a class="nav-item" href="#">Agents</a>
+    </nav>
+    <div class="topbar-right">
+      <button type="button" class="icon-btn" id="themeToggle" aria-label="切换到深色主题" title="切换深色 / 浅色">☾</button>
+      <button type="button" class="btn btn-primary">＋ 新建 issue</button>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- 看板：7 列横向滚动 -->
+    <section class="board" aria-label="任务看板">
+      <div class="cols">
+
+        <!-- backlog -->
+        <section class="col" style="--col-accent: var(--faint-foreground)" aria-label="收集箱">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">≡</span>
+              <h2 class="col-name">收集箱</h2>
+              <span class="col-count">2</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P2</span><span class="card-id">#31</span></div>
+              <h4 class="card-title">调研本地向量索引方案</h4>
+              <div class="card-meta"><span class="card-unassigned">未指派 agent</span></div>
+            </article>
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P3</span><span class="card-id">#35</span></div>
+              <h4 class="card-title">整理 runner 日志采集需求</h4>
+              <div class="card-meta"><span class="card-unassigned">未指派 agent</span></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- todo -->
+        <section class="col" style="--col-accent: var(--muted-foreground)" aria-label="待办">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">○</span>
+              <h2 class="col-name">待办</h2>
+              <span class="col-count">1</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P2</span><span class="card-id">#36</span></div>
+              <h4 class="card-title">为 server 补充 API 集成测试</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence"></i></span>anvil-02</span>
+              </div>
+              <div class="band band-queued"><span class="band-icon" aria-hidden="true">⟳</span>排队中 · 第 2 位</div>
+            </article>
+          </div>
+        </section>
+
+        <!-- in_progress -->
+        <section class="col" style="--col-accent: var(--info)" aria-label="进行中">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">▶</span>
+              <h2 class="col-name">进行中</h2>
+              <span class="col-count">2</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P1</span><span class="card-id">#38</span></div>
+              <h4 class="card-title">修复登录页样式</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence running"></i></span>anvil-01</span>
+              </div>
+              <div class="band band-running"><span class="band-icon" aria-hidden="true">▶</span>执行中 · 已运行 12:34</div>
+            </article>
+            <article class="card is-selected" tabindex="0" data-open-panel aria-label="新增 CONTRIBUTING.md，按回车打开任务面板">
+              <div class="card-top"><span class="chip">P2</span><span class="card-id">#42</span></div>
+              <h4 class="card-title">新增 CONTRIBUTING.md</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence running"></i></span>anvil-02</span>
+              </div>
+              <div class="band band-running"><span class="band-icon" aria-hidden="true">▶</span>执行中 · 已运行 03:57</div>
+            </article>
+          </div>
+        </section>
+
+        <!-- in_review -->
+        <section class="col" style="--col-accent: var(--review)" aria-label="待验收">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">◐</span>
+              <h2 class="col-name">待验收</h2>
+              <span class="col-count">1</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card card-attention" tabindex="0">
+              <div class="card-top"><span class="chip">P2</span><span class="card-id">#41</span></div>
+              <h4 class="card-title">生成周三选题清单</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence"></i></span>anvil-02</span>
+              </div>
+              <div class="band band-review">
+                <span class="band-icon" aria-hidden="true">📦</span>待验收
+                <span class="diff-mini">5 files <span class="a">+128</span> <span class="d">-64</span></span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <!-- done -->
+        <section class="col" style="--col-accent: var(--success)" aria-label="已完成">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">✓</span>
+              <h2 class="col-name">已完成</h2>
+              <span class="col-count">1</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P3</span><span class="card-id">#29</span></div>
+              <h4 class="card-title">升级 pnpm 依赖并锁定版本</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence"></i></span>anvil-01</span>
+              </div>
+              <div class="done-note">✓ 已合入 main · 2 小时前</div>
+            </article>
+          </div>
+        </section>
+
+        <!-- blocked -->
+        <section class="col" style="--col-accent: var(--destructive)" aria-label="阻塞">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">⊘</span>
+              <h2 class="col-name">阻塞</h2>
+              <span class="col-count">1</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <article class="card" tabindex="0">
+              <div class="card-top"><span class="chip">P1</span><span class="card-id">#40</span></div>
+              <h4 class="card-title">接入 GitHub Webhook 重试队列</h4>
+              <div class="card-meta">
+                <span class="agent"><span class="agent-avatar" aria-hidden="true">⚒<i class="presence"></i></span>anvil-03</span>
+              </div>
+              <div class="card-note">最近错误：webhook 投递超时（60s）</div>
+              <div class="band band-failed"><span class="band-icon" aria-hidden="true">✗</span>失败 · 重试 2/3</div>
+            </article>
+          </div>
+        </section>
+
+        <!-- cancelled（空列：虚线占位） -->
+        <section class="col" style="--col-accent: var(--faint-foreground)" aria-label="已取消">
+          <header class="col-head">
+            <div class="col-head-row">
+              <span class="col-icon" aria-hidden="true">✕</span>
+              <h2 class="col-name">已取消</h2>
+              <span class="col-count">0</span>
+            </div>
+            <div class="col-bar" aria-hidden="true"></div>
+          </header>
+          <div class="col-body">
+            <div class="col-empty">无任务</div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- 右侧任务面板（默认打开） -->
+    <aside class="panel" id="taskPanel" aria-label="任务详情面板">
+      <header class="panel-head">
+        <div class="panel-head-main">
+          <div class="panel-eyebrow">#42 · owner 掌柜 · delegate <span class="mono">anvil-02</span></div>
+          <h2 class="panel-title">新增 CONTRIBUTING.md</h2>
+        </div>
+        <span class="badge badge-running"><span class="badge-icon" aria-hidden="true">▶</span>运行中</span>
+        <button type="button" class="icon-btn" id="panelClose" aria-label="关闭面板">✕</button>
+      </header>
+
+      <div class="panel-body">
+
+        <!-- 锻造台：深色常驻（浅色主题下同样是深炭底 + 琥珀标题） -->
+        <section class="forge" aria-label="锻造台：交付与执行日志">
+          <div class="forge-title">
+            <span aria-hidden="true">⚒</span> 锻造台
+            <span class="forge-sub">runner 本地执行 · 实时回传</span>
+          </div>
+
+          <!-- 交付区 -->
+          <section class="forge-section" aria-label="交付区">
+            <h3 class="forge-h">交付区</h3>
+            <div class="branch-line">
+              <span class="dim">分支</span>
+              <code><b>task/9dd718c9</b> → <b>main</b></code>
+            </div>
+            <div class="diff-stat mono">
+              <span>3 files changed</span><span class="a">+46</span><span class="d">-12</span>
+            </div>
+
+            <details class="diff">
+              <summary>
+                <span class="chev" aria-hidden="true">▸</span>
+                <span class="mono">查看完整 diff</span>
+                <span class="stat mono"><span class="a">+46</span> <span class="d">-12</span></span>
+              </summary>
+              <div class="diff-body">
+                <div class="diff-file-head">
+                  <span class="file mono">CONTRIBUTING.md（新增）</span>
+                  <span class="stat mono"><span class="a">+38</span></span>
+                </div>
+                <div class="diff-line hunk"><span class="g">@@</span><span class="c">@@ -0,0 +1,12 @@</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"># Contributing to Anvil</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"></span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">感谢愿意为 Anvil 贡献代码，本项目以 MIT 协议开源。</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"></span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">## 开发环境</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"></span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">- Node.js 20+ 与 pnpm 9+</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">- 克隆后执行 pnpm install &amp;&amp; pnpm build</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"></span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">## 提交规范</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c"></span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">使用 Conventional Commits，提交前跑 pnpm lint &amp;&amp; pnpm test。</span></div>
+                <div class="diff-file-head">
+                  <span class="file mono">README.md</span>
+                  <span class="stat mono"><span class="a">+2</span> <span class="d">-2</span></span>
+                </div>
+                <div class="diff-line hunk"><span class="g">@@</span><span class="c">@@ -14,7 +14,7 @@</span></div>
+                <div class="diff-line"><span class="g"></span><span class="c"> ## 文档</span></div>
+                <div class="diff-line del"><span class="g">-</span><span class="c">- [开发指南](docs/dev.md)（待补充）</span></div>
+                <div class="diff-line del"><span class="g">-</span><span class="c">- [发布流程](docs/release.md)（待补充）</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">+ [贡献指南](CONTRIBUTING.md)</span></div>
+                <div class="diff-line add"><span class="g">+</span><span class="c">+ [开发指南](docs/dev.md)</span></div>
+                <div class="diff-line"><span class="g"></span><span class="c"> ## 许可证</span></div>
+                <div class="diff-line"><span class="g"></span><span class="c"> MIT</span></div>
+              </div>
+            </details>
+
+            <div class="forge-actions">
+              <button type="button" class="btn btn-primary">合入 main</button>
+              <span class="hint">合入后自动关闭 issue</span>
+            </div>
+            <div class="reject-row">
+              <input type="text" placeholder="打回重跑：写下要修改的点，agent 将重新执行…" aria-label="打回重跑意见">
+              <button type="button" class="btn btn-reject">打回重跑</button>
+            </div>
+          </section>
+
+          <!-- 执行日志流 -->
+          <section class="forge-section" aria-label="执行日志流">
+            <h3 class="forge-h">执行日志流</h3>
+            <div class="log">
+              <div class="log-row">
+                <span class="log-time">12:02:09</span>
+                <span class="log-badge agent">agent</span>
+                <span class="log-text">收到任务：为仓库新增 CONTRIBUTING.md，风格对齐现有文档。</span>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:02:14</span>
+                <span class="log-badge thinking">thinking</span>
+                <span class="log-text">先读 README 与 docs/ 的语气，章节保持简洁，避免营销口吻。</span>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:02:18</span>
+                <span class="log-badge tool_use">tool_use</span>
+                <span class="log-text dim">Read · README.md、DESIGN.md（2 个文件，共 153 行）</span>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:02:31</span>
+                <span class="log-badge tool_use">tool_use</span>
+                <span class="log-text dim">Write · CONTRIBUTING.md（新增 38 行）</span>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:02:47</span>
+                <span class="log-badge tool_result">tool_result</span>
+                <details class="log-detail" open>
+                  <summary><span class="t">写入完成 · lint / test 通过（2 项检查）</span></summary>
+                  <pre>✓ CONTRIBUTING.md 已写入（+38）
+✓ README.md 已更新（+2 -2）
+$ pnpm lint  …  0 errors, 0 warnings
+$ pnpm test  …  7 passed, 7 total</pre>
+                </details>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:02:55</span>
+                <span class="log-badge error">error</span>
+                <span class="log-text">pnpm test 首次运行超时（60s），已自动重试并通过。</span>
+              </div>
+              <div class="log-row">
+                <span class="log-time">12:03:12</span>
+                <span class="log-badge agent">agent</span>
+                <span class="log-text">产出已提交至 task/9dd718c9，等待验收。</span>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <!-- 评论 -->
+        <section class="comments" aria-label="评论">
+          <h3 class="comments-h">评论</h3>
+          <div class="comment">
+            <span class="avatar-user" aria-hidden="true">掌</span>
+            <div class="comment-main">
+              <div class="comment-meta">掌柜 · 1 小时前</div>
+              <div class="comment-text">README 里也顺手补一个入口链接。</div>
+            </div>
+          </div>
+          <div class="comment-row">
+            <span class="avatar-user" aria-hidden="true">掌</span>
+            <input type="text" placeholder="添加评论，输入 @ 可提及 agent…" aria-label="添加评论">
+            <button type="button" class="btn btn-ghost">发送</button>
+          </div>
+        </section>
+
+      </div>
+    </aside>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var KEY = 'anvil-theme';
+  var toggle = document.getElementById('themeToggle');
+
+  function paint(theme) {
+    toggle.textContent = theme === 'dark' ? '☀' : '☾';
+    toggle.setAttribute('aria-label', theme === 'dark' ? '切换到浅色主题' : '切换到深色主题');
+  }
+
+  function apply(theme) {
+    /* disableTransitionOnChange：切换瞬间关掉过渡，防闪烁 */
+    root.classList.add('no-transitions');
+    root.dataset.theme = theme;
+    try { localStorage.setItem(KEY, theme); } catch (e) {}
+    paint(theme);
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { root.classList.remove('no-transitions'); });
+    });
+  }
+
+  paint(root.dataset.theme === 'dark' ? 'dark' : 'light');
+  toggle.addEventListener('click', function () {
+    apply(root.dataset.theme === 'dark' ? 'light' : 'dark');
+  });
+
+  /* 面板关闭 / 重新打开（点击 #42 卡片重开） */
+  var panel = document.getElementById('taskPanel');
+  document.getElementById('panelClose').addEventListener('click', function () {
+    panel.classList.add('is-hidden');
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-open-panel]'), function (el) {
+    el.addEventListener('click', function () { panel.classList.remove('is-hidden'); });
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') panel.classList.remove('is-hidden');
+    });
+  });
+})();
+</script>
+</body>
+</html>

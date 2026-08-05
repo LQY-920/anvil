@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anvil 原型 · 方向 A「灰阶克制」</title>
+<style>
+/* ============ Design tokens（取自 DESIGN.md） ============ */
+:root{
+  color-scheme: light;
+  --app-shell: oklch(0.955 0.006 70);
+  --page-canvas: oklch(0.982 0.004 70);
+  --surface: oklch(0.995 0.002 70);
+  --surface-raised: oklch(1 0 0);
+  --surface-hover: oklch(0.955 0.008 60);
+  --surface-border: oklch(0.905 0.006 60);
+  --foreground: oklch(0.20 0.008 60);
+  --foreground-secondary: oklch(0.38 0.01 60);
+  --muted-foreground: oklch(0.47 0.012 60);
+  --faint-foreground: oklch(0.58 0.01 60);
+  --brand: oklch(0.47 0.10 45);
+  --brand-hover: oklch(0.42 0.10 45);
+  --brand-foreground: oklch(0.99 0.003 70);
+  --info: oklch(0.50 0.11 255);
+  --review: oklch(0.48 0.12 295);
+  --success: oklch(0.52 0.11 150);
+  --attention: oklch(0.55 0.12 80);
+  --destructive: oklch(0.50 0.16 25);
+  --muted: oklch(0.93 0.006 60);
+  --diff-add-line-bg:#dafbe1; --diff-add-word-bg:#aceebb;
+  --diff-del-line-bg:#ffebe9; --diff-del-word-bg:#ffcecb;
+  --diff-hunk-bg:#ddf4ff;
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 8%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 12%);
+  --focus-ring: 0 0 0 2px var(--page-canvas), 0 0 0 4px color-mix(in oklch, var(--brand) 40%, transparent);
+  --text-micro: 11px/15px; --text-caption: 12px/16px; --text-label: 13px/18px;
+  --text-body: 14px/20px; --text-title-sm: 16px/24px; --text-title: 18px/26px;
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 10px;
+  --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --dur: 150ms;
+  --console-bg: oklch(0.185 0.006 60);
+  --console-fg: oklch(0.82 0.006 60);
+}
+[data-theme="dark"]{
+  color-scheme: dark;
+  --app-shell: oklch(0.165 0.006 60);
+  --page-canvas: oklch(0.185 0.006 60);
+  --surface: oklch(0.215 0.007 60);
+  --surface-raised: oklch(0.245 0.008 60);
+  --surface-hover: oklch(0.26 0.008 60);
+  --surface-border: oklch(1 0 0 / 7%);
+  --foreground: oklch(0.97 0.003 60);
+  --foreground-secondary: oklch(0.82 0.006 60);
+  --muted-foreground: oklch(0.70 0.008 60);
+  --faint-foreground: oklch(0.60 0.008 60);
+  --brand: oklch(0.72 0.11 55);
+  --brand-hover: oklch(0.77 0.11 55);
+  --brand-foreground: oklch(0.20 0.01 60);
+  --info: oklch(0.72 0.10 255);
+  --review: oklch(0.72 0.11 295);
+  --success: oklch(0.72 0.11 150);
+  --attention: oklch(0.75 0.12 80);
+  --destructive: oklch(0.68 0.15 25);
+  --muted: oklch(0.28 0.008 60);
+  --diff-add-line-bg: oklch(0.60 0.12 150 / 15%); --diff-add-word-bg: oklch(0.60 0.12 150 / 35%);
+  --diff-del-line-bg: oklch(0.62 0.15 25 / 15%);  --diff-del-word-bg: oklch(0.62 0.15 25 / 35%);
+  --diff-hunk-bg: oklch(0.65 0.10 240 / 15%);
+  --shadow-menu: 0 4px 16px oklch(0.2 0.01 60 / 16%);
+  --shadow-modal: 0 8px 32px oklch(0.2 0.01 60 / 24%);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{height:100%}
+body{
+  font: var(--text-body);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--app-shell);
+  color: var(--foreground);
+  height:100vh; overflow:hidden;
+}
+button, input{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:none}
+:focus{outline:none}
+:focus-visible{box-shadow: var(--focus-ring); border-radius: var(--radius-sm)}
+::selection{background: color-mix(in oklch, var(--brand) 22%, transparent)}
+
+/* 6px 细滚动条 */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background: color-mix(in oklch, var(--faint-foreground) 45%, transparent); border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background: var(--faint-foreground)}
+*{scrollbar-width:thin; scrollbar-color: color-mix(in oklch, var(--faint-foreground) 45%, transparent) transparent}
+
+/* ============ 布局骨架 ============ */
+.app{display:flex;flex-direction:column;height:100vh}
+.main{display:flex;flex:1;min-height:0}
+.board-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--page-canvas)}
+
+/* ============ 顶栏 ============ */
+.topbar{
+  height:48px;flex:none;display:flex;align-items:center;gap:8px;
+  padding:0 16px;background:var(--surface);border-bottom:1px solid var(--surface-border);
+}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font:var(--text-title-sm);font-weight:600;margin-right:12px}
+.brand .mark{font-size:16px}
+.nav{display:flex;gap:2px}
+.nav button{
+  font:var(--text-label);color:var(--muted-foreground);padding:5px 10px;border-radius:var(--radius-sm);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.nav button:hover{background:var(--surface-hover);color:var(--foreground-secondary)}
+.nav button.active{color:var(--foreground);background:var(--muted);font-weight:500}
+.topbar .spacer{flex:1}
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  font:var(--text-label);font-weight:500;
+  padding:6px 12px;border-radius:var(--radius-sm);border:1px solid transparent;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.btn-brand{background:var(--brand);color:var(--brand-foreground)}
+.btn-brand:hover{background:var(--brand-hover)}
+.btn-ghost{color:var(--muted-foreground);border-color:var(--surface-border)}
+.btn-ghost:hover{background:var(--surface-hover);color:var(--foreground-secondary)}
+.icon-btn{
+  width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:var(--radius-sm);color:var(--muted-foreground);font-size:15px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.icon-btn:hover{background:var(--surface-hover);color:var(--foreground)}
+
+/* ============ 看板：方向 A —— 全部中性灰列 ============ */
+.board-head{
+  flex:none;display:flex;align-items:baseline;gap:12px;
+  padding:16px 20px 12px;
+}
+.board-head h1{font:var(--text-title);font-weight:600}
+.board-head .sub{font:var(--text-caption);color:var(--muted-foreground)}
+.board{
+  flex:1;display:flex;gap:12px;overflow-x:auto;padding:4px 20px 20px;align-items:flex-start;
+}
+.col{
+  flex:none;width:264px;border-radius:var(--radius-lg);
+  background: color-mix(in oklch, var(--muted) 40%, transparent); /* 方向 A：全部列统一中性灰 */
+  display:flex;flex-direction:column;max-height:100%;
+}
+.col-head{
+  display:flex;align-items:center;gap:6px;padding:10px 12px 8px;
+  font:var(--text-caption);color:var(--foreground-secondary);font-weight:500;
+}
+.col-head .status-ico{font-size:12px;color:var(--faint-foreground)}
+.col-head .name{text-transform:none;letter-spacing:0}
+.col-head .count{
+  margin-left:auto;font:var(--text-micro);color:var(--muted-foreground);
+  background:var(--muted);border-radius:9999px;padding:1px 7px;font-variant-numeric:tabular-nums;
+}
+.col-body{display:flex;flex-direction:column;gap:8px;padding:2px 8px 10px;overflow-y:auto}
+.col-empty{
+  border:1px dashed color-mix(in oklch, var(--faint-foreground) 40%, transparent);
+  border-radius:var(--radius-md);padding:16px 12px;text-align:center;
+  font:var(--text-caption);color:var(--faint-foreground);
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+}
+.col-empty .ico{font-size:24px;opacity:.6}
+
+/* ============ 卡片 ============ */
+.card{
+  background:var(--surface);border:1px solid var(--surface-border);border-radius:var(--radius-md);
+  padding:10px 12px;display:flex;flex-direction:column;gap:8px;cursor:pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.card:hover{background:var(--surface-hover);border-color: color-mix(in oklch, var(--faint-foreground) 45%, transparent)}
+.card.selected{border-color: color-mix(in oklch, var(--brand) 55%, transparent)}
+.card .title{font:var(--text-body);font-weight:500;line-height:20px}
+.card .meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+
+/* 优先级 chip —— 灰阶（方向 A 不铺彩色） */
+.chip{
+  display:inline-flex;align-items:center;gap:4px;
+  font:var(--text-micro);font-weight:500;
+  padding:1px 7px;border-radius:var(--radius-sm);
+  background:var(--muted);color:var(--foreground-secondary);
+}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:var(--faint-foreground)}
+.chip.p1 .dot{background:var(--destructive)}  /* P1 仅一个小色点，不染色整块 */
+
+/* agent 标签 */
+.agent-tag{
+  display:inline-flex;align-items:center;gap:5px;font:var(--text-micro);
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  color:var(--muted-foreground);
+}
+.agent-tag .ava{
+  width:16px;height:16px;border-radius:50%;background:var(--muted);
+  display:inline-flex;align-items:center;justify-content:center;font-size:9px;
+}
+.presence{width:6px;height:6px;border-radius:50%;background:var(--faint-foreground);flex:none}
+.presence.running{background:var(--success);animation:pulse 1.6s var(--ease) infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* 任务状态带 */
+.band{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  font:var(--text-micro);font-weight:500;
+  padding:4px 8px;border-radius:var(--radius-sm);
+}
+.band .diff-sum{font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;font-variant-numeric:tabular-nums;opacity:.85;margin-left:auto}
+.band.run{background: color-mix(in oklch, var(--info) 12%, transparent); color:var(--info)}
+.band.run .play{animation:pulse 1.6s var(--ease) infinite;display:inline-block}
+.band.fail{background: color-mix(in oklch, var(--destructive) 12%, transparent); color:var(--destructive)}
+.band.review{background: color-mix(in oklch, var(--success) 12%, transparent); color:var(--success)}
+.band.queue{background: color-mix(in oklch, var(--foreground) 7%, transparent); color:var(--muted-foreground)}
+
+/* 待验收整卡淡染（attention 8% + 边 30%）—— 唯一的染色卡 */
+.card.attention{
+  background: color-mix(in oklch, var(--attention) 8%, var(--surface));
+  border-color: color-mix(in oklch, var(--attention) 30%, transparent);
+}
+.card.attention:hover{background: color-mix(in oklch, var(--attention) 12%, var(--surface))}
+
+/* ============ 状态徽章（图标+文字 双编码，pill） ============ */
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  font:var(--text-micro);font-weight:500;
+  padding:2px 9px;border-radius:9999px;white-space:nowrap;
+}
+.badge.run{background: color-mix(in oklch, var(--info) 12%, transparent); color:var(--info)}
+.badge.done{background: color-mix(in oklch, var(--success) 12%, transparent); color:var(--success)}
+.badge.attn{background: color-mix(in oklch, var(--attention) 14%, transparent); color:var(--attention)}
+.badge.err{background: color-mix(in oklch, var(--destructive) 12%, transparent); color:var(--destructive)}
+.badge.idle{background: color-mix(in oklch, var(--foreground) 7%, transparent); color:var(--muted-foreground)}
+
+/* ============ 右侧任务面板 ============ */
+.panel{
+  flex:none;width:42%;min-width:420px;max-width:640px;
+  background:var(--surface);border-left:1px solid var(--surface-border);
+  display:flex;flex-direction:column;min-height:0;
+}
+.panel-head{
+  flex:none;padding:14px 16px 12px;border-bottom:1px solid var(--surface-border);
+  display:flex;align-items:flex-start;gap:10px;
+}
+.panel-head .ph-title{flex:1;min-width:0}
+.panel-head h2{font:var(--text-title-sm);font-weight:600;margin-bottom:6px}
+.panel-head .ph-sub{display:flex;align-items:center;gap:8px;font:var(--text-caption);color:var(--muted-foreground)}
+.panel-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:20px}
+
+.section h3{
+  font:var(--text-caption);font-weight:600;color:var(--muted-foreground);
+  text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;
+}
+.deliver-box{border:1px solid var(--surface-border);border-radius:var(--radius-md);overflow:hidden}
+.deliver-top{
+  display:flex;align-items:center;gap:8px;padding:10px 12px;
+  font:var(--text-caption);font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  color:var(--foreground-secondary);flex-wrap:wrap;
+}
+.deliver-top .arrow{color:var(--faint-foreground)}
+.diff-stat{display:inline-flex;gap:6px;font-variant-numeric:tabular-nums;margin-left:auto}
+.diff-stat .add{color:var(--success)} .diff-stat .del{color:var(--destructive)}
+
+/* diff 视图 */
+.diff{
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-size:12px;line-height:18px;font-variant-numeric:tabular-nums;
+  border-top:1px solid var(--surface-border);overflow-x:auto;
+}
+.diff .row{display:flex;white-space:pre;min-width:max-content}
+.diff .gut{
+  flex:none;width:22px;text-align:center;user-select:none;color:var(--faint-foreground);
+}
+.diff .code{padding-right:12px;color:var(--foreground-secondary)}
+.diff .row.hunk{background:var(--diff-hunk-bg);color:var(--info)}
+.diff .row.hunk .code{color:inherit}
+.diff .row.add{background:var(--diff-add-line-bg)}
+.diff .row.add .gut{color:var(--success)}
+.diff .row.del{background:var(--diff-del-line-bg)}
+.diff .row.del .gut{color:var(--destructive)}
+.diff .row.add .code em,.diff .row.del .code em{font-style:normal}
+.diff .row.add .code em{background:var(--diff-add-word-bg)}
+.diff .row.del .code em{background:var(--diff-del-word-bg)}
+.diff-toggle{
+  display:flex;align-items:center;gap:6px;width:100%;justify-content:center;
+  padding:7px;font:var(--text-caption);color:var(--muted-foreground);
+  border-top:1px solid var(--surface-border);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.diff-toggle:hover{background:var(--surface-hover);color:var(--foreground)}
+.diff.collapsed .foldable{display:none}
+.diff.collapsed .diff-toggle{border-top:none}
+
+.deliver-actions{display:flex;gap:8px;padding:12px;border-top:1px solid var(--surface-border);flex-wrap:wrap}
+.reject-input{
+  flex:1;min-width:160px;padding:6px 10px;border:1px solid var(--surface-border);
+  border-radius:var(--radius-sm);background:var(--page-canvas);font:var(--text-label);
+  transition: border-color var(--dur) var(--ease);
+}
+.reject-input::placeholder{color:var(--faint-foreground)}
+.reject-input:focus{border-color: color-mix(in oklch, var(--brand) 50%, transparent);outline:none;box-shadow:var(--focus-ring)}
+
+/* 日志流 —— 深色常驻 console */
+.console{
+  background:var(--console-bg);color:var(--console-fg);
+  border-radius:var(--radius-md);padding:10px 12px;
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+  font-size:12px;line-height:18px;font-variant-numeric:tabular-nums;
+  display:flex;flex-direction:column;gap:6px;
+}
+.log-row{display:flex;gap:8px;align-items:baseline}
+.log-row .time{color: color-mix(in oklch, var(--console-fg) 50%, transparent);flex:none}
+.log-badge{
+  flex:none;font-size:10px;font-weight:600;letter-spacing:.03em;
+  padding:0 6px;border-radius:var(--radius-sm);line-height:16px;
+}
+.log-badge.agent{background: color-mix(in oklch, var(--success) 20%, transparent); color: oklch(0.80 0.11 150)}
+.log-badge.thinking{background: color-mix(in oklch, var(--review) 22%, transparent); color: oklch(0.80 0.10 295)}
+.log-badge.tool_use{background: color-mix(in oklch, var(--info) 22%, transparent); color: oklch(0.78 0.10 255)}
+.log-badge.tool_result{background: oklch(1 0 0 / 8%); color: oklch(0.72 0.006 60)}
+.log-badge.error{background: color-mix(in oklch, var(--destructive) 24%, transparent); color: oklch(0.78 0.13 25)}
+.log-row .msg{color:var(--console-fg);word-break:break-all}
+.tool-out{
+  margin:2px 0 2px 60px;padding:6px 8px;border-left:2px solid oklch(1 0 0 / 12%);
+  color: color-mix(in oklch, var(--console-fg) 72%, transparent);white-space:pre-wrap;
+}
+.tool-fold{
+  margin-left:60px;color: color-mix(in oklch, var(--console-fg) 55%, transparent);
+  cursor:pointer;display:inline-flex;gap:5px;font:inherit;
+  transition: color var(--dur) var(--ease);
+}
+.tool-fold:hover{color:var(--console-fg)}
+.tool-fold .caret{display:inline-block;transition: transform var(--dur) var(--ease)}
+.tool-fold.open .caret{transform:rotate(90deg)}
+
+/* 评论 */
+.comment{display:flex;gap:8px}
+.comment .ava-me{
+  flex:none;width:26px;height:26px;border-radius:50%;background:var(--muted);
+  display:flex;align-items:center;justify-content:center;font:var(--text-micro);font-weight:600;
+  color:var(--foreground-secondary);
+}
+.comment input{
+  flex:1;padding:7px 10px;border:1px solid var(--surface-border);border-radius:var(--radius-sm);
+  background:var(--page-canvas);font:var(--text-label);
+  transition: border-color var(--dur) var(--ease);
+}
+.comment input::placeholder{color:var(--faint-foreground)}
+.comment input:focus{border-color: color-mix(in oklch, var(--brand) 50%, transparent);outline:none;box-shadow:var(--focus-ring)}
+
+/* ============ 响应式：<1100px 面板变抽屉 ============ */
+.scrim{display:none}
+@media (max-width: 1099px){
+  .panel{
+    position:fixed;top:0;right:0;bottom:0;z-index:40;width:min(480px, 92vw);min-width:0;max-width:none;
+    box-shadow:var(--shadow-modal);
+  }
+  .scrim{
+    display:block;position:fixed;inset:0;z-index:30;
+    background: oklch(0.15 0.01 60 / 35%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{animation:none !important; transition:none !important}
+}
+.no-transitions, .no-transitions *{transition:none !important}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ 顶栏 ============ -->
+  <header class="topbar">
+    <div class="brand"><span class="mark">⚒</span>Anvil</div>
+    <nav class="nav">
+      <button class="active">看板</button>
+      <button>Agents</button>
+    </nav>
+    <div class="spacer"></div>
+    <button class="icon-btn" id="themeToggle" title="切换深色 / 浅色" aria-label="切换主题">🌙</button>
+    <button class="btn btn-brand">+ 新建 issue</button>
+  </header>
+
+  <div class="main">
+    <!-- ============ 看板 ============ -->
+    <div class="board-wrap">
+      <div class="board-head">
+        <h1>编码任务看板</h1>
+        <span class="sub">8 个 issue · 3 个 agent 在线</span>
+      </div>
+      <div class="board" id="board"><!-- JS 渲染 7 列 --></div>
+    </div>
+
+    <!-- ============ 右侧任务面板 ============ -->
+    <aside class="panel" id="panel">
+      <div class="panel-head">
+        <div class="ph-title">
+          <h2>新增 CONTRIBUTING.md</h2>
+          <div class="ph-sub">
+            <span class="badge run">▶ running</span>
+            <span>#ANV-42 · anvil-01 执行中 · 已运行 12 分钟</span>
+          </div>
+        </div>
+        <button class="icon-btn" id="panelClose" title="关闭面板" aria-label="关闭面板">✕</button>
+      </div>
+      <div class="panel-body">
+        <!-- 交付区 -->
+        <section class="section">
+          <h3>交付</h3>
+          <div class="deliver-box">
+            <div class="deliver-top">
+              <span>task/9dd718c9</span><span class="arrow">→</span><span>main</span>
+              <span class="diff-stat"><span style="color:var(--muted-foreground)">3 files</span><span class="add">+46</span><span class="del">-12</span></span>
+            </div>
+            <div class="diff collapsed" id="diffView">
+              <div class="row hunk"><span class="gut">·</span><span class="code">@@ -1,4 +1,9 @@ CONTRIBUTING.md</span></div>
+              <div class="row foldable"><span class="gut"> </span><span class="code"> # Anvil</span></div>
+              <div class="row foldable del"><span class="gut">-</span><span class="code">-个人 <em>AI Agent</em> 工作台</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+个人 <em>AI Agent 工作台</em>（MIT）</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+## 提交规范</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+- commit message 使用中文祈使句</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+- 改动前先读 DESIGN.md 与 PRODUCT.md</span></div>
+              <div class="row foldable"><span class="gut"> </span><span class="code"> </span></div>
+              <div class="row hunk foldable"><span class="gut">·</span><span class="code">@@ -12,3 +17,6 @@ README.md</span></div>
+              <div class="row foldable del"><span class="gut">-</span><span class="code">-详见 docs。</span></div>
+              <div class="row foldable add"><span class="gut">+</span><span class="code">+详见 docs/ 与 CONTRIBUTING.md。</span></div>
+              <button class="diff-toggle" id="diffToggle">展开全部 46 行 ▾</button>
+            </div>
+            <div class="deliver-actions">
+              <button class="btn btn-brand">合入 main</button>
+              <input class="reject-input" placeholder="打回重跑：写下要改什么…" aria-label="打回重跑说明">
+            </div>
+          </div>
+        </section>
+
+        <!-- 执行日志流 -->
+        <section class="section">
+          <h3>执行日志</h3>
+          <div class="console">
+            <div class="log-row"><span class="time">14:02:11</span><span class="log-badge agent">agent</span><span class="msg">开始任务：阅读仓库结构与现有文档</span></div>
+            <div class="log-row"><span class="time">14:02:14</span><span class="log-badge thinking">thinking</span><span class="msg">需要先确认文档风格，再起草 CONTRIBUTING</span></div>
+            <div class="log-row"><span class="time">14:02:15</span><span class="log-badge tool_use">tool_use</span><span class="msg">Read README.md</span></div>
+            <div class="log-row"><span class="time">14:02:15</span><span class="log-badge tool_result">tool_result</span><span class="msg">读取成功 · 58 行</span></div>
+            <button class="tool-fold" id="toolFold"><span class="caret">▸</span>展开工具输出（58 行）</button>
+            <div class="tool-out" id="toolOut" hidden># Anvil
+个人 AI Agent 工作台（一期：编码任务调度）。
+
+看板派任务 → 本地 runner 自主执行 → 实时日志流 →
+产出 diff 供验收 → 合入或打回返工。
+
+## 快速开始
+pnpm install
+pnpm dev
+…（共 58 行，已截断）</div>
+            <div class="log-row"><span class="time">14:03:40</span><span class="log-badge tool_use">tool_use</span><span class="msg">Write CONTRIBUTING.md</span></div>
+            <div class="log-row"><span class="time">14:03:41</span><span class="log-badge tool_result">tool_result</span><span class="msg">写入成功 · 新建 42 行</span></div>
+            <div class="log-row"><span class="time">14:04:02</span><span class="log-badge error">error</span><span class="msg">pnpm lint 报 1 处格式问题，正在自动修复</span></div>
+            <div class="log-row"><span class="time">14:04:09</span><span class="log-badge agent">agent</span><span class="msg">修复完成，准备提交 diff 等待验收</span></div>
+          </div>
+        </section>
+
+        <!-- 评论 -->
+        <section class="section">
+          <h3>评论</h3>
+          <div class="comment">
+            <span class="ava-me">我</span>
+            <input placeholder="给 anvil-01 留个言…（Enter 发送）" aria-label="评论输入框">
+          </div>
+        </section>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+  </div>
+</div>
+
+<script>
+/* ============ 主题：localStorage 记忆 + 默认跟随系统 ============ */
+(function(){
+  var KEY = 'anvil-theme';
+  var saved = localStorage.getItem(KEY);
+  var theme = saved || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  var root = document.documentElement;
+  root.classList.add('no-transitions');
+  root.dataset.theme = theme;
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ root.classList.remove('no-transitions'); }); });
+
+  var btn = document.getElementById('themeToggle');
+  function paint(){ btn.textContent = root.dataset.theme === 'dark' ? '☀️' : '🌙'; }
+  paint();
+  btn.addEventListener('click', function(){
+    root.classList.add('no-transitions');
+    root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(KEY, root.dataset.theme);
+    paint();
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ root.classList.remove('no-transitions'); }); });
+  });
+})();
+
+/* ============ 看板示例数据 ============ */
+var COLUMNS = [
+  { id:'backlog', ico:'○', name:'Backlog', cards:[
+    { title:'生成周三选题清单', prio:'p2', prioText:'P2', agent:'anvil-02', presence:'idle', band:{cls:'queue', text:'⟳ 排队中'} },
+    { title:'整理竞品调研笔记到 research/', prio:'p3', prioText:'P3', agent:'anvil-02', presence:'idle', band:{cls:'queue', text:'⟳ 排队中'} }
+  ]},
+  { id:'todo', ico:'◌', name:'Todo', cards:[
+    { title:'给 runner 加重试上限', prio:'p2', prioText:'P2', agent:'anvil-03', presence:'idle', band:{cls:'queue', text:'⟳ 排队中'} }
+  ]},
+  { id:'in_progress', ico:'◐', name:'In Progress', cards:[
+    { title:'新增 CONTRIBUTING.md', prio:'p2', prioText:'P2', agent:'anvil-01', presence:'running', band:{cls:'run', text:'▶ 执行中'}, selected:true },
+    { title:'修复登录页样式', prio:'p1', prioText:'P1', agent:'anvil-03', presence:'running', band:{cls:'run', text:'▶ 执行中'} }
+  ]},
+  { id:'in_review', ico:'◉', name:'In Review', cards:[
+    { title:'看板空状态占位组件', prio:'p2', prioText:'P2', agent:'anvil-01', presence:'idle', attention:true,
+      band:{cls:'review', text:'📦 待验收', diff:'3 files +46 -12'} },
+    { title:'日志流支持 tool_result 折叠', prio:'p3', prioText:'P3', agent:'anvil-02', presence:'idle',
+      band:{cls:'review', text:'📦 待验收', diff:'1 file +18 -4'} }
+  ]},
+  { id:'done', ico:'●', name:'Done', cards:[
+    { title:'DESIGN.md 语义色 token 定稿', prio:'p2', prioText:'P2', agent:'anvil-01', presence:'idle', band:{cls:'review', text:'✓ 已完成'} }
+  ]},
+  { id:'blocked', ico:'⊘', name:'Blocked', cards:[
+    { title:'迁移 issue 数据到 SQLite', prio:'p1', prioText:'P1', agent:'anvil-02', presence:'idle', band:{cls:'fail', text:'✗ 失败 2/3'} }
+  ]},
+  { id:'cancelled', ico:'⊗', name:'Cancelled', cards:[] }
+];
+
+function el(tag, cls, text){
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+var board = document.getElementById('board');
+COLUMNS.forEach(function(col){
+  var colEl = el('section', 'col');
+  colEl.setAttribute('aria-label', col.name);
+
+  var head = el('header', 'col-head');
+  head.appendChild(el('span', 'status-ico', col.ico));
+  head.appendChild(el('span', 'name', col.name));
+  head.appendChild(el('span', 'count', String(col.cards.length)));
+  colEl.appendChild(head);
+
+  var body = el('div', 'col-body');
+  if (col.cards.length === 0){
+    var empty = el('div', 'col-empty');
+    empty.appendChild(el('span', 'ico', '◇'));
+    empty.appendChild(el('span', null, '无任务'));
+    body.appendChild(empty);
+  }
+  col.cards.forEach(function(c){
+    var card = el('article', 'card' + (c.attention ? ' attention' : '') + (c.selected ? ' selected' : ''));
+    card.tabIndex = 0;
+    card.appendChild(el('div', 'title', c.title));
+
+    var meta = el('div', 'meta');
+    var prio = el('span', 'chip ' + c.prio);
+    prio.appendChild(el('span', 'dot'));
+    prio.appendChild(document.createTextNode(c.prioText));
+    meta.appendChild(prio);
+
+    var agent = el('span', 'agent-tag');
+    agent.appendChild(el('span', 'ava', '⚒'));
+    agent.appendChild(document.createTextNode(c.agent));
+    agent.appendChild(el('span', 'presence ' + c.presence));
+    meta.appendChild(agent);
+    card.appendChild(meta);
+
+    var band = el('div', 'band ' + c.band.cls);
+    band.appendChild(el('span', c.band.cls === 'run' ? 'play' : null, c.band.text));
+    if (c.band.diff) band.appendChild(el('span', 'diff-sum', c.band.diff));
+    card.appendChild(band);
+
+    body.appendChild(card);
+  });
+  colEl.appendChild(body);
+  board.appendChild(colEl);
+});
+
+/* ============ diff 展开 / 折叠 ============ */
+(function(){
+  var view = document.getElementById('diffView');
+  var btn = document.getElementById('diffToggle');
+  btn.addEventListener('click', function(){
+    var collapsed = view.classList.toggle('collapsed');
+    btn.textContent = collapsed ? '展开全部 46 行 ▾' : '收起 diff ▴';
+  });
+})();
+
+/* ============ 工具输出展开 / 折叠 ============ */
+(function(){
+  var btn = document.getElementById('toolFold');
+  var out = document.getElementById('toolOut');
+  btn.addEventListener('click', function(){
+    var open = out.hidden;
+    out.hidden = !open;
+    btn.classList.toggle('open', open);
+    btn.lastChild.textContent = open ? '收起工具输出' : '展开工具输出（58 行）';
+  });
+})();
+
+/* ============ 窄屏：抽屉关闭 ============ */
+(function(){
+  var panel = document.getElementById('panel');
+  var scrim = document.getElementById('scrim');
+  function sync(){
+    var narrow = matchMedia('(max-width: 1099px)').matches;
+    scrim.style.display = (narrow && !panel.hidden) ? 'block' : 'none';
+  }
+  document.getElementById('panelClose').addEventListener('click', function(){
+    panel.hidden = true; sync();
+  });
+  scrim.addEventListener('click', function(){ panel.hidden = true; sync(); });
+  addEventListener('resize', sync);
+  sync();
+})();
+</script>
+</body>
+</html>
