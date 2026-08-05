@@ -1,5 +1,3 @@
-* { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, sans-serif; background: #0f1115; color: #e5e7eb; }
 .app { min-height: 100vh; }
 .topnav { display: flex; gap: 16px; align-items: center; padding: 10px 20px; background: #171a21; border-bottom: 1px solid #2a2f3a; }
 .topnav a { color: #9ca3af; text-decoration: none; }

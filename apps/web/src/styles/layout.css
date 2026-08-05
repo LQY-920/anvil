@@ -1,0 +1,179 @@
+/* App 骨架：左侧导航 + 页面顶栏 + 主内容（布局骨架见 DESIGN.md「最终方向」） */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--page-canvas);
+}
+
+/* ---- 左侧导航 ---- */
+
+.sidenav {
+  width: 220px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-shell);
+  border-right: 1px solid var(--surface-border);
+}
+
+.sidenav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: var(--text-title-sm);
+  line-height: var(--leading-title-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.sidenav-brand-mark {
+  color: var(--brand);
+}
+
+.sidenav-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+}
+
+.sidenav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--foreground-secondary);
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.sidenav-link:hover {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+
+/* 选中态：ember 文字 + 左侧 2px ember 短条 + hover 底 */
+.sidenav-link.active {
+  color: var(--brand);
+  background: var(--surface-hover);
+  font-weight: 500;
+}
+
+.sidenav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--brand);
+}
+
+.sidenav-link svg,
+.theme-toggle svg {
+  flex-shrink: 0;
+}
+
+/* ---- 主题切换（导航底部） ---- */
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--foreground-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.theme-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+
+/* ---- 右侧内容区 ---- */
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.page-title {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-main {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- <800px：导航收起为 56px 图标栏 ---- */
+
+@media (max-width: 799px) {
+  .sidenav {
+    width: 56px;
+  }
+
+  .sidenav-brand {
+    justify-content: center;
+    padding: 16px 0;
+  }
+
+  .sidenav-brand-name,
+  .sidenav-link-label {
+    display: none;
+  }
+
+  .sidenav-link,
+  .theme-toggle {
+    justify-content: center;
+    gap: 0;
+    padding: 8px 0;
+  }
+
+  .sidenav-link.active::before {
+    top: 6px;
+    bottom: 6px;
+  }
+}
