@@ -41,4 +41,26 @@ export function registerMetaRoutes(app: FastifyInstance, db: Db) {
     }).run();
     return reply.code(201).send({ id, token });
   });
+
+  // token 列表：不回 token_hash
+  app.get("/api/daemon-tokens", async () => {
+    return db.select({
+      id: schema.daemonTokens.id,
+      label: schema.daemonTokens.label,
+      revoked_at: schema.daemonTokens.revoked_at,
+      created_at: schema.daemonTokens.created_at,
+    }).from(schema.daemonTokens).all();
+  });
+
+  app.post("/api/daemon-tokens/:id/revoke", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const row = db.select().from(schema.daemonTokens).where(eq(schema.daemonTokens.id, id)).all()[0];
+    if (!row) return reply.code(404).send({ error: "not found" });
+    if (row.revoked_at) return reply.code(409).send({ error: "already revoked" });
+    db.update(schema.daemonTokens)
+      .set({ revoked_at: new Date().toISOString() })
+      .where(eq(schema.daemonTokens.id, id))
+      .run();
+    return { ok: true };
+  });
 }

@@ -26,6 +26,7 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
   app.post("/api/daemon/claim", { preHandler: daemonAuth }, async (req) => {
     const body = req.body as ClaimRequest;
     const tasks = claimTasks(db, (req as any).workspaceId, body.daemon_id, body.max_tasks ?? 1);
+    for (const pkg of tasks) hub.broadcast({ type: "task.updated", data: pkg.task });
     return { tasks };
   });
 
@@ -60,6 +61,7 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const { work_dir } = (req.body ?? {}) as { work_dir?: string };
     if (!work_dir) return reply.code(400).send({ error: "work_dir required" });
     if (!startTask(db, id, work_dir)) return reply.code(409).send({ error: "task not in dispatched state" });
+    hub.broadcast({ type: "task.updated", data: getTask(db, id) });
     return { ok: true };
   });
 

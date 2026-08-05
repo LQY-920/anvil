@@ -11,6 +11,15 @@ export function getTask(db: Db, id: string): Task | null {
   return row ?? null;
 }
 
+/** 任务进入终态后回写 agent 状态：没有 dispatched/running 任务则置回 idle。 */
+function syncAgentIdle(db: Db, agentId: string) {
+  const active = db.$client
+    .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE agent_id = ? AND status IN ('dispatched','running')`)
+    .get(agentId) as any;
+  if (active.n === 0)
+    db.$client.prepare(`UPDATE agents SET status='idle' WHERE id = ?`).run(agentId);
+}
+
 /**
  * 原子认领：候选按 priority DESC, created_at ASC 排序；
  * 逐个用单条 UPDATE ... WHERE status='queued' 判赢（better-sqlite3 同步执行 + SQLite 单写者，
@@ -48,6 +57,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
                 WHERE id=? AND status='queued'`)
       .run(runtime.id, sha256Hex(taskToken), lease, now, cand.id);
     if (res.changes !== 1) continue; // 被别人抢先
+    db.$client.prepare(`UPDATE agents SET status='working' WHERE id = ?`).run(cand.agent_id);
 
     // 同 issue 上一次完成任务的 work_dir，用于会话连续性
     const prior = db.$client
@@ -76,6 +86,8 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
       .prepare(`UPDATE tasks SET status='failed', failure_reason=?, error=?, completed_at=?, work_dir=COALESCE(?, work_dir),
                 task_token_hash=NULL, lease_expires_at=NULL WHERE id=?`)
       .run(reason, error, now, workDir, taskId);
+    // 重试子任务是 queued 不算 running，agent 置回 idle 直到下次被 claim
+    syncAgentIdle(db, task.agent_id);
     if (task.attempt >= task.max_attempts) return;
     // 同 issue 已有 queued/dispatched 任务（如 running 期间用户手动 rerun）则跳过重试，
     // 否则 INSERT 会撞 tasks_one_pending_per_issue 部分唯一索引
@@ -110,6 +122,10 @@ export function completeTask(db: Db, taskId: string, result: { branch?: string; 
               task_token_hash=NULL, lease_expires_at=NULL
               WHERE id=? AND status IN ('dispatched','running')`)
     .run(JSON.stringify(result), now, result.work_dir ?? null, result.session_id ?? null, taskId);
+  if (res.changes === 1) {
+    const task = getTask(db, taskId);
+    if (task) syncAgentIdle(db, task.agent_id);
+  }
   return res.changes === 1;
 }
 
@@ -144,6 +160,10 @@ export function cancelTask(db: Db, taskId: string): boolean {
     .prepare(`UPDATE tasks SET status='cancelled', failure_reason='cancelled_by_user', completed_at=?, lease_expires_at=NULL
               WHERE id=? AND status IN ('queued','dispatched','running')`)
     .run(now, taskId);
+  if (res.changes === 1) {
+    const task = getTask(db, taskId);
+    if (task) syncAgentIdle(db, task.agent_id);
+  }
   return res.changes === 1;
 }
 
