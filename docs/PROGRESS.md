@@ -8,6 +8,13 @@
 
 ## 里程碑
 
+### ✅ 2026-08-11 评论即指令（comment-driven-tasks 分支，已合并）
+- member 评论按守卫自动入队（trigger=comment）：无活跃任务→续作入队；running→排队接力；已有 pending→合并去重；未指派/状态不活跃→原因码（assignee_not_agent/status_inactive）随响应回传
+- 技术结论：kimi -p 一次性 headless、prompt 走命令行参数，无 stdin 注入通道，真·执行中注入不可行 → 采用排队接力（ROADMAP 迭代项 5 已修订措辞）
+- web：评论发送后四态提示（入队/合并/未指派/状态不活跃）；打回重跑优先接续评论触发的任务（修复：评论路由抢先入队导致 rerun 稳定 409 的回归；merged_into_pending 视同接续不再 rerun）
+- test-craft：8/8 执行通过（docs/tests/2026-08-11-comment-driven-tasks-testcases.md）
+- 172 测试全绿 + 四包 tsc 零错
+
 ### ✅ 2026-08-11 任务进展可解释性（progress-observability 分支，已合并）
 - server 状态自动流转：start→in_progress、complete+branch→in_review（system 评论+issue.updated 广播；delivered_at 语义不变，agent 回调仍是唯一交付信号写入方）
 - web 语义时间线 presenter（七型分层渲染/长路径截断/未知类型保底）+ 面板顶部进度摘要行

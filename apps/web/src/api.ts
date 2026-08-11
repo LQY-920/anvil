@@ -18,6 +18,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 export interface Bootstrap { workspace: { id: string; name: string; slug: string }; user: { id: string; name: string }; recent_repos: string[]; }
 export interface IssueDetail { issue: Issue; comments: Comment[]; }
 export interface TaskDetail { task: Task; issue: Issue; }
+/** 评论触发的入队结果（旧 server 不返回 trigger 字段） */
+export interface CommentTrigger { enqueued: boolean; task_id?: string; reason?: "merged_into_pending" | "assignee_not_agent" | "status_inactive"; }
 
 export const bootstrap = () => req<Bootstrap>("GET", "/api/bootstrap");
 export const listIssues = (workspaceId: string) => req<IssueWithTask[]>("GET", `/api/issues?workspace_id=${workspaceId}`);
@@ -26,7 +28,7 @@ export const updateIssue = (id: string, body: UpdateIssueRequest) => req<Issue>(
 export const rerunIssue = (id: string) => req<Task>("POST", `/api/issues/${id}/rerun`);
 export const getIssueDetail = (id: string) => req<IssueDetail>("GET", `/api/issues/${id}`);
 export const getIssueTasks = (id: string) => req<Task[]>("GET", `/api/issues/${id}/tasks`);
-export const addComment = (id: string, body: string) => req("POST", `/api/issues/${id}/comments`, { body });
+export const addComment = (id: string, body: string) => req<{ id: string; trigger?: CommentTrigger }>("POST", `/api/issues/${id}/comments`, { body });
 export const getTask = (id: string) => req<TaskDetail>("GET", `/api/tasks/${id}`);
 export const getTaskMessages = (id: string, afterSeq = -1) =>
   req<{ seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null; created_at: string }[]>(

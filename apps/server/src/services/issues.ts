@@ -27,16 +27,34 @@ export function listIssues(db: Db, workspaceId: string): IssueWithTask[] {
   }));
 }
 
-/** 入队判定（spec §6 三个入口共用的唯一函数）：assignee 是 agent 且状态非 backlog 才入队。 */
+/** 入队判定（POST/PATCH/rerun 三入口共用）：assignee 是 agent 且状态活跃（非 backlog/done/cancelled）才入队；守卫与 enqueueForComment 一致。 */
 export function enqueueForIssue(db: Db, issue: Issue, trigger: string): Task | null {
   if (issue.assignee_type !== "agent" || !issue.assignee_id) return null;
   if (issue.status === "backlog" || issue.status === "done" || issue.status === "cancelled") return null;
+  return insertQueuedTask(db, issue, trigger);
+}
+
+export type CommentEnqueueResult =
+  | { enqueued: true; task: Task }
+  | { enqueued: false; reason: "assignee_not_agent" | "status_inactive" | "merged_into_pending" };
+
+/** 评论触发入队（评论即指令）：与 enqueueForIssue 同一组守卫，但返回可判别的原因供路由回传。 */
+export function enqueueForComment(db: Db, issue: Issue): CommentEnqueueResult {
+  if (issue.assignee_type !== "agent" || !issue.assignee_id) return { enqueued: false, reason: "assignee_not_agent" };
+  if (issue.status === "backlog" || issue.status === "done" || issue.status === "cancelled") return { enqueued: false, reason: "status_inactive" };
+  const task = insertQueuedTask(db, issue, "comment");
+  if (!task) return { enqueued: false, reason: "merged_into_pending" };
+  return { enqueued: true, task };
+}
+
+/** 插入 queued 任务并写系统时间线；已有 pending 任务（部分唯一索引冲突）时返回 null。 */
+function insertQueuedTask(db: Db, issue: Issue, trigger: string): Task | null {
   const now = new Date().toISOString();
   const id = newId();
   try {
     db.insert(schema.tasks).values({
       id, workspace_id: issue.workspace_id, issue_id: issue.id,
-      agent_id: issue.assignee_id, status: "queued",
+      agent_id: issue.assignee_id!, status: "queued", // 调用方已守卫 assignee_id 非空
       priority: priorityWeight(issue.priority), attempt: 1, max_attempts: 3,
       created_at: now,
     }).run();
