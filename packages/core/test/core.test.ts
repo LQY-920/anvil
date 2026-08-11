@@ -29,6 +29,10 @@ describe("parseAgentLine", () => {
     const m = parseAgentLine(JSON.stringify({ role: "assistant", tool_calls: [{ name: "Bash", input: { cmd: "ls" } }] }));
     expect(m).toEqual({ type: "tool_use", tool: "Bash", input: { cmd: "ls" } });
   });
+  it("parses string arguments (OpenAI 风格 function.arguments) into object", () => {
+    const m = parseAgentLine(JSON.stringify({ role: "assistant", tool_calls: [{ function: { name: "Bash", arguments: "{\"command\":\"ls\"}" } }] }));
+    expect(m).toEqual({ type: "tool_use", tool: "Bash", input: { command: "ls" } });
+  });
   it("parses tool result", () => {
     const m = parseAgentLine(JSON.stringify({ role: "tool", name: "Bash", content: "file.txt" }));
     expect(m).toEqual({ type: "tool_result", tool: "Bash", output: "file.txt" });

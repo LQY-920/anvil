@@ -3,10 +3,18 @@
 > 单一事实来源：当前状态、里程碑、backlog、协作约定。每次合并到 main 时更新。
 > 新会话恢复上下文：先读本文件，再读 `docs/superpowers/specs/` 下的相关 spec。
 
-**当前阶段**：一期 + 验收链路 + UI 重构（方向 C）均已完成，系统可用
+**当前阶段**：一期 + 验收链路 + UI 重构（方向 C）+ 任务进展可解释性 均已完成，系统可用
 **仓库**：https://github.com/LQY-920/anvil ｜ 主干：`main`
 
 ## 里程碑
+
+### ✅ 2026-08-11 任务进展可解释性（progress-observability 分支，已合并）
+- server 状态自动流转：start→in_progress、complete+branch→in_review（system 评论+issue.updated 广播；delivered_at 语义不变，agent 回调仍是唯一交付信号写入方）
+- web 语义时间线 presenter（七型分层渲染/长路径截断/未知类型保底）+ 面板顶部进度摘要行
+- 浏览器通知（待验收/终态失败，10 分钟去重）+ 降级（标题 ● 前缀 + 卡片琥珀注意点，按 issue 键控）+ ?task=<id> 定位打开面板 + 卡片活信号角标（queued 灰点/running 绿脉冲）
+- 修复：input_json 双重编码（core coerceInput 源头 + presenter 双解析容错，TDD）；评审修复：注意点按 issue 键控防泄漏、已知工具缺参数键时回退 JSON 摘要
+- 流程更新：协作约定加入 test-craft 测试阶段（spec→plan→实现→测试用例执行→两段审查→合并）；本主题用例 10/10 执行通过（docs/tests/2026-08-11-progress-observability-testcases.md）
+- 156 测试全绿 + 四包 tsc 零错
 
 ### ✅ 2026-08-04 一期：编码任务调度（phase-1 分支，已合并）
 - 四包 monorepo：core（协议类型）/ server（Fastify+SQLite）/ runner（daemon+Kimi adapter）/ web（React 看板）
@@ -51,21 +59,24 @@
 - merge 基准分支假设"主工作区停在集成分支"：v2 在 dispatch 时把 base 存进 task 行
 
 **P2（体验）**
-- agents.status 字段从未更新（永远是 idle）——管理页该列是纯装饰，要么接真实状态要么去掉
-- `runtime.updated` WS 事件已声明未实现；claim/start 不广播 task.updated（看板刷新有延迟）
+- ~~agents.status 字段从未更新~~（第1波已接真实状态；2026-08-11 核销）
+- `runtime.updated` WS 事件已声明未实现
 - 详情页长 transcript 无虚拟化；评论无 Enter 提交、无错误反馈
-- in_progress 列永远空（平台不推进 issue 状态）——考虑看板列语义调整或卡片内显式展示执行态
+- WS 断线重连后不补拉（ws.ts），断线窗口的事件丢失会致通知漏报（2026-08-11 评审记录）
+- ~~in_progress 列永远空~~（2026-08-11 状态自动流转已修，核销）
 
 **P3（打磨）**
 - runner 日志结构化（server 已 pino，runner 还是 console.error）
 - merge 成功提示文案用 target（"已合入 main"）而非源分支名
-- `pnpm dev` 一键同时拉起三端（目前要开三个终端）
+- ~~`pnpm dev` 一键同时拉起三端~~（第1波 scripts/dev.mjs 已实现；2026-08-11 核销）
 - cancelled 任务的 token 仍可 POST /messages（认证面小洞）
+- ?task=<id> 定位打开的是同 issue 的 active 任务而非指定任务本身（2026-08-11 评审记录）
 
 ## 协作约定
 
 1. **一个主题一个分支**，合并进 main 并推送后更新本文件
-2. 大主题：spec（`docs/superpowers/specs/`）→ plan（`docs/superpowers/plans/`）→ subagent 逐任务实现 + 两段审查
+2. 大主题：spec（`docs/superpowers/specs/`）→ plan（`docs/superpowers/plans/`）→ subagent 逐任务实现 → test-craft 测试阶段（编写/更新 `docs/tests/` 用例并执行相关条目、回填结果）→ 两段审查
 3. 小改动（bugfix、单点优化）：直接实现 + 测试，commit 说清楚为什么
-4. 合并门槛：`pnpm test` 全绿 + 四包 tsc 零错误
+4. 合并门槛：`pnpm test` 全绿 + 四包 tsc 零错误 + 本主题 test-craft 用例已执行并回填
 5. 审查中"接受不修"的问题统一记到 Backlog，不散落在对话里
+6. 迭代主题取自 `docs/ROADMAP.md`；`docs/tests/` 为用例库，需求变更走 test-craft 更新模式

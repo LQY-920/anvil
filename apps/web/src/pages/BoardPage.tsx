@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ISSUE_STATUSES,
   PRIORITIES,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
+import { clearTitleBadge, notify, shouldNotify } from "../lib/notify.js";
 import TaskPanel from "../components/TaskPanel.js";
 import { ISSUE_STATUS_LABELS } from "../labels.js";
 import { cn } from "@/lib/utils";
@@ -83,6 +85,9 @@ export default function BoardPage() {
   const [recentRepos, setRecentRepos] = useState<string[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const { attentionTasks, clearAttention } = useNotifications(issues);
+  const [searchParams] = useSearchParams();
+  const taskQueryHandledRef = useRef(false);
 
   const reload = useCallback(async () => {
     const wsId = workspaceIdRef.current;
@@ -113,8 +118,24 @@ export default function BoardPage() {
   const openIssue = async (issue: IssueWithTask) => {
     const tasks = await api.getIssueTasks(issue.id);
     const active = tasks.find((t) => ["queued", "dispatched", "running"].includes(t.status)) ?? tasks[tasks.length - 1];
+    clearAttention(issue.id); // 注意点按 issue 键控：打开该 issue 任意面板即清除
     if (active) setSelectedTaskId(active.id);
   };
+
+  // ?task=<taskId>：issues 首次加载完成后定位所属 issue 并打开面板，只处理一次
+  useEffect(() => {
+    if (taskQueryHandledRef.current || issues.length === 0) return;
+    taskQueryHandledRef.current = true;
+    const taskId = searchParams.get("task");
+    if (!taskId) return;
+    (async () => {
+      try {
+        const detail = await api.getTask(taskId);
+        const target = issues.find((i) => i.id === detail.issue.id);
+        if (target) await openIssue(target);
+      } catch { /* 任务不存在或已删除：忽略 */ }
+    })();
+  }, [issues, searchParams]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -162,6 +183,7 @@ export default function BoardPage() {
                         issue={issue}
                         agent={agent}
                         selected={selected}
+                        attention={attentionTasks.has(issue.id)}
                         onOpen={() => openIssue(issue)}
                         onRerun={async () => { await api.rerunIssue(issue.id); reload(); }}
                       />
@@ -195,31 +217,87 @@ export default function BoardPage() {
   );
 }
 
+/** 对比前后 issues 快照触发浏览器通知；通知降级时记录注意点 taskId 集合，由卡片显示琥珀色点。 */
+function useNotifications(issues: IssueWithTask[]) {
+  const prevRef = useRef<Map<string, IssueWithTask> | null>(null);
+  const dedupRef = useRef<Map<string, number>>(new Map());
+  const [attentionTasks, setAttentionTasks] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = new Map(issues.map((i) => [i.id, i]));
+    if (!prev) return; // 首次装载只建基线，不通知
+    for (const issue of issues) {
+      const ev = shouldNotify(prev.get(issue.id), issue, dedupRef.current, Date.now());
+      if (!ev) continue;
+      notify(ev.title, ev.body, ev.taskId)
+        .then((r) => {
+          if (r === "degraded") {
+            setAttentionTasks((s) => (s.has(issue.id) ? s : new Set(s).add(issue.id)));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [issues]);
+
+  // 注意点清空时还原 document.title
+  useEffect(() => {
+    if (attentionTasks.size === 0) clearTitleBadge();
+  }, [attentionTasks]);
+
+  const clearAttention = useCallback((taskId: string) => {
+    setAttentionTasks((s) => {
+      if (!s.has(taskId)) return s;
+      const next = new Set(s);
+      next.delete(taskId);
+      return next;
+    });
+  }, []);
+
+  return { attentionTasks, clearAttention };
+}
+
 function TaskCard(props: {
   issue: IssueWithTask;
   agent: Agent | null;
   selected: boolean;
+  attention: boolean;
   onOpen: () => void;
   onRerun: () => Promise<void>;
 }) {
   const { issue, agent } = props;
   const t = issue.latest_task;
-  // 染色即"看我"：只有未完成流程的交付物才用 attention 淡染
-  const attention =
+  // 染色即"看我"：只有未完成流程的交付物才淡染（与通知注意点 props.attention 是两回事）
+  const awaitingDelivery =
     issue.status !== "done" && issue.status !== "cancelled" &&
     t?.status === "completed" && !!parseResult(t.result_json)?.branch;
   const prio = PRIORITY_META[issue.priority];
+  // 活信号角标：左上角，与右上角"重跑"按钮错开
+  const live = t?.status === "running" || t?.status === "dispatched" ? "active" : t?.status === "queued" ? "queued" : null;
+  const hasCorner = live !== null || props.attention;
 
   return (
     <Card
       className={cn(
         "group relative cursor-pointer space-y-2 p-3.5 transition-all hover:border-primary/50",
         props.selected && "border-primary",
-        attention && "border-amber-500/40 bg-amber-500/5 hover:border-amber-500/60",
+        awaitingDelivery && "border-amber-500/40 bg-amber-500/5 hover:border-amber-500/60",
       )}
       onClick={props.onOpen}
     >
-      <div className="line-clamp-2 text-sm font-medium leading-5">{issue.title}</div>
+      {hasCorner && (
+        <div className="absolute left-3 top-3 flex items-center gap-1.5">
+          {live === "active" && (
+            <span className="relative flex size-1.5" title="执行中">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+            </span>
+          )}
+          {live === "queued" && <span className="size-1.5 rounded-full bg-zinc-400/60" title="排队中" />}
+          {props.attention && <span className="size-1.5 rounded-full bg-amber-500" title="有新通知" />}
+        </div>
+      )}
+      <div className={cn("line-clamp-2 text-sm font-medium leading-5", hasCorner && "pl-4")}>{issue.title}</div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         {prio && (
           <Badge variant="outline" className={prio.className}>

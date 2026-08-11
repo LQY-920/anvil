@@ -31,7 +31,7 @@ describe("TaskDetailPage", () => {
     );
     await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
     expect(screen.getByText("开始干活")).toBeTruthy();
-    expect(screen.getByText(/Bash/)).toBeTruthy();
+    expect(screen.getByText("Bash ls")).toBeTruthy();
     expect(screen.getByText("加油")).toBeTruthy();
   });
 });
