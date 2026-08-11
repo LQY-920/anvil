@@ -55,6 +55,30 @@ async function setup() {
   return { client, pkg: tasks[0], runnerRoot, issueId: i.json().id, url };
 }
 
+/** 捕获每次 execute 的 prompt（含追问轮，断言取 prompts[0] 即首跑 prompt）。 */
+function capturePrompts(): { backend: AgentBackend; prompts: string[] } {
+  const prompts: string[] = [];
+  const backend: AgentBackend = {
+    provider: "kimi",
+    execute(opts) {
+      prompts.push(opts.prompt);
+      return {
+        messages: (async function* () {})(),
+        result: Promise.resolve({ status: "completed", exitCode: 0 }),
+        kill: () => {},
+      };
+    },
+  };
+  return { backend, prompts };
+}
+
+/** 无 repo_path 的任务 workDir 即 runnerRoot/worktrees/<taskId 前 8 位>，预先建目录即可放入 ANVIL.md。 */
+function seedWorkdir(runnerRoot: string, taskId: string): string {
+  const dir = path.join(runnerRoot, "worktrees", taskId.slice(0, 8));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 describe("executor", () => {
   it("happy path: start → stream messages → complete", async () => {
     const { client, pkg, runnerRoot } = await setup();
@@ -240,5 +264,41 @@ describe("executor", () => {
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("completed");
     expect(JSON.parse(got.json().task.result_json).undelivered).toBeUndefined();
+  });
+
+  it("appends ANVIL.md guidance section to the end of prompt when present", async () => {
+    const { client, pkg, runnerRoot } = await setup();
+    fs.writeFileSync(path.join(seedWorkdir(runnerRoot, pkg.task.id), "ANVIL.md"), "改完跑 pnpm test");
+    const { backend, prompts } = capturePrompts();
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg);
+    expect(prompts[0]).toContain("## 仓库常驻指引（ANVIL.md）\n\n改完跑 pnpm test");
+    expect(prompts[0].indexOf("# 边界与停止规则")).toBeLessThan(prompts[0].indexOf("## 仓库常驻指引（ANVIL.md）"));
+  });
+
+  it("omits guidance section when workDir has no ANVIL.md", async () => {
+    const { client, pkg, runnerRoot } = await setup();
+    const { backend, prompts } = capturePrompts();
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg);
+    expect(prompts[0]).not.toContain("仓库常驻指引");
+  });
+
+  it("truncates ANVIL.md beyond 8KB and marks it", async () => {
+    const { client, pkg, runnerRoot } = await setup();
+    fs.writeFileSync(path.join(seedWorkdir(runnerRoot, pkg.task.id), "ANVIL.md"), "x".repeat(9000));
+    const { backend, prompts } = capturePrompts();
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg);
+    expect(prompts[0]).toContain(`${"x".repeat(8 * 1024)}\n（已截断）`);
+    expect(prompts[0]).not.toContain("x".repeat(8 * 1024 + 1));
+  });
+
+  it("silently skips unreadable ANVIL.md and still completes the task", async () => {
+    const { client, pkg, runnerRoot } = await setup();
+    // 目录冒充文件：readFileSync 抛 EISDIR，走静默跳过分支
+    fs.mkdirSync(path.join(seedWorkdir(runnerRoot, pkg.task.id), "ANVIL.md"));
+    const { backend, prompts } = capturePrompts();
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg);
+    expect(prompts[0]).not.toContain("仓库常驻指引");
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
   });
 });

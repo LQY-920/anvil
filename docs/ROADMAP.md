@@ -73,7 +73,7 @@
   - `apps/server/test` 含评论触发入队、原因码两条测试
 - 优先级: P1 | 预估成本: 中
 
-### 6. repo 级常驻指引（guidance）注入 prompt
+### 6. ✅ repo 级常驻指引（guidance）注入 prompt（2026-08-11 完成，落地为仓库根 ANVIL.md）
 
 - 用户场景：同一仓库的规矩（"改完跑 pnpm test"、"diff 别超 500 行"）每个任务重述一遍；不说就返工
 - 痛点证据：Linear workspace/team 级 guidance 自动注入 agent 上下文（[linear.app/developers/agent-best-practices](https://linear.app/developers/agent-best-practices)）。本地：第0波目标契约已有 prompt 组装点，注入成本极低
@@ -83,7 +83,7 @@
   - 有单测覆盖"指引拼接进 prompt"
 - 优先级: P1 | 预估成本: 小
 
-### 7. 表单防重入与提交反馈
+### 7. ✅ 表单防重入与提交反馈（2026-08-11 完成）
 
 - 用户场景：网络慢时连点"创建任务"，看板出现两条同名 issue；评论发送失败无任何提示
 - 痛点证据：TC-Board_004 探针（代码确认无防重）；backlog"评论无 Enter 提交、无错误反馈"

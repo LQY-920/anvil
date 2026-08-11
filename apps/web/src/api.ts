@@ -24,6 +24,9 @@ export interface CommentTrigger { enqueued: boolean; task_id?: string; reason?: 
 export const bootstrap = () => req<Bootstrap>("GET", "/api/bootstrap");
 export const listIssues = (workspaceId: string) => req<IssueWithTask[]>("GET", `/api/issues?workspace_id=${workspaceId}`);
 export const createIssue = (body: CreateIssueRequest) => req<Issue>("POST", "/api/issues", body);
+/** ANVIL.md 指引预览：found 时 content 已被 server 截断（≤2000 字符） */
+export type GuidanceResponse = { found: true; content: string; truncated: boolean } | { found: false };
+export const getGuidance = (repo: string) => req<GuidanceResponse>("GET", `/api/guidance?repo=${encodeURIComponent(repo)}`);
 export const updateIssue = (id: string, body: UpdateIssueRequest) => req<Issue>("PATCH", `/api/issues/${id}`, body);
 export const rerunIssue = (id: string) => req<Task>("POST", `/api/issues/${id}/rerun`);
 export const getIssueDetail = (id: string) => req<IssueDetail>("GET", `/api/issues/${id}`);

@@ -144,6 +144,14 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const [merged, setMerged] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   const [commentHint, setCommentHint] = useState("");
+  const [commentError, setCommentError] = useState("");
+  const [sending, setSending] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  // 同步在途守卫：state 经 React 批量刷新有间隙，同帧双击会穿透 state 判断（state 仍保留用于 disabled 渲染）
+  const sendingRef = useRef(false);
+  const mergingRef = useRef(false);
+  const rejectingRef = useRef(false);
   const lastSeq = useRef(-1);
   const bottomRef = useRef<HTMLDivElement>(null);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -189,7 +197,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     genRef.current += 1;
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     setTask(null); setIssue(null); setMessages([]); setComments([]);
-    setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft(""); setCommentHint("");
+    setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft(""); setCommentHint(""); setCommentError("");
     lastSeq.current = -1;
   }, [taskId]);
 
@@ -227,40 +235,63 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const progress = summarizeProgress(messages);
 
   const doMerge = async () => {
+    if (mergingRef.current) return;
+    mergingRef.current = true;
     setMergeError("");
+    setMerging(true);
     try {
       const res = await api.mergeTask(task.id);
       setMerged(res.merged_branch);
       props.onChanged?.();
     } catch (e) {
       setMergeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      mergingRef.current = false;
+      setMerging(false);
     }
   };
 
   const rejectAndRerun = async () => {
-    if (!feedback.trim()) return;
-    const res = await api.addComment(issue.id, feedback);
-    setFeedback("");
-    props.onChanged?.();
-    // 评论路由已按守卫自动入队（trigger=comment）时直接接续，避免 rerun 撞 pending 唯一索引导致 409
-    if (res.trigger?.enqueued && res.trigger.task_id) {
-      props.onSelectTask?.(res.trigger.task_id);
-      return;
+    if (!feedback.trim() || rejectingRef.current) return;
+    rejectingRef.current = true;
+    setRejecting(true);
+    try {
+      const res = await api.addComment(issue.id, feedback);
+      setFeedback("");
+      props.onChanged?.();
+      // 评论路由已按守卫自动入队（trigger=comment）时直接接续，避免 rerun 撞 pending 唯一索引导致 409
+      if (res.trigger?.enqueued && res.trigger.task_id) {
+        props.onSelectTask?.(res.trigger.task_id);
+        return;
+      }
+      // 已有 pending 任务：打回意见会随其 claim 进入 prompt，视同已接续，不再 rerun（否则必撞 409）
+      if (res.trigger?.reason === "merged_into_pending") return;
+      const t = await api.rerunIssue(issue.id);
+      if (t?.id) props.onSelectTask?.(t.id);
+    } finally {
+      rejectingRef.current = false;
+      setRejecting(false);
     }
-    // 已有 pending 任务：打回意见会随其 claim 进入 prompt，视同已接续，不再 rerun（否则必撞 409）
-    if (res.trigger?.reason === "merged_into_pending") return;
-    const t = await api.rerunIssue(issue.id);
-    if (t?.id) props.onSelectTask?.(t.id);
   };
 
-  // 发送评论：成功后按 trigger 给一行触发结果提示；发送失败沿用现有静默行为（backlog 项）
+  // 发送评论：成功后按 trigger 给一行触发结果提示；失败时红字提示且保留草稿
   const sendComment = async () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || sendingRef.current) return;
+    sendingRef.current = true;
     setCommentHint("");
-    const res = await api.addComment(issue.id, draft);
-    setDraft("");
-    setCommentHint(triggerHint(res.trigger));
-    reload();
+    setCommentError("");
+    setSending(true);
+    try {
+      const res = await api.addComment(issue.id, draft);
+      setDraft("");
+      setCommentHint(triggerHint(res.trigger));
+      reload();
+    } catch (e) {
+      setCommentError(e instanceof Error ? e.message : String(e));
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
   };
 
   return (
@@ -347,7 +378,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                     </>
                   )}
                   <div className="flex items-center gap-2 pt-1">
-                    <Button size="sm" onClick={doMerge}>合入 {diff.base}</Button>
+                    <Button size="sm" onClick={doMerge} disabled={merging}>合入 {diff.base}</Button>
                   </div>
                   {mergeError && <div className="whitespace-pre-wrap text-sm text-rose-600 dark:text-rose-400">{mergeError}</div>}
                   <div className="flex flex-col gap-2 pt-1">
@@ -357,6 +388,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                       size="sm"
                       className="self-end border-rose-500/30 text-rose-600 hover:bg-rose-500/10 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
                       onClick={rejectAndRerun}
+                      disabled={rejecting}
                     >
                       提交意见并重跑
                     </Button>
@@ -397,12 +429,27 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
             })}
           </div>
           <div className="mt-3 flex flex-col gap-2">
-            <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={2} placeholder="追加指令或评论…" />
-            {commentHint && <div className="text-[11px] text-muted-foreground">{commentHint}</div>}
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter 提交、Shift+Enter 换行；isComposing 防输入法候选确认误触发
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  sendComment();
+                }
+              }}
+              rows={2}
+              placeholder="追加指令或评论…"
+            />
+            {commentError
+              ? <div className="text-[11px] text-rose-600 dark:text-rose-400">发送失败：{commentError}</div>
+              : commentHint && <div className="text-[11px] text-muted-foreground">{commentHint}</div>}
             <Button
               size="sm"
               className="self-end"
               onClick={sendComment}
+              disabled={sending}
             >
               发送
             </Button>

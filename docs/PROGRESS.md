@@ -8,6 +8,13 @@
 
 ## 里程碑
 
+### ✅ 2026-08-11 常驻指引+表单体验（guidance-and-forms 分支，已合并）
+- runner 注入 <仓库根>/ANVIL.md 到任务 prompt（8192 字符截断、读失败静默；追问轮不受影响）；server 新增 GET /api/guidance 预览端点（本地/URL 缓存、2000 字符截断、空白文件按未命中与 runner 对齐）
+- web：新建弹窗指引预览（400ms 防抖）；创建/发送/合入/打回四按钮 ref 在途守卫（修复同帧双击穿透双发）；评论 Enter 提交/Shift+Enter 换行；发送失败红字且草稿保留
+- dogfood：仓库根新增 ANVIL.md（本仓库任务自此自带改动纪律）
+- test-craft：8/8 执行通过（页面用例抓到双击穿透缺陷，修复后复跑通过）
+- 187 测试全绿 + 四包 tsc 零错
+
 ### ✅ 2026-08-11 评论即指令（comment-driven-tasks 分支，已合并）
 - member 评论按守卫自动入队（trigger=comment）：无活跃任务→续作入队；running→排队接力；已有 pending→合并去重；未指派/状态不活跃→原因码（assignee_not_agent/status_inactive）随响应回传
 - 技术结论：kimi -p 一次性 headless、prompt 走命令行参数，无 stdin 注入通道，真·执行中注入不可行 → 采用排队接力（ROADMAP 迭代项 5 已修订措辞）
