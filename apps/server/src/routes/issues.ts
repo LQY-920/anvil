@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
-import { addComment, createIssueRow, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
+import { addComment, createIssueRow, enqueueForComment, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
 import { seed } from "../db/client.js";
 import { ISSUE_STATUSES, PRIORITIES, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
 
@@ -85,11 +85,20 @@ export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
 
   app.post("/api/issues/:id/comments", async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!getIssue(db, id)) return reply.code(404).send({ error: "not found" });
+    const issue = getIssue(db, id);
+    if (!issue) return reply.code(404).send({ error: "not found" });
     const { body } = req.body as { body: string };
     if (!body) return reply.code(400).send({ error: "body required" });
     const cid = addComment(db, id, { author_type: "member", author_id: seed(db).user.id, type: "comment", body });
+    // member 评论即指令：满足守卫则入队新任务（trigger=comment），判别结果随响应回传
+    const trigger = enqueueForComment(db, issue);
+    if (trigger.enqueued) hub.hintDaemons({ type: "task.available", data: { task_id: trigger.task.id } });
     hub.broadcast({ type: "issue.updated", data: getIssue(db, id) });
-    return reply.code(201).send({ id: cid });
+    return reply.code(201).send({
+      id: cid,
+      trigger: trigger.enqueued
+        ? { enqueued: true, task_id: trigger.task.id }
+        : { enqueued: false, reason: trigger.reason },
+    });
   });
 }

@@ -63,13 +63,13 @@
   - server 侧为 comments 表增加可选锚点字段（path/line），有迁移与单测
 - 优先级: P1 | 预估成本: 大
 
-### 5. 评论即指令：执行中转向 + 完成后续作
+### 5. ✅ 评论即指令：排队接力 + 完成后续作（2026-08-11 完成）
 
 - 用户场景：agent 执行中，用户想起一个补充约束，只能干等或取消重跑；任务完成后想"顺便把 README 也更新了"，只能手动点重跑——原第2波计划项
 - 痛点证据：Cursor 执行中排队消息 + steering（1.2/1.4 changelog）；Linear elicitation/prompt 多轮循环；Multica 评论 @agent 即派活且"为什么没触发"给精确原因码。本地：任务包已带最近 10 条 comments 进 prompt（链路半成品）
 - 验收标准：
-  - member 在 issue 下发表评论且 assignee 为 agent 时：无 pending 任务则自动入队（评论入 prompt）；有 running 任务则标记为"待注入"，runner 下一轮消息上报时携带，agent 在下一 turn 看到
-  - 触发被拦截时 toast 给出具体原因（assignee 非 agent / 已有排队任务已合并评论）
+  - ~~有 running 任务则标记为"待注入"，runner 下一轮消息上报时携带~~ **技术结论（2026-08-11）**：kimi `-p` 一次性 headless、prompt 走命令行参数，无 stdin 注入通道，真·执行中注入不可行。改为**排队接力**（Cursor queue 语义）：member 评论且 assignee 为 agent 时——无活跃任务则自动入队（评论入 prompt）；有 running 任务则入队排队（同 issue 仅 queued/dispatched 受唯一索引限制，running 不挡），当前任务结束后接力执行；已有 queued/dispatched 则评论自然合并（claim 时带最近 10 条评论）
+  - 触发结果被拦截时给出具体原因（assignee 非 agent / 状态不活跃 / 已合并进排队任务）
   - `apps/server/test` 含评论触发入队、原因码两条测试
 - 优先级: P1 | 预估成本: 中
 

@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import * as api from "../api.js";
+import type { CommentTrigger } from "../api.js";
 import { useServerEvents } from "../ws.js";
 import { TASK_STATUS_LABELS } from "../labels.js";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,18 @@ function fmtTime(iso?: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+/** 评论发送后的触发结果提示（trigger 缺省 = 旧 server，不提示） */
+function triggerHint(t?: CommentTrigger): string {
+  if (!t) return "";
+  if (t.enqueued) return "已触发新任务（排队接力）";
+  switch (t.reason) {
+    case "merged_into_pending": return "已合并进排队任务，认领时生效";
+    case "assignee_not_agent": return "未指派 Agent，评论仅记录不触发执行";
+    case "status_inactive": return "当前状态不触发执行（收集箱/已完成/已取消）";
+    default: return "";
+  }
 }
 
 /** diff_stat 里的 +++/--- 分段上色（符号 + 红绿双编码） */
@@ -130,6 +143,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const [mergeError, setMergeError] = useState("");
   const [merged, setMerged] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
+  const [commentHint, setCommentHint] = useState("");
   const lastSeq = useRef(-1);
   const bottomRef = useRef<HTMLDivElement>(null);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,7 +189,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     genRef.current += 1;
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     setTask(null); setIssue(null); setMessages([]); setComments([]);
-    setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft("");
+    setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft(""); setCommentHint("");
     lastSeq.current = -1;
   }, [taskId]);
 
@@ -225,11 +239,28 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
 
   const rejectAndRerun = async () => {
     if (!feedback.trim()) return;
-    await api.addComment(issue.id, feedback);
-    const t = await api.rerunIssue(issue.id);
+    const res = await api.addComment(issue.id, feedback);
     setFeedback("");
     props.onChanged?.();
+    // 评论路由已按守卫自动入队（trigger=comment）时直接接续，避免 rerun 撞 pending 唯一索引导致 409
+    if (res.trigger?.enqueued && res.trigger.task_id) {
+      props.onSelectTask?.(res.trigger.task_id);
+      return;
+    }
+    // 已有 pending 任务：打回意见会随其 claim 进入 prompt，视同已接续，不再 rerun（否则必撞 409）
+    if (res.trigger?.reason === "merged_into_pending") return;
+    const t = await api.rerunIssue(issue.id);
     if (t?.id) props.onSelectTask?.(t.id);
+  };
+
+  // 发送评论：成功后按 trigger 给一行触发结果提示；发送失败沿用现有静默行为（backlog 项）
+  const sendComment = async () => {
+    if (!draft.trim()) return;
+    setCommentHint("");
+    const res = await api.addComment(issue.id, draft);
+    setDraft("");
+    setCommentHint(triggerHint(res.trigger));
+    reload();
   };
 
   return (
@@ -367,10 +398,11 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
           </div>
           <div className="mt-3 flex flex-col gap-2">
             <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={2} placeholder="追加指令或评论…" />
+            {commentHint && <div className="text-[11px] text-muted-foreground">{commentHint}</div>}
             <Button
               size="sm"
               className="self-end"
-              onClick={async () => { if (!draft.trim()) return; await api.addComment(issue.id, draft); setDraft(""); reload(); }}
+              onClick={sendComment}
             >
               发送
             </Button>
