@@ -1,5 +1,7 @@
 import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 import { isRepoUrl } from "@anvil/core";
+import fs from "node:fs";
+import path from "node:path";
 import type { ApiClient } from "./client.js";
 import type { AgentBackend, AgentResult } from "./agents/backend.js";
 import { prepareWorkdir, gitDiffStat, git } from "./worktree.js";
@@ -23,6 +25,19 @@ export function killAllActiveSessions() {
 /** 追问 prompt：进程结束但 issue 未推进（未交付）时，用同一会话让 Agent 对照完成标准补课。 */
 export const FOLLOWUP_PROMPT =
   "任务进程已结束，但你还没有提交验收（issue 仍在原状态）。请检查完成标准中还有哪条未达成，继续完成并提交 in_review 回调。";
+
+const GUIDANCE_LIMIT = 8 * 1024;
+
+/** 仓库常驻指引：读 <workDir>/ANVIL.md（本地/URL 仓库统一走 workDir，worktree/缓存工作区自带）。不存在/为空/读取失败返回 null，超 8192 字符截断并标注（按字符口径，CJK 实际字节更多，影响有界）。 */
+export function readRepoGuidance(workDir: string): string | null {
+  try {
+    const content = fs.readFileSync(path.join(workDir, "ANVIL.md"), "utf8");
+    if (!content.trim()) return null;
+    return content.length > GUIDANCE_LIMIT ? `${content.slice(0, GUIDANCE_LIMIT)}\n（已截断）` : content;
+  } catch {
+    return null;
+  }
+}
 
 export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = []): string {
   const lines = [
@@ -82,10 +97,11 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     // 纵深防御：daemon token 若出现在消息流里同样抹掉
     const secrets = [task_token, process.env.ANVIL_DAEMON_TOKEN ?? ""].filter(Boolean);
     const uploader = new MessageUploader(client, task.id, task_token, secrets, 500);
+    const guidance = readRepoGuidance(workDir);
     const execOpts = {
       workDir,
       env,
-      prompt: buildPrompt(issue, task, pkg.comments ?? []),
+      prompt: buildPrompt(issue, task, pkg.comments ?? []) + (guidance ? `\n\n## 仓库常驻指引（ANVIL.md）\n\n${guidance}` : ""),
       resume: prepared.resumed,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     };

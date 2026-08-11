@@ -12,7 +12,7 @@ import { getTask } from "./tasks.js";
 const MAX_DIFF_TEXT = 50 * 1024;
 
 /** server 侧 anvilRoot：单机版假设 server 与 runner 同机，共享 runner 的仓库缓存目录（与 runner config 的 runnerRoot 同源）。 */
-function serverAnvilRoot(): string {
+export function serverAnvilRoot(): string {
   return process.env.ANVIL_RUNNER_ROOT ?? path.join(os.homedir(), ".anvil");
 }
 

@@ -122,4 +122,29 @@ describe("TaskPanel", () => {
     await waitFor(() => expect(onSelectTask).toHaveBeenCalledWith("t3"));
     expect(api.rerunIssue).toHaveBeenCalledWith("i1");
   });
+
+  it("Enter 提交评论，Shift+Enter 不提交", async () => {
+    vi.mocked(api.addComment).mockClear();
+    vi.mocked(api.addComment).mockResolvedValue({ id: "c1" });
+    render(<TaskPanel taskId="t1" />);
+    await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
+    const box = screen.getByPlaceholderText("追加指令或评论…");
+    fireEvent.change(box, { target: { value: "继续" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(api.addComment).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(api.addComment).toHaveBeenCalledWith("i1", "继续"));
+  });
+
+  it("发送失败时保留草稿并显示红字", async () => {
+    vi.mocked(api.addComment).mockClear();
+    vi.mocked(api.addComment).mockRejectedValue(new Error("网络错误"));
+    render(<TaskPanel taskId="t1" />);
+    await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());
+    const box = screen.getByPlaceholderText("追加指令或评论…");
+    fireEvent.change(box, { target: { value: "继续" } });
+    fireEvent.click(screen.getByText("发送"));
+    await waitFor(() => expect(screen.getByText(/发送失败：.*网络错误/)).toBeTruthy());
+    expect((box as HTMLTextAreaElement).value).toBe("继续");
+  });
 });

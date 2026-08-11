@@ -397,16 +397,40 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [guidance, setGuidance] = useState<{ content: string; truncated: boolean } | null>(null);
+
+  // 目标仓库输入防抖 400ms 拉取 ANVIL.md 指引预览；清空输入、关闭弹窗、请求失败均不显示
+  useEffect(() => {
+    const repo = repoPath.trim();
+    if (!props.open || !repo) { setGuidance(null); return; }
+    let stale = false;
+    const timer = setTimeout(() => {
+      api.getGuidance(repo)
+        .then((g) => { if (!stale) setGuidance(g.found ? { content: g.content, truncated: g.truncated } : null); })
+        .catch(() => { if (!stale) setGuidance(null); });
+    }, 400);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [repoPath, props.open]);
+
+  const creatingRef = useRef(false); // 同步在途守卫：state 经 React 批量刷新有间隙，同帧双击会穿透 state 判断
 
   const submit = async () => {
-    if (!title.trim()) return;
-    await api.createIssue({
-      title, description: description || undefined, acceptance: acceptance || undefined, priority,
-      assignee_type: assigneeId ? "agent" : undefined,
-      assignee_id: assigneeId || undefined,
-      repo_path: repoPath || undefined,
-    });
-    props.onCreated();
+    if (!title.trim() || creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    try {
+      await api.createIssue({
+        title, description: description || undefined, acceptance: acceptance || undefined, priority,
+        assignee_type: assigneeId ? "agent" : undefined,
+        assignee_id: assigneeId || undefined,
+        repo_path: repoPath || undefined,
+      });
+      props.onCreated();
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
   };
 
   return (
@@ -465,6 +489,14 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
               onChange={(e) => setRepoPath(e.target.value)}
             />
           </div>
+          {guidance && (
+            <div className="rounded-md border bg-muted/50 px-2.5 py-1.5">
+              <div className="whitespace-pre-wrap font-mono text-[11px] leading-4 text-muted-foreground">
+                {guidance.content.slice(0, 200)}{(guidance.truncated || guidance.content.length > 200) && "…"}
+              </div>
+              <div className="mt-1 text-[11px] text-muted-foreground">将随任务注入</div>
+            </div>
+          )}
           {props.recentRepos.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {props.recentRepos.map((r) => (
@@ -483,7 +515,7 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={props.onClose}>取消</Button>
-          <Button onClick={submit} disabled={!title.trim()}>
+          <Button onClick={submit} disabled={!title.trim() || creating}>
             <Plus />
             创建任务
           </Button>

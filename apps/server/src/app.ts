@@ -38,6 +38,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   registerTaskRoutes(app, db, hub);
   const { registerReviewRoutes } = await import("./routes/review.js");
   registerReviewRoutes(app, db, hub);
+  const { registerGuidanceRoutes } = await import("./routes/guidance.js");
+  registerGuidanceRoutes(app);
 
   const { sweepOfflineRuntimes } = await import("./services/runtimes.js");
   const { sweepExpiredLeases, getTask } = await import("./services/tasks.js");
