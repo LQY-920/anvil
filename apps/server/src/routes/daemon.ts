@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
 import { makeDaemonAuth, makeTaskAuth } from "../lib/auth.js";
-import { claimTasks, getTask, startTask, completeTask, failTaskInternal, setIssueStatusFromAgent } from "../services/tasks.js";
+import { claimTasks, getTask, startTask, completeTask, failTaskInternal, setIssueStatusFromAgent, autoAdvanceIssue } from "../services/tasks.js";
 import { getIssue } from "../services/issues.js";
 import { registerRuntimes, heartbeat } from "../services/runtimes.js";
 import { appendTaskMessages } from "../services/messages.js";
@@ -61,7 +61,10 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const { work_dir } = (req.body ?? {}) as { work_dir?: string };
     if (!work_dir) return reply.code(400).send({ error: "work_dir required" });
     if (!startTask(db, id, work_dir)) return reply.code(409).send({ error: "task not in dispatched state" });
-    hub.broadcast({ type: "task.updated", data: getTask(db, id) });
+    const task = getTask(db, id)!;
+    hub.broadcast({ type: "task.updated", data: task });
+    const issue = autoAdvanceIssue(db, task, "start");
+    if (issue) hub.broadcast({ type: "issue.updated", data: issue });
     return { ok: true };
   });
 
@@ -70,6 +73,8 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     if (!completeTask(db, id, req.body as any)) return reply.code(409).send({ error: "task not active" });
     const task = getTask(db, id)!;
     hub.broadcast({ type: "task.updated", data: task });
+    const issue = autoAdvanceIssue(db, task, "complete");
+    if (issue) hub.broadcast({ type: "issue.updated", data: issue });
     return { ok: true };
   });
 

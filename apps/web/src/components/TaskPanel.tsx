@@ -21,6 +21,7 @@ import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
 import { TASK_STATUS_LABELS } from "../labels.js";
 import { cn } from "@/lib/utils";
+import { messageToEntry, summarizeProgress } from "@/lib/trace-presenter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -72,20 +73,21 @@ function DiffStat({ stat }: { stat: string }) {
   );
 }
 
-/** 单条日志：时间戳 + 类型图标 + 内容；tool_result 默认折叠成摘要，长输出截断 200px 可展开 */
+/** 单条日志：时间戳 + 类型图标 + presenter 渲染条目；可折叠条目（tool_use/thinking/tool_result）收成摘要行，长输出截断 200px 可展开 */
 function LogRow({ msg }: { msg: Msg }) {
   const [full, setFull] = useState(false);
-  const text = msg.content ?? msg.output ?? msg.input_json ?? "";
+  const entry = messageToEntry(msg);
   const meta = LOG_TYPE_META[msg.type] ?? { icon: MessageSquare, className: "text-zinc-400", label: msg.type };
   const Icon = meta.icon;
-  const long = text.length > 400 || text.split("\n").length > 8;
+  const bodyText = entry.body ?? entry.title;
+  const long = bodyText.length > 400 || bodyText.split("\n").length > 8;
   const body = (
     <>
       <pre className={cn(
         "m-0 mt-0.5 whitespace-pre-wrap break-all font-mono",
-        msg.type === "error" ? "text-red-400" : msg.type === "tool_result" ? "text-zinc-400" : "text-zinc-300",
+        entry.tone === "destructive" ? "text-red-400" : entry.tone === "muted" ? "text-zinc-400" : "text-zinc-300",
         long && !full && "max-h-[200px] overflow-hidden",
-      )}>{text}</pre>
+      )}>{bodyText}</pre>
       {long && !full && (
         <button type="button" className="mt-0.5 text-[11px] text-zinc-500 hover:text-zinc-300" onClick={() => setFull(true)}>展开全部</button>
       )}
@@ -96,16 +98,20 @@ function LogRow({ msg }: { msg: Msg }) {
       <span className="text-zinc-600">{fmtTime(msg.created_at)}</span>
       <span className={cn("flex items-center gap-1 whitespace-nowrap", meta.className)}>
         <Icon className="size-3.5" aria-hidden="true" />
-        <span className="text-[11px]">{msg.type === "tool_use" && msg.tool ? msg.tool : meta.label}</span>
+        <span className="text-[11px]">{meta.label}</span>
       </span>
       <div className="min-w-0">
-        {msg.type === "tool_result" ? (
-          <details className="group">
-            <summary className="cursor-pointer list-none text-zinc-500 before:content-['▸_'] hover:text-zinc-300 group-open:before:content-['▾_']">
-              {text.split("\n")[0] || "(无输出)"}
-            </summary>
-            {body}
-          </details>
+        {entry.defaultCollapsed ? (
+          entry.body ? (
+            <details className="group">
+              <summary className="cursor-pointer list-none text-zinc-500 before:content-['▸_'] hover:text-zinc-300 group-open:before:content-['▾_']">
+                {entry.title || "(无内容)"}
+              </summary>
+              {body}
+            </details>
+          ) : (
+            <span className="text-zinc-500">{entry.title || "(无内容)"}</span>
+          )
         ) : body}
       </div>
     </div>
@@ -204,6 +210,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const showDelivery = task.status === "completed" && issue.status !== "done" && (diff !== null || merged !== null);
   const statusMeta = TASK_STATUS_META[task.status];
   const StatusIcon = statusMeta?.icon;
+  const progress = summarizeProgress(messages);
 
   const doMerge = async () => {
     setMergeError("");
@@ -330,6 +337,11 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
         )}
         <section aria-label="执行日志">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">执行日志</h3>
+          {messages.length > 0 && (
+            <div className="mb-1.5 truncate font-mono text-[11px] text-muted-foreground">
+              工具调用 {progress.toolCalls} 次 · 错误 {progress.errors} · 最近：{progress.latest || "—"}
+            </div>
+          )}
           <div className="max-h-[60vh] overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300">
             {messages.length === 0 && <div className="text-zinc-600">暂无日志</div>}
             {messages.map((m) => <LogRow key={m.seq} msg={m} />)}

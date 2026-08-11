@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { newId, type Db } from "../db/client.js";
 import { sha256Hex } from "../lib/hash.js";
 import { getIssue, addComment } from "./issues.js";
-import type { Task, TaskComment, TaskPackage } from "@anvil/core";
+import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 
 export const LEASE_MS = 2 * 60 * 1000;
 
@@ -127,6 +127,33 @@ export function completeTask(db: Db, taskId: string, result: { branch?: string; 
     if (task) syncAgentIdle(db, task.agent_id);
   }
   return res.changes === 1;
+}
+
+/**
+ * 状态自动流转（在 startTask/completeTask 成功后调用）：
+ * start 且 issue 为 todo → in_progress；complete 且产出非空 branch 且 issue 为 todo/in_progress → in_review。
+ * blocked/done 等状态不动（blocked 是人工挂起，不抢）。返回迁移后的 issue，未迁移返回 null（供路由层广播）。
+ * 不影响 agent 回调链路：delivered_at 仍只由 setIssueStatusFromAgent 写入。
+ */
+export function autoAdvanceIssue(db: Db, task: Task, event: "start" | "complete"): Issue | null {
+  const issue = getIssue(db, task.issue_id);
+  if (!issue) return null;
+  let next: string | null = null;
+  if (event === "start" && issue.status === "todo") {
+    next = "in_progress";
+  } else if (event === "complete" && (issue.status === "todo" || issue.status === "in_progress")) {
+    let branch: unknown;
+    try { branch = JSON.parse(task.result_json ?? "{}")?.branch; } catch { branch = null; }
+    if (typeof branch === "string" && branch.trim()) next = "in_review";
+  }
+  if (!next) return null;
+  const now = new Date().toISOString();
+  db.$client.prepare(`UPDATE issues SET status=?, updated_at=? WHERE id=?`).run(next, now, issue.id);
+  addComment(db, issue.id, {
+    author_type: "system", author_id: "system", type: "status_change",
+    body: event === "start" ? `${issue.status} → ${next}（开始执行）` : `${issue.status} → ${next}（产出待验收）`,
+  });
+  return getIssue(db, issue.id);
 }
 
 /** 租约清扫：dispatched 且租约过期 → attempt+1 回 queued，token 作废；attempt 已满 → failed/lease_expired，不再重派（防无限重派）。
