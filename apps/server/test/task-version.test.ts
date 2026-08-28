@@ -1,6 +1,6 @@
 // apps/server/test/task-version.test.ts
 //
-// A02 · v2 Task 创建语义 + 自动重试 + 证据表关系 单测。
+// A02 + A02-FIX · v2 Task 创建语义 + 自动重试 + 证据表关系 + Task 协议字段 + 真实升级测试。
 //
 // 覆盖:
 // - 公共入口 insertQueuedTask 显式写 delivery_contract_version=2
@@ -10,19 +10,26 @@
 // - 自动重试不复制父 Task 的 head_commit / verification_status / verification_run_id /
 //   任何 payload hash 或 response JSON
 // - 失败 partial unique index 冲突时 insertQueuedTask 返回 null(已有 pending)
-// - task_delivery_reports 1 per task(UNIQUE task_id 拒绝重复)
+// - task_delivery_reports 1 per task(PRIMARY KEY task_id)
 // - verification_runs 1-to-many from task
 // - verification_checks (run_id, seq) 唯一
 // - verification_checks (run_id, check_id) 唯一
 // - review_measurements 1 per task(支持 upsert 幂等更新)
 // - 外键指向不存在的 Task / Run 失败
-// - 迁移可从 0000-0002 历史 DB 升级(历史 Task data 不丢,version=1)
+// - Task 协议真实包含 A02 字段(无需 as any)
+// - getTask 归一化 worktree_clean:0/1 → boolean,null 保持 null
+// - 真实升级:从 0000、0001、0002 状态分别升级到 0003,历史 Task data 不丢,
+//   version=1,新表/索引存在,FK check 通过
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { createDb, runMigrations, seed } from "../src/db/client.js";
 import { enqueueForComment, enqueueForIssue, getIssue, listTasksForIssue } from "../src/services/issues.js";
-import { failTaskInternal, getTask } from "../src/services/tasks.js";
+import { claimTasks, failTaskInternal, getTask } from "../src/services/tasks.js";
 import { DELIVERY_CONTRACT_CURRENT_VERSION } from "@anvil/core";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { mkdtempSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function setup(): { db: ReturnType<typeof createDb>; workspaceId: string; userId: string; agentId: string; now: string } {
   const db = createDb(":memory:");
@@ -350,34 +357,100 @@ describe("review_measurements — one per task, upsert idempotent", () => {
 });
 
 // ============================================================================
-// 历史 DB 升级
+// 历史 DB 真实升级测试
+//
+// 流程:用 OS 临时目录 + 截断的 _journal.json 构造停在 0000 / 0001 / 0002 的"历史库",
+// 在 :memory: 上用 Drizzle migrate 跑这一部分,然后插入历史 Task,再调用项目完整
+// runMigrations 跑完 0003,断言历史数据保留、version=1、schema 完整、FK check 通过。
 // ============================================================================
 
-describe("migration upgrades from historical DB", () => {
-  it("新建 0000-0002 DB 后运行 0003 升级:历史 Task data 不丢,且 version=1", () => {
-    // 模拟一个历史 DB:只有 0000-0002 已经跑过
-    const db = createDb(":memory:");
-    // 跑 0000-0002
-    runMigrations(db);
-    const { workspace, user } = seed(db);
-    const now = new Date().toISOString();
-    // 插入一个历史 v1 Task
-    db.prepare(`INSERT INTO agents (id, workspace_id, name, provider, status, max_concurrent_tasks, created_at)
-                VALUES ('a1', ?, 'bot', 'kimi', 'idle', 1, ?)`).run(workspace.id, now);
-    db.prepare(`INSERT INTO issues (id, workspace_id, title, status, priority, creator_type, creator_id, position, created_at, updated_at)
-                VALUES ('i1', ?, 't', 'todo', 'medium', 'member', 'u', 1, ?, ?)`).run(workspace.id, now, now);
-    const histId = "t-hist-1";
-    db.prepare(`INSERT INTO tasks (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts, created_at)
-                VALUES (?, ?, 'i1', 'a1', 'completed', 20, 1, 3, ?)`)
-      .run(histId, workspace.id, now);
-    // 升级:再跑一次 migrations(0003 会叠加,但 drizzle 的 migrate 是幂等的)
-    runMigrations(db);
-    // 历史 Task 还在
-    const hist = db.prepare(`SELECT * FROM tasks WHERE id=?`).get(histId) as any;
-    expect(hist).toBeDefined();
-    expect(hist.id).toBe(histId);
-    // 历史 Task 的 delivery_contract_version 必须是 1(由 0003 ALTER ADD COLUMN with default 1)
-    expect(hist.delivery_contract_version).toBe(1);
+const REAL_MIGRATIONS_DIR = "D:/anvil/apps/server/drizzle";
+
+/** 构造一个临时目录,只包含 0000-000X 的真实 SQL + 截断的 _journal.json。 */
+function makePartialMigrationDir(upToIdx: number): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "anvil-a02fix-"));
+  const realJournal = JSON.parse(readFileSync(join(REAL_MIGRATIONS_DIR, "meta/_journal.json"), "utf8"));
+  const realEntries: { idx: number; tag: string; when: number; version: string; breakpoints: boolean }[] = realJournal.entries;
+  for (const e of realEntries) {
+    if (e.idx <= upToIdx) {
+      const sqlFile = `${e.tag}.sql`;
+      copyFileSync(join(REAL_MIGRATIONS_DIR, sqlFile), join(dir, sqlFile));
+    }
+  }
+  const truncated = {
+    ...realJournal,
+    entries: realEntries.filter((e) => e.idx <= upToIdx),
+  };
+  mkdirSync(join(dir, "meta"), { recursive: true });
+  writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify(truncated, null, 2));
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function insertHistoricalTask(db: ReturnType<typeof createDb>, taskId: string, issueId: string, workspaceId: string) {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO agents (id, workspace_id, name, provider, status, max_concurrent_tasks, created_at)
+              VALUES ('a1', ?, 'bot', 'kimi', 'idle', 1, ?)`).run(workspaceId, now);
+  db.prepare(`INSERT INTO issues (id, workspace_id, title, status, priority, creator_type, creator_id, position, created_at, updated_at)
+              VALUES (?, ?, '历史 issue', 'done', 'medium', 'member', 'u', 1, ?, ?)`)
+    .run(issueId, workspaceId, now, now);
+  // 历史 v1 Task 不包含 delivery_contract_version / task_branch / 等 A02 字段
+  // 也不包含 delivered_at(那是 0002 加的),但 0002 已经在了;id 用稳定可识别字符串。
+  db.prepare(`INSERT INTO tasks (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts, result_json, created_at)
+              VALUES (?, ?, ?, 'a1', 'completed', 20, 1, 3, ?, ?)`)
+    .run(taskId, workspaceId, issueId, JSON.stringify({ branch: "task/hist", diff_stat: "1 file changed" }), now);
+}
+
+describe("migration upgrades from historical DB (real partial migrations)", () => {
+  it.each([0, 1, 2])("从 0000/0001/0002 状态升级到 0003:历史 Task data 不丢,version=1 (from upToIdx=%i)", (upToIdx) => {
+    const { dir, cleanup } = makePartialMigrationDir(upToIdx);
+    try {
+      const db = createDb(":memory:");
+      // 用 Drizzle migrate 在临时目录上跑 0000..000upToIdx
+      migrate(db, { migrationsFolder: dir });
+      // 拿到 workspace(用 seed 也行,seed 不会写 delivery_contract_version,旧 schema 上不报错)
+      const { workspace } = seed(db);
+      // 插入历史 v1 Task(老 schema,没有 A02 字段)
+      const histId = `t-hist-from-${upToIdx}`;
+      const issueId = `i-hist-from-${upToIdx}`;
+      insertHistoricalTask(db, histId, issueId, workspace.id);
+      // 升级:用项目完整 runMigrations 跑 0003(0000/0001/0002 已应用,drizzle 跳过)
+      runMigrations(db);
+      // 1. 历史 Task 还在,id / status / result_json / attempt / max_attempts 原数据保留
+      const hist = db.prepare(`SELECT * FROM tasks WHERE id=?`).get(histId) as any;
+      expect(hist).toBeDefined();
+      expect(hist.id).toBe(histId);
+      expect(hist.status).toBe("completed");
+      expect(hist.attempt).toBe(1);
+      expect(hist.max_attempts).toBe(3);
+      expect(JSON.parse(hist.result_json)).toEqual({ branch: "task/hist", diff_stat: "1 file changed" });
+      // 2. delivery_contract_version 精确 = 1(由 0003 ALTER ADD with DEFAULT 1)
+      expect(hist.delivery_contract_version).toBe(1);
+      // 3. 其他 v2 字段为 null(start 前允许为空)
+      expect(hist.task_branch).toBeNull();
+      expect(hist.target_branch).toBeNull();
+      expect(hist.base_commit).toBeNull();
+      expect(hist.head_commit).toBeNull();
+      expect(hist.worktree_clean).toBeNull();
+      expect(hist.verification_status).toBeNull();
+      expect(hist.verification_run_id).toBeNull();
+      // 4. 0003 四张新表均存在
+      for (const t of ["task_delivery_reports", "verification_runs", "verification_checks", "review_measurements"]) {
+        const found = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(t);
+        expect(found).toBeDefined();
+      }
+      // 5. tasks_one_pending_per_issue 仍存在
+      const partial = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name='tasks_one_pending_per_issue'`).get();
+      expect(partial).toBeDefined();
+      // 6. tasks_issue_contract_created 索引存在且列顺序正确
+      const contractIdx = db.prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name='tasks_issue_contract_created'`).get() as { sql: string } | undefined;
+      expect(contractIdx).toBeDefined();
+      expect(contractIdx!.sql).toMatch(/issue_id.*delivery_contract_version.*created_at/);
+      // 7. PRAGMA foreign_key_check 返回空数组(无 FK 违规)
+      const fkViolations = db.prepare(`PRAGMA foreign_key_check`).all();
+      expect(fkViolations).toEqual([]);
+    } finally {
+      cleanup();
+    }
   });
 
   it("应用启动后 runMigrations 重复执行幂等(没有错误 / 重复数据)", () => {
@@ -393,5 +466,97 @@ describe("migration upgrades from historical DB", () => {
     expect(tables.map((t) => t.name)).toContain("tasks");
     const idx = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name='tasks_one_pending_per_issue'`).all() as any[];
     expect(idx).toHaveLength(1);
+  });
+});
+
+// ============================================================================
+// Task 协议字段 + getTask 归一化
+// ============================================================================
+
+describe("getTask normalizes worktree_clean and exposes A02 fields", () => {
+  function setupTaskWithWorktree(value: number | null): { db: ReturnType<typeof createDb>; taskId: string } {
+    const { db, workspaceId, agentId } = setup();
+    const issue = makeActiveIssue(db, workspaceId, "iwt", agentId);
+    const task = enqueueForIssue(db, issue, "x")!;
+    db.prepare(`UPDATE tasks SET worktree_clean=? WHERE id=?`).run(value, task.id);
+    return { db, taskId: task.id };
+  }
+
+  it("worktree_clean=1 归一化为 true", () => {
+    const { db, taskId } = setupTaskWithWorktree(1);
+    const t = getTask(db, taskId);
+    expect(t).not.toBeNull();
+    expect(t!.worktree_clean).toBe(true);
+  });
+
+  it("worktree_clean=0 归一化为 false", () => {
+    const { db, taskId } = setupTaskWithWorktree(0);
+    const t = getTask(db, taskId);
+    expect(t!.worktree_clean).toBe(false);
+  });
+
+  it("worktree_clean=null 保持 null", () => {
+    const { db, taskId } = setupTaskWithWorktree(null);
+    const t = getTask(db, taskId);
+    expect(t!.worktree_clean).toBeNull();
+  });
+
+  it("getTask 返回的 Task 协议直接包含 A02 字段,无需 as any", () => {
+    const { db, taskId } = setupTaskWithWorktree(1);
+    const t = getTask(db, taskId)!;
+    // 直接访问 A02 字段,TypeScript 不需要任何 cast
+    expect(t.delivery_contract_version).toBe(DELIVERY_CONTRACT_CURRENT_VERSION);
+    expect(t.task_branch).toBeNull();
+    expect(t.target_branch).toBeNull();
+    expect(t.base_commit).toBeNull();
+    expect(t.head_commit).toBeNull();
+    expect(t.worktree_clean).toBe(true);
+    expect(t.verification_status).toBeNull();
+    expect(t.verification_run_id).toBeNull();
+    expect(t.start_payload_hash).toBeNull();
+    expect(t.start_response_json).toBeNull();
+    expect(t.complete_payload_hash).toBeNull();
+    expect(t.complete_response_json).toBeNull();
+    expect(t.fail_payload_hash).toBeNull();
+    expect(t.fail_response_json).toBeNull();
+  });
+});
+
+describe("claimTasks TaskPackage.task exposes A02 fields without as any", () => {
+  /** 建立一个 workspace + agent + online runtime 准备 claim 的 db。 */
+  function setupClaimable(): { db: ReturnType<typeof createDb>; workspaceId: string; agentId: string; issueId: string; taskId: string } {
+    const ctx = setup();
+    const now = new Date().toISOString();
+    ctx.db.prepare(`INSERT INTO runtimes (id, workspace_id, daemon_id, provider, version, status, last_seen_at)
+                    VALUES ('rt1', ?, 'daemon-1', 'kimi', '1.0', 'online', ?)`)
+      .run(ctx.workspaceId, now);
+    const issue = makeActiveIssue(ctx.db, ctx.workspaceId, "iclaim", ctx.agentId);
+    const task = enqueueForIssue(ctx.db, issue, "first")!;
+    return { db: ctx.db, workspaceId: ctx.workspaceId, agentId: ctx.agentId, issueId: issue.id, taskId: task.id };
+  }
+
+  it("claimTasks 返回的 Task 可以直接访问 delivery_contract_version / target_branch / base_commit / worktree_clean", () => {
+    const { db, workspaceId, taskId } = setupClaimable();
+    const packages = claimTasks(db, workspaceId, "daemon-1", 1);
+    expect(packages).toHaveLength(1);
+    const pkg = packages[0];
+    // 直接访问 A02 字段,TypeScript 不需要任何 cast
+    expect(pkg.task.id).toBe(taskId);
+    expect(pkg.task.delivery_contract_version).toBe(DELIVERY_CONTRACT_CURRENT_VERSION);
+    expect(pkg.task.task_branch).toBeNull();
+    expect(pkg.task.target_branch).toBeNull();
+    expect(pkg.task.base_commit).toBeNull();
+    expect(pkg.task.head_commit).toBeNull();
+    expect(pkg.task.worktree_clean).toBeNull();
+    expect(pkg.task.verification_status).toBeNull();
+    expect(pkg.task.verification_run_id).toBeNull();
+  });
+
+  it("claimTasks 返回的 task 携带 worktree_clean 归一化结果(0/1 各自正确)", () => {
+    const { db, workspaceId, taskId } = setupClaimable();
+    db.prepare(`UPDATE tasks SET worktree_clean=1 WHERE id=?`).run(taskId);
+    const packages = claimTasks(db, workspaceId, "daemon-1", 1);
+    expect(packages).toHaveLength(1);
+    expect(packages[0].task.worktree_clean).toBe(true);
   });
 });

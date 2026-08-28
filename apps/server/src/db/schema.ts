@@ -139,6 +139,9 @@ export const tasks = sqliteTable("tasks", {
 }, (t) => [
   uniqueIndex("tasks_one_pending_per_issue").on(t.issue_id).where(sql`status IN ('queued','dispatched')`),
   index("tasks_claim").on(t.status, t.priority, t.created_at),
+  // A02-FIX · PRD 要求的 v2 历史/契约查询索引:同 issue 下的 v1/v2 Task 按时间倒序。
+  // 注意:不是 UNIQUE —— 同一个 issue 同一 contract version 可以有历史多条。
+  index("tasks_issue_contract_created").on(t.issue_id, t.delivery_contract_version, t.created_at),
 ]);
 
 export const taskMessages = sqliteTable("task_messages", {
@@ -221,7 +224,7 @@ export const agentSkills = sqliteTable("agent_skills", {
 // A02 · v2 证据表
 // ----------------------------------------------------------------------------
 
-/** Agent 交付报告(FR-002)。Task 一对零或一,by task_id UNIQUE。 */
+/** Agent 交付报告(FR-002)。Task 一对零或一,by task_id PRIMARY KEY 自带唯一性。 */
 export const taskDeliveryReports = sqliteTable("task_delivery_reports", {
   task_id: text("task_id").primaryKey().references(() => tasks.id),
   schema_version: integer("schema_version").notNull(),
@@ -233,12 +236,7 @@ export const taskDeliveryReports = sqliteTable("task_delivery_reports", {
   unresolved_json: text("unresolved_json").notNull(),
   submitted_at: text("submitted_at").notNull(),
   updated_at: text("updated_at").notNull(),
-}, (t) => [
-  // 1-per-task 也用 PRIMARY KEY(task_id) 表达;drizzle-kit 生成 UNIQUE INDEX 而非单独 UNIQUE
-  // constraint。这里显式再加一条同名列唯一索引,使 task_id 上有可见的 UNIQUE 索引名,
-  // 方便 db.test.ts 断言"task_id 上有 UNIQUE 索引"(任一名称匹配即可)。
-  uniqueIndex("task_delivery_reports_task_id_unique").on(t.task_id),
-]);
+});
 
 /** Verification Run 整体记录(FR-001 §9 complete.body.verification)。
  *  一个 Task 多个 Run(多次执行/重新执行),所以 task_id 上只是普通索引。 */

@@ -96,13 +96,17 @@ describe("db · 0003 P0-A 证据迁移", () => {
     expect(names).toContain("verification_checks_run_id_check_id_unique");
   });
 
-  it("task_delivery_reports 在 task_id 上有 UNIQUE 约束(1 per task)", () => {
+  it("task_delivery_reports.task_id 是 PRIMARY KEY(主键自带唯一性,不另建冗余唯一索引)", () => {
     const db = createDb(":memory:");
     runMigrations(db);
-    const idx = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='task_delivery_reports'`).all() as any[];
-    const names: string[] = idx.map((i: any) => i.name);
-    // task_id 列上有唯一索引(名字不强制,但必须存在一个基于 task_id 的 unique 索引)
-    expect(names.some((n) => /task_id/.test(n))).toBe(true);
+    const cols = db.prepare(`PRAGMA table_info(task_delivery_reports)`).all() as { name: string; pk: number; notnull: number }[];
+    const taskIdCol = cols.find((c) => c.name === "task_id");
+    expect(taskIdCol).toBeDefined();
+    expect(taskIdCol!.pk).toBe(1);
+    expect(taskIdCol!.notnull).toBe(1);
+    // 不存在 task_delivery_reports_task_id_unique 这类冗余唯一索引
+    const idx = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='task_delivery_reports'`).all() as { name: string }[];
+    expect(idx.map((i) => i.name).some((n) => /task_id/.test(n))).toBe(false);
   });
 
   it("review_measurements.task_id 是主键(也是 FK)", () => {
@@ -112,6 +116,17 @@ describe("db · 0003 P0-A 证据迁移", () => {
     const pk = cols.find((c: any) => c.name === "task_id");
     expect(pk).toBeDefined();
     expect(pk.pk).toBe(1);
+  });
+
+  it("tasks(issue_id, delivery_contract_version, created_at) 索引存在且列顺序正确", () => {
+    const db = createDb(":memory:");
+    runMigrations(db);
+    const idx = db.prepare(`SELECT name, sql FROM sqlite_master WHERE type='index' AND name='tasks_issue_contract_created'`).get() as { name: string; sql: string } | undefined;
+    expect(idx).toBeDefined();
+    // 索引列顺序必须是 issue_id, delivery_contract_version, created_at
+    expect(idx!.sql).toMatch(/CREATE INDEX `?tasks_issue_contract_created`? ON `?tasks`? \(`?issue_id`?,`?delivery_contract_version`?,`?created_at`?\)/);
+    // 普通索引(不是 UNIQUE)
+    expect(idx!.sql).not.toMatch(/UNIQUE INDEX/);
   });
 
   it("FK 真实存在:tasks.verification_run_id → verification_runs.id", () => {

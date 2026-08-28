@@ -23,7 +23,6 @@ CREATE TABLE `task_delivery_reports` (
 	FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `task_delivery_reports_task_id_unique` ON `task_delivery_reports` (`task_id`);--> statement-breakpoint
 CREATE TABLE `verification_checks` (
 	`id` text PRIMARY KEY NOT NULL,
 	`verification_run_id` text NOT NULL,
@@ -70,4 +69,5 @@ ALTER TABLE `tasks` ADD `start_response_json` text;--> statement-breakpoint
 ALTER TABLE `tasks` ADD `complete_payload_hash` text;--> statement-breakpoint
 ALTER TABLE `tasks` ADD `complete_response_json` text;--> statement-breakpoint
 ALTER TABLE `tasks` ADD `fail_payload_hash` text;--> statement-breakpoint
-ALTER TABLE `tasks` ADD `fail_response_json` text;
+ALTER TABLE `tasks` ADD `fail_response_json` text;--> statement-breakpoint
+CREATE INDEX `tasks_issue_contract_created` ON `tasks` (`issue_id`,`delivery_contract_version`,`created_at`);

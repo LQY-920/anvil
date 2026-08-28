@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4707f4e5-89d6-408c-9f14-d2a68b644733",
+  "id": "72917a97-1db6-4dfa-ac6c-bbf7a1f00cec",
   "prevId": "06f4090a-da78-420e-8ae5-de6af550a402",
   "tables": {
     "agent_skills": {
@@ -825,15 +825,7 @@
           "autoincrement": false
         }
       },
-      "indexes": {
-        "task_delivery_reports_task_id_unique": {
-          "name": "task_delivery_reports_task_id_unique",
-          "columns": [
-            "task_id"
-          ],
-          "isUnique": true
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "task_delivery_reports_task_id_tasks_id_fk": {
           "name": "task_delivery_reports_task_id_tasks_id_fk",
@@ -1224,6 +1216,15 @@
           "columns": [
             "status",
             "priority",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "tasks_issue_contract_created": {
+          "name": "tasks_issue_contract_created",
+          "columns": [
+            "issue_id",
+            "delivery_contract_version",
             "created_at"
           ],
           "isUnique": false

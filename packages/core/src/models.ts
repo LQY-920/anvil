@@ -41,6 +41,24 @@ export interface Task {
   task_token_hash: string | null; result_json: string | null; error: string | null;
   lease_expires_at: string | null; dispatched_at: string | null;
   started_at: string | null; completed_at: string | null; delivered_at: string | null; created_at: string;
+  // ---- A02 · v2 交付证据与反馈闭环 ----
+  // D-007:历史 v1 与新 v2 共用字面量联合,新建 v2 Task 必须写 DELIVERY_CONTRACT_CURRENT_VERSION (=2)。
+  delivery_contract_version: DeliveryContractVersion;
+  // Git anchor + 终态字段。start / complete 前允许 null;Runner / 持久化层负责写入。
+  task_branch: string | null;
+  target_branch: string | null;
+  base_commit: string | null;
+  head_commit: string | null;
+  worktree_clean: boolean | null;             // 运行时归一化:SQLite 0/1 → boolean;null 保持 null
+  verification_status: VerificationStatus | null;
+  verification_run_id: string | null;
+  // D-003 幂等键 + 响应(daemon 丢失响应后仍可重放)。
+  start_payload_hash: string | null;
+  start_response_json: string | null;
+  complete_payload_hash: string | null;
+  complete_response_json: string | null;
+  fail_payload_hash: string | null;
+  fail_response_json: string | null;
 }
 
 export interface Comment {

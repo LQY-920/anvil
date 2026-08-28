@@ -5,11 +5,22 @@ import { getIssue, addComment } from "./issues.js";
 import { DELIVERY_CONTRACT_CURRENT_VERSION } from "@anvil/core";
 import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 
+/** SQLite 没有原生 boolean;raw SQL 读出的 worktree_clean 是 0/1/null。
+ *  把它归一化为 Task 协议规定的 `boolean | null`:null 保持 null,0/1 转 boolean。 */
+function normalizeTaskRow(row: Record<string, unknown>): Record<string, unknown> {
+  if ("worktree_clean" in row) {
+    const wc = row.worktree_clean;
+    row.worktree_clean = (wc === null || wc === undefined) ? null : Boolean(wc);
+  }
+  return row;
+}
+
 export const LEASE_MS = 2 * 60 * 1000;
 
 export function getTask(db: Db, id: string): Task | null {
-  const row = db.$client.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as any;
-  return row ?? null;
+  const row = db.$client.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return normalizeTaskRow(row) as unknown as Task;
 }
 
 /** 任务进入终态后回写 agent 状态：没有 dispatched/running 任务则置回 idle。 */
@@ -79,7 +90,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
 
 /** 失败落库 + 有限重试：attempt 未满则派生子任务重新入队。 */
 export function failTaskInternal(db: Db, taskId: string, reason: string, error: string, workDir: string | null) {
-  const task = getTask(db, taskId) as (Task & { target_branch?: string | null; base_commit?: string | null }) | null;
+  const task = getTask(db, taskId);
   if (!task || task.status === "completed" || task.status === "failed" || task.status === "cancelled") return;
   const now = new Date().toISOString();
   db.$client.transaction(() => {
