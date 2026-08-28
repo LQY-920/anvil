@@ -29,7 +29,8 @@ import { DELIVERY_CONTRACT_CURRENT_VERSION } from "@anvil/core";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { mkdtempSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 function setup(): { db: ReturnType<typeof createDb>; workspaceId: string; userId: string; agentId: string; now: string } {
   const db = createDb(":memory:");
@@ -364,7 +365,13 @@ describe("review_measurements — one per task, upsert idempotent", () => {
 // runMigrations 跑完 0003,断言历史数据保留、version=1、schema 完整、FK check 通过。
 // ============================================================================
 
-const REAL_MIGRATIONS_DIR = "D:/anvil/apps/server/drizzle";
+/** 真实 migrations 目录:从本测试文件位置向上到 apps/server,然后并列进入 drizzle/。
+ *  不依赖 process.cwd() 或仓库绝对路径 —— 测试在任意 cwd 下都能找到正确的目录。 */
+const REAL_MIGRATIONS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "drizzle",
+);
 
 /** 构造一个临时目录,只包含 0000-000X 的真实 SQL + 截断的 _journal.json。 */
 function makePartialMigrationDir(upToIdx: number): { dir: string; cleanup: () => void } {
