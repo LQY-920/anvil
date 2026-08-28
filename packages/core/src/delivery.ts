@@ -588,15 +588,18 @@ export function policyHash(rawFileText: string): string {
 export type ParsedResultJson =
   | { kind: "absent" }
   | { kind: "incomplete"; raw: string; reason: string }
-  | { kind: "unsupported"; raw: string; schemaVersion: number }
+  | { kind: "legacy"; raw: string; value: Record<string, unknown> }
+  | { kind: "unsupported"; raw: string; value: Record<string, unknown>; schemaVersion: number }
   | { kind: "valid"; raw: string; value: Record<string, unknown> };
 
 /**
  * 安全解析 `Task.result_json`:
  * - `null` / `undefined` / 空字符串 → absent
  * - JSON.parse 失败或顶层不是对象 → incomplete(不抛)
- * - 顶层是对象但 `schema_version` 不是当前支持的版本(2)→ unsupported
+ * - 顶层是对象,缺 `schema_version`(历史 v1 真实形态,如 `{"branch":"task/abc","diff_stat":"…"}`)
+ *   或 `schema_version === 1` → legacy(保留解析后的 value,UI 可继续展示)
  * - 顶层是对象且 `schema_version === 2` → valid
+ * - 顶层是对象但 `schema_version` 是其他数字(如 99)→ unsupported(保留 value 以便排查)
  */
 export function parseResultJson(raw: string | null | undefined): ParsedResultJson {
   if (raw == null || raw.length === 0) return { kind: "absent" };
@@ -612,13 +615,19 @@ export function parseResultJson(raw: string | null | undefined): ParsedResultJso
   }
   const obj = parsed as Record<string, unknown>;
   const v = obj.schema_version;
+  if (v === undefined) {
+    return { kind: "legacy", raw, value: obj };
+  }
+  if (typeof v === "number" && v === 1) {
+    return { kind: "legacy", raw, value: obj };
+  }
   if (typeof v === "number" && v === 2) {
     return { kind: "valid", raw, value: obj };
   }
   if (typeof v === "number") {
-    return { kind: "unsupported", raw, schemaVersion: v };
+    return { kind: "unsupported", raw, value: obj, schemaVersion: v };
   }
-  return { kind: "incomplete", raw, reason: "missing schema_version" };
+  return { kind: "incomplete", raw, reason: "schema_version must be a number" };
 }
 
 /** 判定 v1 旧 result_json 的可读性。 */
@@ -627,14 +636,16 @@ export type ResultJsonClassification = "legacy" | "incomplete" | "unsupported" |
 /**
  * 判定 v1 旧 result_json:
  * - `absent`(空 / null)→ `legacy`(无 v1 数据可读,UI 直接按 legacy 处理)
- * - `incomplete`(解析失败 / 非对象 / 缺 schema_version)→ `incomplete`
- * - `unsupported`(解析成功但 schema_version 不是 2)→ `unsupported`
+ * - `legacy`(无 schema_version 或 schema_version=1)→ `legacy`
+ * - `incomplete`(解析失败 / 非对象 / schema_version 非数字)→ `incomplete`
+ * - `unsupported`(schema_version 是数字但不是 1/2,如 99)→ `unsupported`
  * - `valid`(schema_version === 2)→ `valid`
  */
 export function classifyResultJson(raw: string | null | undefined): ResultJsonClassification {
   const parsed = parseResultJson(raw);
   switch (parsed.kind) {
     case "absent": return "legacy";
+    case "legacy": return "legacy";
     case "incomplete": return "incomplete";
     case "unsupported": return "unsupported";
     case "valid": return "valid";

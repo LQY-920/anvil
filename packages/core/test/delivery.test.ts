@@ -40,6 +40,8 @@ import {
   sha256Hex,
   validateDeliveryReport,
   validateVerificationPolicy,
+  type V2CompleteResponse,
+  type VerificationRun,
 } from "../src/index.js";
 
 // ---- 工具 ----
@@ -873,7 +875,7 @@ describe("policyHash (raw text SHA-256, order-sensitive)", () => {
 });
 
 // ============================================================================
-// result_json 安全解析
+// result_json 安全解析 —— 完整矩阵(含历史 v1 真实形态)
 // ============================================================================
 
 describe("parseResultJson", () => {
@@ -883,6 +885,46 @@ describe("parseResultJson", () => {
   it("returns absent for empty string", () => {
     expect(parseResultJson("")).toEqual({ kind: "absent" });
   });
+
+  it("returns legacy for historical v1 result_json without schema_version and preserves value", () => {
+    // 历史真实形态:Runner 写下的 {"branch":"task/abc","diff_stat":"1 file changed"}
+    const raw = '{"branch":"task/abc","diff_stat":"1 file changed"}';
+    const r = parseResultJson(raw);
+    expect(r.kind).toBe("legacy");
+    if (r.kind === "legacy") {
+      expect(r.raw).toBe(raw);
+      expect(r.value).toEqual({ branch: "task/abc", diff_stat: "1 file changed" });
+    }
+  });
+
+  it("returns legacy for object with schema_version=1 and preserves value", () => {
+    const raw = '{"schema_version":1,"branch":"task/abc","diff_stat":"x"}';
+    const r = parseResultJson(raw);
+    expect(r.kind).toBe("legacy");
+    if (r.kind === "legacy") {
+      expect(r.value).toEqual({ schema_version: 1, branch: "task/abc", diff_stat: "x" });
+    }
+  });
+
+  it("returns valid for object with schema_version=2 and preserves value", () => {
+    const raw = '{"schema_version":2,"branch":"task/abc"}';
+    const r = parseResultJson(raw);
+    expect(r.kind).toBe("valid");
+    if (r.kind === "valid") {
+      expect(r.value).toEqual({ schema_version: 2, branch: "task/abc" });
+    }
+  });
+
+  it("returns unsupported for object with schema_version=99 and preserves value", () => {
+    const raw = '{"schema_version":99,"branch":"task/abc"}';
+    const r = parseResultJson(raw);
+    expect(r.kind).toBe("unsupported");
+    if (r.kind === "unsupported") {
+      expect(r.schemaVersion).toBe(99);
+      expect(r.value).toEqual({ schema_version: 99, branch: "task/abc" });
+    }
+  });
+
   it("returns incomplete for invalid JSON", () => {
     const r = parseResultJson("not json {");
     expect(r.kind).toBe("incomplete");
@@ -899,34 +941,19 @@ describe("parseResultJson", () => {
     const r = parseResultJson('"hello"');
     expect(r.kind).toBe("incomplete");
   });
-  it("returns incomplete for object without schema_version", () => {
-    const r = parseResultJson('{"branch":"x"}');
+  it("returns incomplete for JSON number at top level", () => {
+    const r = parseResultJson("42");
     expect(r.kind).toBe("incomplete");
-    if (r.kind === "incomplete") {
-      expect(r.reason).toMatch(/schema_version/);
-    }
   });
-  it("returns valid for object with schema_version=2", () => {
-    const r = parseResultJson('{"schema_version":2,"branch":"x"}');
-    expect(r.kind).toBe("valid");
-    if (r.kind === "valid") {
-      expect(r.value).toEqual({ schema_version: 2, branch: "x" });
-    }
+  it("returns incomplete for JSON null at top level", () => {
+    const r = parseResultJson("null");
+    expect(r.kind).toBe("incomplete");
   });
-  it("returns unsupported for object with schema_version=1", () => {
-    const r = parseResultJson('{"schema_version":1}');
-    expect(r.kind).toBe("unsupported");
-    if (r.kind === "unsupported") {
-      expect(r.schemaVersion).toBe(1);
-    }
+  it("returns incomplete for object with non-numeric schema_version", () => {
+    const r = parseResultJson('{"schema_version":"2"}');
+    expect(r.kind).toBe("incomplete");
   });
-  it("returns unsupported for object with schema_version=99 (not current)", () => {
-    const r = parseResultJson('{"schema_version":99}');
-    expect(r.kind).toBe("unsupported");
-    if (r.kind === "unsupported") {
-      expect(r.schemaVersion).toBe(99);
-    }
-  });
+
   it("does not throw on malformed input", () => {
     expect(() => parseResultJson("\u0000\u0000")).not.toThrow();
     expect(() => parseResultJson("undefined")).not.toThrow();
@@ -935,26 +962,137 @@ describe("parseResultJson", () => {
 });
 
 describe("classifyResultJson", () => {
-  it("returns legacy for absent", () => {
+  // 完整矩阵:每条都同时与 parseResultJson 验证一致
+  it("absent → legacy (null/empty)", () => {
     expect(classifyResultJson(null)).toBe("legacy");
     expect(classifyResultJson("")).toBe("legacy");
   });
-  it("returns incomplete for object without schema_version", () => {
-    expect(classifyResultJson('{"branch":"x"}')).toBe("incomplete");
+  it("object without schema_version → legacy (historical v1 真实形态)", () => {
+    expect(classifyResultJson('{"branch":"task/abc","diff_stat":"1 file changed"}')).toBe("legacy");
+    expect(classifyResultJson('{"branch":"x"}')).toBe("legacy");
   });
-  it("returns unsupported for object with schema_version=1 (v1, not v2)", () => {
-    expect(classifyResultJson('{"schema_version":1}')).toBe("unsupported");
+  it("object with schema_version=1 → legacy (v1)", () => {
+    expect(classifyResultJson('{"schema_version":1}')).toBe("legacy");
   });
-  it("returns valid for object with schema_version=2", () => {
+  it("object with schema_version=2 → valid (v2)", () => {
     expect(classifyResultJson('{"schema_version":2}')).toBe("valid");
   });
-  it("returns unsupported for object with schema_version=99 (not current)", () => {
+  it("object with schema_version=99 → unsupported (unknown number)", () => {
     expect(classifyResultJson('{"schema_version":99}')).toBe("unsupported");
   });
-  it("returns incomplete for invalid JSON", () => {
-    expect(classifyResultJson("not json")).toBe("incomplete");
+  it("object with schema_version=3 → unsupported", () => {
+    expect(classifyResultJson('{"schema_version":3}')).toBe("unsupported");
   });
-  it("returns incomplete for array", () => {
+  it("object with non-numeric schema_version → incomplete", () => {
+    expect(classifyResultJson('{"schema_version":"2"}')).toBe("incomplete");
+  });
+  it("invalid JSON → incomplete (no throw)", () => {
+    expect(classifyResultJson("not json")).toBe("incomplete");
+    expect(() => classifyResultJson("not json")).not.toThrow();
+  });
+  it("JSON array → incomplete", () => {
     expect(classifyResultJson("[1,2]")).toBe("incomplete");
+  });
+  it("JSON string at top level → incomplete", () => {
+    expect(classifyResultJson('"hello"')).toBe("incomplete");
+  });
+  it("JSON number at top level → incomplete", () => {
+    expect(classifyResultJson("42")).toBe("incomplete");
+  });
+  it("JSON null at top level → incomplete", () => {
+    expect(classifyResultJson("null")).toBe("incomplete");
+  });
+});
+
+// ============================================================================
+// V2CompleteResponse 类型构造
+// ============================================================================
+
+describe("V2CompleteResponse", () => {
+  it("accepts every valid ReviewPacketStatus", () => {
+    for (const s of REVIEW_PACKET_STATUSES) {
+      const r: V2CompleteResponse = {
+        ok: true,
+        task_id: "t1",
+        status: "completed",
+        review_packet_status: s,
+      };
+      expect(r.review_packet_status).toBe(s);
+    }
+  });
+  it("'ready' is a valid value", () => {
+    const r: V2CompleteResponse = {
+      ok: true,
+      task_id: "t1",
+      status: "completed",
+      review_packet_status: "ready",
+    };
+    expect(r.review_packet_status).toBe("ready");
+  });
+  it("'incomplete' is a valid value (verification 不通过时 complete 仍可返回)", () => {
+    const r: V2CompleteResponse = {
+      ok: true,
+      task_id: "t1",
+      status: "completed",
+      review_packet_status: "incomplete",
+    };
+    expect(r.review_packet_status).toBe("incomplete");
+  });
+});
+
+// ============================================================================
+// VerificationRun 必填字段
+// ============================================================================
+
+describe("VerificationRun required fields", () => {
+  it("completed_at is required (not nullable) even for not_configured", () => {
+    // 编译期类型断言:completed_at: string 不是 string | null
+    // 运行时也必须接受合法的"无策略但记录了完成时间"形态
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "none",
+      policy_hash: null,
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      verification_sha: null,
+      status: "not_configured",
+      started_at: null,           // not_configured 允许 null
+      completed_at: "2026-08-28T10:00:00.000Z",  // 但 completed_at 仍是必填 ISO 时间
+      checks: [],
+    };
+    expect(run.completed_at).toBe("2026-08-28T10:00:00.000Z");
+    expect(run.started_at).toBeNull();
+  });
+
+  it("started_at can be null but completed_at must be present", () => {
+    // 运行时断言:只检查 completed_at 非空,started_at 可为 null
+    const run = {
+      schema_version: 1 as const,
+      policy_source: "none" as const,
+      policy_hash: null,
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      verification_sha: null,
+      status: "not_configured" as const,
+      started_at: null,
+      completed_at: "2026-08-28T11:00:00.000Z",
+      checks: [],
+    };
+    expect(run.started_at).toBeNull();
+    expect(run.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("executed run has both timestamps as ISO strings", () => {
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "ANVIL.verify.json",
+      policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      verification_sha: "0123456789abcdef0123456789abcdef01234567",
+      status: "passed",
+      started_at: "2026-08-28T12:00:00.000Z",
+      completed_at: "2026-08-28T12:05:00.000Z",
+      checks: [],
+    };
+    expect(run.started_at).toBe("2026-08-28T12:00:00.000Z");
+    expect(run.completed_at).toBe("2026-08-28T12:05:00.000Z");
   });
 });

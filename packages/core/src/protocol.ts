@@ -1,6 +1,7 @@
 import type {
   DeliveryReportSchemaVersion, FailureReason, Issue, IssueStatus,
-  Priority, RiskLevel, Task, TaskStatus, VerificationCheckStatus, VerificationStatus,
+  Priority, ReviewPacketStatus, RiskLevel, Task, TaskStatus,
+  VerificationCheckStatus, VerificationStatus,
 } from "./models.js";
 import type { AgentMessage } from "./messages.js";
 
@@ -104,7 +105,8 @@ export interface VerificationCheck {
 /** Verification Run 整体记录(FR-001 §9 complete.body.verification)。
  *  字段同时支持 not_configured(无策略文件)与已执行两种形态:
  *  - not_configured: policy_source="none"、policy_hash=null、verification_sha=null、
- *    started_at=null、completed_at=null、checks=[]
+ *    started_at=null;但 completed_at 仍是检测完成时间的 ISO 字符串,
+ *    因为"决定有没有策略"这个事实也必须有时间戳,server 端在派生 Packet 状态时使用
  *  - 已执行:所有字段非空,checks 至少 1 条
  */
 export interface VerificationRun {
@@ -115,12 +117,13 @@ export interface VerificationRun {
   verification_sha: string | null;
   status: VerificationStatus;
   started_at: string | null;
-  completed_at: string | null;
+  completed_at: string;
   checks: VerificationCheck[];
 }
 
 /** v2 Complete:Runner 原子提交 Task 终态、Git 事实与验证证据(FR-001 AC 13,FR-002)。
- *  不在响应里返回 Packet 状态 —— 客户端在 complete 后通过 GET review-packet 拉取。 */
+ *  响应里返回 `review_packet_status`,使客户端在不另发 GET review-packet 时
+ *  就能判断当前 Task 进入哪个 Packet 阶段(已 ready、incomplete、blocked 等)。 */
 export interface V2CompleteRequest {
   daemon_id: string;
   branch: string;
@@ -134,6 +137,7 @@ export interface V2CompleteResponse {
   ok: true;
   task_id: string;
   status: "completed";
+  review_packet_status: ReviewPacketStatus;
 }
 
 /** v2 Fail:Runner 终检失败或执行失败时上报(FR-001)。 */
