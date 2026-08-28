@@ -67,19 +67,24 @@ export interface Runtime {
 // 这里只预声明后续任务会复用的枚举,严禁暴露未实现 API。
 // ----------------------------------------------------------------------------
 
-/** v2 Task 契约版本;所有新建 v2 Task 必须显式写入此值(D-007)。 */
-export const DELIVERY_CONTRACT_VERSION = 2 as const;
-export type DeliveryContractVersion = typeof DELIVERY_CONTRACT_VERSION;
+/** v2 Task 契约版本:历史 v1 与新 v2 共享的字面量联合(D-007,迁移前 v1 Task 保持可读)。 */
+export type DeliveryContractVersion = 1 | 2;
+/** 当前新建 v2 Task 必须显式写入的 contract_version(D-007:不能依赖 DB 默认值)。 */
+export const DELIVERY_CONTRACT_CURRENT_VERSION = 2 as const;
 
 /** Agent Delivery Report 当前唯一 schema 版本(FR-002)。 */
 export const DELIVERY_REPORT_SCHEMA_VERSION = 1 as const;
 export type DeliveryReportSchemaVersion = typeof DELIVERY_REPORT_SCHEMA_VERSION;
 
+/** Verification Policy 文件(ANVIL.verify.json)唯一支持的 schema 版本。 */
+export const VERIFICATION_POLICY_SCHEMA_VERSION = 1 as const;
+export type VerificationPolicySchemaVersion = typeof VERIFICATION_POLICY_SCHEMA_VERSION;
+
 /** 风险等级(FR-002);`level` 取值,非法值需在 Report 校验阶段拒绝。 */
 export const RISK_LEVELS = ["low", "medium", "high"] as const;
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 
-/** Verification 终态(FR-001 验收 criteria 与 §8 state taxonomy)。 */
+/** Verification 终态(FR-001 §8 state taxonomy,严格对齐 PRD)。 */
 export const VERIFICATION_STATUSES = [
   "not_configured",
   "passed",
@@ -87,7 +92,6 @@ export const VERIFICATION_STATUSES = [
   "partial",
   "stale",
   "dirty",
-  "timeout",
   "legacy",
 ] as const;
 export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
@@ -96,12 +100,12 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 export const VERIFICATION_CHECK_STATUSES = [
   "passed",
   "failed",
-  "timeout",
-  "spawn_failed",
+  "timed_out",
+  "skipped",
 ] as const;
 export type VerificationCheckStatus = (typeof VERIFICATION_CHECK_STATUSES)[number];
 
-/** Review Packet 状态(FR-002 与 §8 state taxonomy)。 */
+/** Review Packet 状态(FR-002 §8 state taxonomy;纯枚举,响应/请求体留给 B01)。 */
 export const REVIEW_PACKET_STATUSES = [
   "generating",
   "ready",
@@ -137,7 +141,7 @@ export type RestartMode = (typeof RESTART_MODES)[number];
 export const FEEDBACK_SCOPES = ["one_time", "project_rule", "automated_test"] as const;
 export type FeedbackScope = (typeof FEEDBACK_SCOPES)[number];
 
-/** Integration Attempt 终态(FR-003 与 §8 state taxonomy)。 */
+/** Integration Attempt 终态(FR-003 §8 state taxonomy;纯枚举,响应体留给 B01)。 */
 export const INTEGRATION_ATTEMPT_STATUSES = [
   "merge_succeeded",
   "merge_conflict",
@@ -147,10 +151,12 @@ export const INTEGRATION_ATTEMPT_STATUSES = [
 ] as const;
 export type IntegrationAttemptStatus = (typeof INTEGRATION_ATTEMPT_STATUSES)[number];
 
-/** 60KB、8KB 等限额与 SHA 长度常量的唯一来源(A01 引入,所有包复用)。 */
+/** 64KB、8KB、4000 字符等限额与 SHA 长度常量的唯一来源(A01 引入,所有包复用)。 */
 export const LIMITS = {
   /** FR-002:Delivery Report 请求体上限。 */
   REPORT_BODY_BYTES: 64 * 1024,
+  /** FR-002:problem_understanding / solution_summary 各自字符上限。 */
+  REPORT_TEXT_FIELD_CHARS: 4_000,
   /** FR-002:changed_areas 上限。 */
   CHANGED_AREAS: 50,
   /** FR-002:risks 上限。 */

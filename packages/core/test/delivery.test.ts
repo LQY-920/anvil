@@ -1,22 +1,38 @@
 // packages/core/test/delivery.test.ts
 //
-// A01 · v2 协议校验与归一化纯函数单测。
+// A01-FIX · v2 协议校验与归一化纯函数单测(Codex review 修订版)。
 //
-// 覆盖范围(取自计划 A01 测试要求):
-// - 合法 / 非法 Delivery Report、未知 schema、64KB 上限、重复 path、风险枚举、40 位 SHA
-// - Verification Policy 0/8/9 条命令、重复 id、timeout 边界、required 派生
-// - 三 SHA 完全一致 / 缺失 / 不一致
-// - 旧 / 非法 result_json 安全解析
+// 覆盖范围:
+// - 合法 / 非法 Delivery Report、未知 schema、64KB 上限、4000 字符上限、
+//   重复 path、风险枚举、40 位 SHA
+// - Verification Policy:version 校验、0/8/9 条命令、重复 id、id 字符集、
+//   timeout 边界(1000/999/1.8M/1.8M+1)
+// - 三 SHA 一致 / 缺失 / 非法格式 / 不一致
+// - policyHash 直接对原始文本计算 SHA-256(顺序敏感)
+// - result_json safe parse + 仅 schema_version=2 valid(99 → unsupported)
+// - 常量集合精确等于 PRD 状态集
+// - 公开 AnvilErrorCode 严格等于 8 个 PRD 机器码
 
 import { describe, it, expect } from "vitest";
 import {
+  ANVIL_ERROR_CODE_VALUES,
+  CONTINUATION_MODES,
+  DECISION_TYPES,
+  DELIVERY_REPORT_SCHEMA_VERSION,
+  FEEDBACK_SCOPES,
+  INTEGRATION_ATTEMPT_STATUSES,
   LIMITS,
+  REVIEW_PACKET_STATUSES,
   RISK_LEVELS,
+  RESTART_MODES,
+  SHA1_40_PATTERN,
+  VERIFICATION_CHECK_STATUSES,
+  VERIFICATION_POLICY_SCHEMA_VERSION,
+  VERIFICATION_STATUSES,
   canonicalJsonHash,
   classifyResultJson,
   compareThreeShas,
   deriveVerificationStatus,
-  isPacketDecisionEligible,
   isValidSha1Hex40,
   parseResultJson,
   policyHash,
@@ -46,6 +62,77 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
 function bodyBytes(obj: unknown): number {
   return Buffer.byteLength(JSON.stringify(obj), "utf8");
 }
+
+// ============================================================================
+// 常量集合 —— 严格等于 PRD 状态集
+// ============================================================================
+
+describe("constant sets are exact", () => {
+  it("VERIFICATION_STATUSES is exactly PRD's 7 states (no 'timeout')", () => {
+    expect([...VERIFICATION_STATUSES].sort()).toEqual([
+      "dirty", "failed", "legacy", "not_configured", "partial", "passed", "stale",
+    ]);
+  });
+
+  it("VERIFICATION_CHECK_STATUSES is exactly {passed,failed,timed_out,skipped}", () => {
+    expect([...VERIFICATION_CHECK_STATUSES].sort()).toEqual(["failed", "passed", "skipped", "timed_out"]);
+  });
+
+  it("RISK_LEVELS is exactly {low,medium,high}", () => {
+    expect([...RISK_LEVELS].sort()).toEqual(["high", "low", "medium"]);
+  });
+
+  it("REVIEW_PACKET_STATUSES has the 10 PRD states", () => {
+    expect([...REVIEW_PACKET_STATUSES].sort()).toEqual([
+      "closed", "decision_recorded", "generating", "incomplete", "integration_failed",
+      "integrity_blocked", "legacy", "ready", "remote_push_pending", "verification_blocked",
+    ]);
+  });
+
+  it("DECISION_TYPES is exactly the 4 PRD types", () => {
+    expect([...DECISION_TYPES].sort()).toEqual([
+      "approve", "approve_override", "changes_requested", "manual_takeover",
+    ]);
+  });
+
+  it("RESTART_MODES is {resume,fresh_base}", () => {
+    expect([...RESTART_MODES].sort()).toEqual(["fresh_base", "resume"]);
+  });
+
+  it("FEEDBACK_SCOPES is {one_time,project_rule,automated_test}", () => {
+    expect([...FEEDBACK_SCOPES].sort()).toEqual(["automated_test", "one_time", "project_rule"]);
+  });
+
+  it("INTEGRATION_ATTEMPT_STATUSES is the 5 PRD states", () => {
+    expect([...INTEGRATION_ATTEMPT_STATUSES].sort()).toEqual([
+      "merge_conflict", "merge_succeeded", "remote_non_fast_forward",
+      "remote_push_failed", "remote_push_succeeded",
+    ]);
+  });
+
+  it("CONTINUATION_MODES is {initial,resume,fresh_base}", () => {
+    expect([...CONTINUATION_MODES].sort()).toEqual(["fresh_base", "initial", "resume"]);
+  });
+
+  it("DELIVERY_REPORT_SCHEMA_VERSION is 1", () => {
+    expect(DELIVERY_REPORT_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("VERIFICATION_POLICY_SCHEMA_VERSION is 1", () => {
+    expect(VERIFICATION_POLICY_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("ANVIL_ERROR_CODE_VALUES is exactly the 8 PRD machine codes", () => {
+    expect([...ANVIL_ERROR_CODE_VALUES].sort()).toEqual([
+      "base_mismatch", "idempotency_conflict", "invalid_schema", "invalid_transition",
+      "invalid_verification", "payload_too_large", "runtime_ownership_mismatch", "task_not_active",
+    ]);
+  });
+
+  it("REPORT_TEXT_FIELD_CHARS limit is 4000", () => {
+    expect(LIMITS.REPORT_TEXT_FIELD_CHARS).toBe(4000);
+  });
+});
 
 // ============================================================================
 // SHA 与 hash 工具
@@ -82,6 +169,15 @@ describe("isValidSha1Hex40", () => {
   it("rejects non-string", () => {
     expect(isValidSha1Hex40(123)).toBe(false);
     expect(isValidSha1Hex40(null)).toBe(false);
+  });
+});
+
+describe("SHA1_40_PATTERN", () => {
+  it("matches 40 lowercase hex", () => {
+    expect(SHA1_40_PATTERN.test("0123456789abcdef0123456789abcdef01234567")).toBe(true);
+  });
+  it("does not match 39 chars", () => {
+    expect(SHA1_40_PATTERN.test("a".repeat(39))).toBe(false);
   });
 });
 
@@ -262,6 +358,30 @@ describe("validateDeliveryReport", () => {
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.code === "report_too_large")).toBe(true);
   });
+
+  // 4000 字符上限 —— 边界用例
+  it("accepts problem_understanding at exactly 4000 chars", () => {
+    const body = makeReport({ problem_understanding: "x".repeat(4000) });
+    const r = validateDeliveryReport({ body, bodyBytes: bodyBytes(body) });
+    expect(r.ok).toBe(true);
+  });
+  it("accepts solution_summary at exactly 4000 chars", () => {
+    const body = makeReport({ solution_summary: "x".repeat(4000) });
+    const r = validateDeliveryReport({ body, bodyBytes: bodyBytes(body) });
+    expect(r.ok).toBe(true);
+  });
+  it("rejects problem_understanding at 4001 chars", () => {
+    const body = makeReport({ problem_understanding: "x".repeat(4001) });
+    const r = validateDeliveryReport({ body, bodyBytes: bodyBytes(body) });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.code === "report_text_too_long" && e.details?.field === "problem_understanding")).toBe(true);
+  });
+  it("rejects solution_summary at 4001 chars", () => {
+    const body = makeReport({ solution_summary: "x".repeat(4001) });
+    const r = validateDeliveryReport({ body, bodyBytes: bodyBytes(body) });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.code === "report_text_too_long" && e.details?.field === "solution_summary")).toBe(true);
+  });
 });
 
 // ============================================================================
@@ -280,7 +400,7 @@ describe("validateVerificationPolicy", () => {
     };
   }
 
-  it("accepts a single-command policy", () => {
+  it("accepts a single-command policy with version=1", () => {
     const r = validateVerificationPolicy({ version: 1, commands: [makeCommand()] });
     expect(r.ok).toBe(true);
     expect(r.value?.commands).toHaveLength(1);
@@ -396,6 +516,29 @@ describe("validateVerificationPolicy", () => {
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.code === "policy_invalid_command")).toBe(true);
   });
+
+  // 版本字段校验
+  it("rejects missing version", () => {
+    const r = validateVerificationPolicy({ commands: [] });
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]?.code).toBe("policy_version_missing");
+  });
+  it("rejects null version", () => {
+    const r = validateVerificationPolicy({ version: null, commands: [] });
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]?.code).toBe("policy_version_missing");
+  });
+  it("rejects unknown version (2)", () => {
+    const r = validateVerificationPolicy({ version: 2, commands: [] });
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]?.code).toBe("policy_version_unknown");
+    expect(r.errors[0]?.details?.version).toBe(2);
+  });
+  it("rejects unknown version (99)", () => {
+    const r = validateVerificationPolicy({ version: 99, commands: [] });
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]?.code).toBe("policy_version_unknown");
+  });
 });
 
 // ============================================================================
@@ -442,6 +585,7 @@ describe("deriveVerificationStatus", () => {
     })).toBe("failed");
   });
 
+  // spawn 失败 → failed(不引入新公开枚举)
   it("returns failed when a required check has null exit_code (spawn failed)", () => {
     expect(deriveVerificationStatus({
       policyPresent: true,
@@ -493,6 +637,18 @@ describe("deriveVerificationStatus", () => {
     })).toBe("partial");
   });
 
+  it("returns partial when optional had spawn failure", () => {
+    expect(deriveVerificationStatus({
+      policyPresent: true,
+      checks: [
+        { id: "t", required: true, exit_code: 0, timed_out: false },
+        { id: "lint", required: false, exit_code: null, timed_out: false },
+      ],
+      headUnchanged: true,
+      worktreeClean: true,
+    })).toBe("partial");
+  });
+
   it("returns passed when everything succeeds", () => {
     expect(deriveVerificationStatus({
       policyPresent: true,
@@ -531,10 +687,10 @@ describe("compareThreeShas", () => {
       head: "0123456789abcdef0123456789abcdef01234567",
       verification: "0123456789abcdef0123456789abcdef01234567",
     });
-    expect(r).toEqual({ equal: true, missing: [], mismatch: [] });
+    expect(r).toEqual({ equal: true, missing: [], invalid: [], mismatch: [] });
   });
 
-  it("equal when case differs", () => {
+  it("equal when case differs (all 40-hex)", () => {
     const r = compareThreeShas({
       report: "0123456789ABCDEF0123456789ABCDEF01234567",
       head: "0123456789abcdef0123456789abcdef01234567",
@@ -551,6 +707,7 @@ describe("compareThreeShas", () => {
     });
     expect(r.equal).toBe(false);
     expect(r.missing).toEqual(["report"]);
+    expect(r.invalid).toEqual([]);
     expect(r.mismatch).toEqual([]);
   });
 
@@ -558,9 +715,10 @@ describe("compareThreeShas", () => {
     const r = compareThreeShas({ report: null, head: null, verification: null });
     expect(r.equal).toBe(false);
     expect(r.missing).toEqual(["report", "head", "verification"]);
+    expect(r.invalid).toEqual([]);
   });
 
-  it("reports mismatch when only report differs", () => {
+  it("reports mismatch when only report differs (all valid 40-hex)", () => {
     const r = compareThreeShas({
       report: "0123456789abcdef0123456789abcdef01234567",
       head: "0123456789abcdef0123456789abcdef01234567",
@@ -568,6 +726,7 @@ describe("compareThreeShas", () => {
     });
     expect(r.equal).toBe(false);
     expect(r.missing).toEqual([]);
+    expect(r.invalid).toEqual([]);
     expect(r.mismatch).toEqual([
       "head!=verification",
       "report!=verification",
@@ -581,11 +740,56 @@ describe("compareThreeShas", () => {
       verification: "c".repeat(40),
     });
     expect(r.equal).toBe(false);
+    expect(r.invalid).toEqual([]);
     expect(r.mismatch).toEqual([
       "report!=head",
       "head!=verification",
       "report!=verification",
     ]);
+  });
+
+  // 三个相同但非法短字符串 —— 不能 equal(完整性优先)
+  it("rejects equal when all three are identical but invalid (short) strings", () => {
+    const r = compareThreeShas({
+      report: "abc",
+      head: "abc",
+      verification: "abc",
+    });
+    expect(r.equal).toBe(false);
+    expect(r.missing).toEqual([]);
+    expect(r.invalid).toEqual(["report", "head", "verification"]);
+    expect(r.mismatch).toEqual([]);
+  });
+
+  it("rejects equal when all three are identical 41-char strings", () => {
+    const r = compareThreeShas({
+      report: "a".repeat(41),
+      head: "a".repeat(41),
+      verification: "a".repeat(41),
+    });
+    expect(r.equal).toBe(false);
+    expect(r.invalid).toEqual(["report", "head", "verification"]);
+  });
+
+  it("rejects equal when one value is non-hex (e.g. 'g' x 40)", () => {
+    const r = compareThreeShas({
+      report: "g".repeat(40),
+      head: "0123456789abcdef0123456789abcdef01234567",
+      verification: "0123456789abcdef0123456789abcdef01234567",
+    });
+    expect(r.equal).toBe(false);
+    expect(r.invalid).toEqual(["report"]);
+    expect(r.missing).toEqual([]);
+  });
+
+  it("missing takes precedence over invalid", () => {
+    const r = compareThreeShas({
+      report: null,
+      head: "abc", // also invalid, but missing wins
+      verification: "0123456789abcdef0123456789abcdef01234567",
+    });
+    expect(r.missing).toEqual(["report"]);
+    expect(r.invalid).toEqual([]);
   });
 });
 
@@ -637,23 +841,34 @@ describe("normalizeReportForHash + reportHash", () => {
   });
 });
 
-describe("policyHash", () => {
-  it("is stable across command order in input (we sort by id)", () => {
-    const p1 = validateVerificationPolicy({
-      version: 1,
-      commands: [
-        { id: "b", label: "B", command: "cmd-b", required: true, timeout_ms: 1000 },
-        { id: "a", label: "A", command: "cmd-a", required: true, timeout_ms: 1000 },
-      ],
-    }).value!;
-    const p2 = validateVerificationPolicy({
-      version: 1,
-      commands: [
-        { id: "a", label: "A", command: "cmd-a", required: true, timeout_ms: 1000 },
-        { id: "b", label: "B", command: "cmd-b", required: true, timeout_ms: 1000 },
-      ],
-    }).value!;
-    expect(policyHash(p1)).toBe(policyHash(p2));
+describe("policyHash (raw text SHA-256, order-sensitive)", () => {
+  it("is the SHA-256 of the raw file text", () => {
+    const text = '{"version":1,"commands":[{"id":"a","label":"A","command":"cmd","required":true,"timeout_ms":1000}]}';
+    expect(policyHash(text)).toBe(sha256Hex(text));
+  });
+
+  it("is stable for the same raw text", () => {
+    const text = '{"version":1,"commands":[]}';
+    expect(policyHash(text)).toBe(policyHash(text));
+  });
+
+  // 顺序必须影响 hash(避免按 id 排序的旧实现)
+  it("differs when command order differs in raw text", () => {
+    const a = '{"version":1,"commands":[{"id":"a","label":"A","command":"cmd-a","required":true,"timeout_ms":1000},{"id":"b","label":"B","command":"cmd-b","required":true,"timeout_ms":1000}]}';
+    const b = '{"version":1,"commands":[{"id":"b","label":"B","command":"cmd-b","required":true,"timeout_ms":1000},{"id":"a","label":"A","command":"cmd-a","required":true,"timeout_ms":1000}]}';
+    expect(policyHash(a)).not.toBe(policyHash(b));
+  });
+
+  it("differs when a single byte changes (whitespace)", () => {
+    const a = '{"version":1,"commands":[]}';
+    const b = '{ "version":1,"commands":[]}';
+    expect(policyHash(a)).not.toBe(policyHash(b));
+  });
+
+  it("differs when a command content changes", () => {
+    const a = '{"version":1,"commands":[{"id":"a","label":"A","command":"cmd-a","required":true,"timeout_ms":1000}]}';
+    const b = '{"version":1,"commands":[{"id":"a","label":"A","command":"cmd-a-changed","required":true,"timeout_ms":1000}]}';
+    expect(policyHash(a)).not.toBe(policyHash(b));
   });
 });
 
@@ -684,11 +899,32 @@ describe("parseResultJson", () => {
     const r = parseResultJson('"hello"');
     expect(r.kind).toBe("incomplete");
   });
-  it("returns valid for plain object without schema_version", () => {
+  it("returns incomplete for object without schema_version", () => {
     const r = parseResultJson('{"branch":"x"}');
+    expect(r.kind).toBe("incomplete");
+    if (r.kind === "incomplete") {
+      expect(r.reason).toMatch(/schema_version/);
+    }
+  });
+  it("returns valid for object with schema_version=2", () => {
+    const r = parseResultJson('{"schema_version":2,"branch":"x"}');
     expect(r.kind).toBe("valid");
     if (r.kind === "valid") {
-      expect(r.value).toEqual({ branch: "x" });
+      expect(r.value).toEqual({ schema_version: 2, branch: "x" });
+    }
+  });
+  it("returns unsupported for object with schema_version=1", () => {
+    const r = parseResultJson('{"schema_version":1}');
+    expect(r.kind).toBe("unsupported");
+    if (r.kind === "unsupported") {
+      expect(r.schemaVersion).toBe(1);
+    }
+  });
+  it("returns unsupported for object with schema_version=99 (not current)", () => {
+    const r = parseResultJson('{"schema_version":99}');
+    expect(r.kind).toBe("unsupported");
+    if (r.kind === "unsupported") {
+      expect(r.schemaVersion).toBe(99);
     }
   });
   it("does not throw on malformed input", () => {
@@ -703,64 +939,22 @@ describe("classifyResultJson", () => {
     expect(classifyResultJson(null)).toBe("legacy");
     expect(classifyResultJson("")).toBe("legacy");
   });
-  it("returns legacy for object without schema_version", () => {
-    expect(classifyResultJson('{"branch":"x"}')).toBe("legacy");
+  it("returns incomplete for object without schema_version", () => {
+    expect(classifyResultJson('{"branch":"x"}')).toBe("incomplete");
   });
-  it("returns legacy for object with schema_version=1", () => {
-    expect(classifyResultJson('{"schema_version":1}')).toBe("legacy");
+  it("returns unsupported for object with schema_version=1 (v1, not v2)", () => {
+    expect(classifyResultJson('{"schema_version":1}')).toBe("unsupported");
   });
   it("returns valid for object with schema_version=2", () => {
     expect(classifyResultJson('{"schema_version":2}')).toBe("valid");
   });
-  it("returns valid for object with schema_version=99", () => {
-    expect(classifyResultJson('{"schema_version":99}')).toBe("valid");
+  it("returns unsupported for object with schema_version=99 (not current)", () => {
+    expect(classifyResultJson('{"schema_version":99}')).toBe("unsupported");
   });
   it("returns incomplete for invalid JSON", () => {
     expect(classifyResultJson("not json")).toBe("incomplete");
   });
   it("returns incomplete for array", () => {
     expect(classifyResultJson("[1,2]")).toBe("incomplete");
-  });
-});
-
-// ============================================================================
-// 杂项
-// ============================================================================
-
-describe("isPacketDecisionEligible", () => {
-  it("returns true for ready and decision_recorded", () => {
-    expect(isPacketDecisionEligible("ready")).toBe(true);
-    expect(isPacketDecisionEligible("decision_recorded")).toBe(true);
-  });
-  it("returns false for other statuses", () => {
-    expect(isPacketDecisionEligible("generating")).toBe(false);
-    expect(isPacketDecisionEligible("incomplete")).toBe(false);
-    expect(isPacketDecisionEligible("verification_blocked")).toBe(false);
-    expect(isPacketDecisionEligible("integrity_blocked")).toBe(false);
-    expect(isPacketDecisionEligible("legacy")).toBe(false);
-    expect(isPacketDecisionEligible("integration_failed")).toBe(false);
-    expect(isPacketDecisionEligible("remote_push_pending")).toBe(false);
-    expect(isPacketDecisionEligible("closed")).toBe(false);
-  });
-});
-
-describe("anvil error code union coverage", () => {
-  it("returns expected codes for failing inputs", () => {
-    const seen = new Set<string>();
-    const r1 = validateDeliveryReport({ body: makeReport({ schema_version: 2 }), bodyBytes: 0 });
-    if (!r1.ok) r1.errors.forEach((e) => seen.add(e.code));
-    const r2 = validateVerificationPolicy({
-      version: 1,
-      commands: [{ id: "x".repeat(65), label: "l", command: "c", required: true, timeout_ms: 1000 }],
-    });
-    if (!r2.ok) r2.errors.forEach((e) => seen.add(e.code));
-    // 出现过的 code 必须是稳定的字符串(各 route 共用同一联合)
-    for (const code of seen) {
-      expect(typeof code).toBe("string");
-      expect(code.length).toBeGreaterThan(0);
-    }
-    // 至少应该出现过 schema_unknown 与 policy_invalid_id
-    expect(seen.has("report_schema_unknown")).toBe(true);
-    expect(seen.has("policy_invalid_id")).toBe(true);
   });
 });

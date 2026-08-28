@@ -1,8 +1,6 @@
 import type {
-  DeliveryContractVersion, DeliveryReportSchemaVersion,
-  DecisionType, FailureReason, FeedbackScope, IntegrationAttemptStatus,
-  Issue, IssueStatus, Priority, RestartMode, ReviewPacketStatus, RiskLevel,
-  Task, TaskStatus, VerificationCheckStatus, VerificationStatus,
+  DeliveryReportSchemaVersion, FailureReason, Issue, IssueStatus,
+  Priority, RiskLevel, Task, TaskStatus, VerificationCheckStatus, VerificationStatus,
 } from "./models.js";
 import type { AgentMessage } from "./messages.js";
 
@@ -39,7 +37,7 @@ export interface CompleteRequest { branch?: string; diff_stat?: string; work_dir
 export interface FailRequest { failure_reason: FailureReason; error: string; work_dir?: string; }
 export interface IssueStatusRequest { status: "in_review" | "done" | "blocked"; note?: string; }
 
-export type ServerEventType = "issue.updated" | "task.updated" | "task.message" | "runtime.updated" | "task.available" | "review.updated";
+export type ServerEventType = "issue.updated" | "task.updated" | "task.message" | "runtime.updated" | "task.available";
 export interface ServerEvent { type: ServerEventType; data: unknown; }
 
 export interface CreateIssueRequest {
@@ -58,14 +56,16 @@ export interface UpdateIssueRequest {
 // 事务、副作用由 server/runner 在 A03+ 引入。
 // ----------------------------------------------------------------------------
 
-/** v2 Start:Runner 锁定不可变 Git 锚点(FR-001 AC 1–4)。 */
+/** v2 Start:Runner 锁定不可变 Git 锚点(FR-001 AC 1–4)。
+ *  contract_version 固定为字面量 2:Server 只接受 v2 新建或续跑请求,
+ *  迁移前 v1 历史 Task 通过旧路径(非 v2 端点)处理,本类型不参与。 */
 export interface V2StartRequest {
   daemon_id: string;
   work_dir: string;
   task_branch: string;
   target_branch: string;
   base_commit: string;
-  delivery_contract_version: DeliveryContractVersion;
+  delivery_contract_version: 2;
 }
 export interface V2StartResponse {
   ok: true;
@@ -73,7 +73,8 @@ export interface V2StartResponse {
   status: "running";
 }
 
-/** Verification Policy 文档原始 JSON 形状(在写入 `ANVIL.verify.json` 时使用)。 */
+/** Verification Policy 文档原始 JSON 形状(在写入 `ANVIL.verify.json` 时使用)。
+ *  version 固定为字面量 1 —— 后续扩展时单独 bump 至 2 并保留 v1 解析器。 */
 export interface VerificationCommandSpec {
   id: string;
   label: string;
@@ -82,7 +83,7 @@ export interface VerificationCommandSpec {
   timeout_ms: number;
 }
 export interface VerificationPolicyDoc {
-  version: number;
+  version: 1;
   commands: VerificationCommandSpec[];
 }
 
@@ -100,19 +101,26 @@ export interface VerificationCheck {
   output_excerpt: string;
 }
 
-/** Verification Run 整体记录(FR-001 §9 complete.body.verification)。 */
+/** Verification Run 整体记录(FR-001 §9 complete.body.verification)。
+ *  字段同时支持 not_configured(无策略文件)与已执行两种形态:
+ *  - not_configured: policy_source="none"、policy_hash=null、verification_sha=null、
+ *    started_at=null、completed_at=null、checks=[]
+ *  - 已执行:所有字段非空,checks 至少 1 条
+ */
 export interface VerificationRun {
   schema_version: 1;
-  policy_source: "ANVIL.verify.json";
-  policy_hash: string;
-  verification_sha: string;
+  policy_source: "ANVIL.verify.json" | "none";
+  policy_hash: string | null;
+  base_commit: string;
+  verification_sha: string | null;
   status: VerificationStatus;
-  started_at: string;
-  completed_at: string;
+  started_at: string | null;
+  completed_at: string | null;
   checks: VerificationCheck[];
 }
 
-/** v2 Complete:Runner 原子提交 Task 终态、Git 事实与验证证据(FR-001 AC 13,FR-002)。 */
+/** v2 Complete:Runner 原子提交 Task 终态、Git 事实与验证证据(FR-001 AC 13,FR-002)。
+ *  不在响应里返回 Packet 状态 —— 客户端在 complete 后通过 GET review-packet 拉取。 */
 export interface V2CompleteRequest {
   daemon_id: string;
   branch: string;
@@ -126,7 +134,6 @@ export interface V2CompleteResponse {
   ok: true;
   task_id: string;
   status: "completed";
-  review_packet_status: ReviewPacketStatus;
 }
 
 /** v2 Fail:Runner 终检失败或执行失败时上报(FR-001)。 */
@@ -137,7 +144,7 @@ export interface V2FailRequest {
   work_dir: string | null;
   head_commit: string | null;
   worktree_clean: boolean;
-  delivery_contract_version: DeliveryContractVersion;
+  delivery_contract_version: 2;
 }
 export interface V2FailResponse {
   ok: true;
@@ -185,76 +192,29 @@ export interface DeliveryQueryResponse {
   issue_status_requested: "in_review" | "done" | "blocked" | null;
 }
 
-/** Review Packet 最外层包装(FR-002 §9 GET /api/tasks/:id/review-packet);
- *  实际聚合由 server 在 B01 完成,A01 只声明形状与状态。 */
-export interface ReviewPacket {
-  task_id: string;
-  issue_id: string;
-  contract_version: DeliveryContractVersion;
-  status: ReviewPacketStatus;
-  delivered: boolean;
-  report_submitted: boolean;
-  head_commit: string | null;
-  report_head_commit: string | null;
-  verification_sha: string | null;
-  verification_status: VerificationStatus | null;
-  has_decision: boolean;
-}
-
-/** Review Decision 请求体(FR-003 AC 11/12;B01 实现,A01 声明类型)。 */
-export interface ReviewDecisionRequest {
-  client_request_id: string;
-  type: DecisionType;
-  feedback?: string;
-  feedback_scope?: FeedbackScope;
-  restart_mode?: RestartMode;
-  override_reason?: string;
-  takeover_reason?: string;
-}
-export interface ReviewDecisionResponse {
-  ok: true;
-  decision_id: string;
-  task_id: string;
-  type: DecisionType;
-  recorded_at: string;
-}
-
-/** Integration Attempt 记录(FR-003 AC 14;B01 实现,A01 声明形状)。 */
-export interface IntegrationAttempt {
-  id: string;
-  task_id: string;
-  status: IntegrationAttemptStatus;
-  started_at: string;
-  completed_at: string | null;
-  target_branch: string;
-  merge_commit: string | null;
-  error: string | null;
-}
-
-/** 错误码联合类型(稳定字符串,各 route 统一引用)。 */
+/** 错误码联合类型 —— 仅包含 PRD §9 稳定机器码。
+ *  route 在内部验证失败时把原因放进 `details` 字段;本联合是公开 API 的契约。 */
 export type AnvilErrorCode =
-  | "report_invalid"
-  | "report_schema_unknown"
-  | "report_too_large"
-  | "report_duplicate_path"
-  | "report_invalid_risk"
-  | "report_invalid_sha"
-  | "report_missing_field"
-  | "policy_invalid_command_count"
-  | "policy_duplicate_id"
-  | "policy_timeout_out_of_range"
-  | "policy_required_missing"
-  | "policy_invalid_command"
-  | "policy_invalid_id"
-  | "policy_no_commands"
-  | "sha_mismatch"
-  | "sha_missing"
-  | "verification_status_invalid"
-  | "result_json_invalid"
-  | "result_json_legacy"
-  | "idempotency_conflict"
+  | "invalid_schema"
+  | "payload_too_large"
+  | "invalid_verification"
   | "runtime_ownership_mismatch"
+  | "invalid_transition"
+  | "base_mismatch"
+  | "idempotency_conflict"
   | "task_not_active";
+
+/** 公开 `AnvilErrorCode` 的运行时值集合(供测试与运行时校验使用)。 */
+export const ANVIL_ERROR_CODE_VALUES: readonly AnvilErrorCode[] = [
+  "invalid_schema",
+  "payload_too_large",
+  "invalid_verification",
+  "runtime_ownership_mismatch",
+  "invalid_transition",
+  "base_mismatch",
+  "idempotency_conflict",
+  "task_not_active",
+] as const;
 
 /** 统一错误响应体(A01 引入,各 route 共用)。 */
 export interface AnvilErrorResponse {

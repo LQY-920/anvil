@@ -1,23 +1,24 @@
 // packages/core/src/delivery.ts
 //
-// A01 · 可信交付 v2 协议校验与归一化纯函数。
+// A01 · 可信交付 v2 协议校验与归一化纯函数(Codex review 修订版)。
 //
 // 本文件只放纯函数与最小数据结构;不依赖任何运行时副作用(server/runner/web 都能用)。
 // 所有限额与 SHA/timeout 边界与 PRD §6 FR-001/FR-002 对齐。
 //
-// 错误码:不在调用方手写不同字符串;统一引用 `AnvilErrorCode`。
+// 错误码:校验函数返回的 `ValidationError.code` 是内部原因码(`ValidationErrorCode`),
+// 公开 API 错误码 `AnvilErrorCode`(protocol.ts)只包含 PRD §9 稳定机器码;
+// route 层在内部失败时把原因放进 `details`,本模块不冒充公开 API 错误码。
 
 import crypto from "node:crypto";
 import {
   DELIVERY_REPORT_SCHEMA_VERSION,
   LIMITS,
   RISK_LEVELS,
+  VERIFICATION_POLICY_SCHEMA_VERSION,
   type DeliveryReportSchemaVersion,
-  type ReviewPacketStatus,
   type RiskLevel,
   type VerificationStatus,
 } from "./models.js";
-import type { AnvilErrorCode } from "./protocol.js";
 
 // ----------------------------------------------------------------------------
 // 常量与正则
@@ -33,9 +34,37 @@ export const POLICY_ID_PATTERN = /^[A-Za-z0-9_\-]{1,64}$/;
 // 错误结构与基础类型
 // ----------------------------------------------------------------------------
 
-/** 校验阶段返回的结构化错误项。`code` 走 `AnvilErrorCode`,`message` 给人看,`details` 给机器看。 */
+/**
+ * 校验阶段返回的内部原因码 —— 详细分级,仅供 server 映射到公开 `AnvilErrorCode`
+ * 与 `details` 字段;不暴露给公开 API 响应。
+ */
+export type ValidationErrorCode =
+  | "report_invalid"
+  | "report_schema_unknown"
+  | "report_too_large"
+  | "report_duplicate_path"
+  | "report_invalid_risk"
+  | "report_invalid_sha"
+  | "report_missing_field"
+  | "report_text_too_long"
+  | "policy_version_unknown"
+  | "policy_version_missing"
+  | "policy_invalid_command_count"
+  | "policy_duplicate_id"
+  | "policy_timeout_out_of_range"
+  | "policy_required_missing"
+  | "policy_invalid_command"
+  | "policy_invalid_id"
+  | "sha_missing"
+  | "sha_malformed"
+  | "sha_mismatch"
+  | "result_json_invalid"
+  | "result_json_unsupported"
+  | "result_json_legacy";
+
+/** 校验阶段返回的结构化错误项。`code` 是内部原因码;route 层映射到公开机器码。 */
 export interface ValidationError {
-  code: AnvilErrorCode;
+  code: ValidationErrorCode;
   message: string;
   details?: Record<string, unknown>;
 }
@@ -46,7 +75,7 @@ export interface ValidationResult<T> {
   errors: ValidationError[];
 }
 
-function err(code: AnvilErrorCode, message: string, details?: Record<string, unknown>): ValidationError {
+function err(code: ValidationErrorCode, message: string, details?: Record<string, unknown>): ValidationError {
   return { code, message, details };
 }
 
@@ -94,7 +123,7 @@ export function sha256Hex(text: string): string {
   return crypto.createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** 完整 40 位小写 hex SHA-1。 */
+/** 完整 40 位 hex SHA-1。 */
 export function isValidSha1Hex40(s: unknown): s is string {
   return typeof s === "string" && SHA1_40_PATTERN.test(s);
 }
@@ -124,7 +153,7 @@ export interface ValidatedDeliveryReport {
  * - 顶层必须是对象
  * - 总字节数 ≤ 64KB
  * - schema_version 必须是当前支持的版本(1)
- * - problem_understanding / solution_summary 必须是非空字符串
+ * - problem_understanding / solution_summary 必须是非空字符串,且各自 ≤ 4000 字符
  * - report_head_commit 必须是 40 位 hex SHA-1
  * - changed_areas / risks / unresolved 必须是数组,且不超过各自上限
  * - changed_areas 的 path 不可重复
@@ -151,9 +180,19 @@ export function validateDeliveryReport(input: {
   }
   if (!isString(b.problem_understanding) || b.problem_understanding.length === 0) {
     errors.push(err("report_missing_field", "problem_understanding is required"));
+  } else if (b.problem_understanding.length > LIMITS.REPORT_TEXT_FIELD_CHARS) {
+    errors.push(err("report_text_too_long",
+      `problem_understanding exceeds ${LIMITS.REPORT_TEXT_FIELD_CHARS} characters`,
+      { field: "problem_understanding", length: b.problem_understanding.length, limit: LIMITS.REPORT_TEXT_FIELD_CHARS }
+    ));
   }
   if (!isString(b.solution_summary) || b.solution_summary.length === 0) {
     errors.push(err("report_missing_field", "solution_summary is required"));
+  } else if (b.solution_summary.length > LIMITS.REPORT_TEXT_FIELD_CHARS) {
+    errors.push(err("report_text_too_long",
+      `solution_summary exceeds ${LIMITS.REPORT_TEXT_FIELD_CHARS} characters`,
+      { field: "solution_summary", length: b.solution_summary.length, limit: LIMITS.REPORT_TEXT_FIELD_CHARS }
+    ));
   }
   if (!isString(b.report_head_commit) || !isValidSha1Hex40(b.report_head_commit)) {
     errors.push(err("report_invalid_sha", "report_head_commit must be a 40-character hex SHA-1"));
@@ -282,24 +321,33 @@ export interface ValidatedVerificationCommand {
   timeout_ms: number;
 }
 export interface ValidatedVerificationPolicy {
+  version: 1;
   commands: ValidatedVerificationCommand[];
 }
 
 /**
  * 校验 `ANVIL.verify.json` 文档:
- * - 顶层对象,`commands` 数组
- * - 0 条允许(= not_configured),1..8 条允许,9+ 拒绝
+ * - 顶层对象,`version` 必须为 1(缺失或非 1 拒绝)
+ * - `commands` 数组;0 条允许(= not_configured),1..8 条允许,9+ 拒绝
  * - 每条 id 必须匹配 `[A-Za-z0-9_-]{1,64}` 且在策略内唯一
  * - 每条 label / command 必须为非空字符串
  * - 每条 required 必须是 boolean
  * - 每条 timeout_ms 必须在 [1_000, 1_800_000] 内
  *
- * 校验阶段不读 `version` 字段;Runner 在落库/计算 policy_hash 时再判定。
+ * 注意:`policy_hash` 不在此函数中计算,Runner 读取 `base_commit:ANVIL.verify.json`
+ * 的原始字节并直接 SHA-256(见 `policyHash`)以保证不同命令顺序产生不同 hash。
  */
 export function validateVerificationPolicy(policy: unknown): ValidationResult<ValidatedVerificationPolicy> {
   const errors: ValidationError[] = [];
   if (!isRecord(policy)) {
     return { ok: false, errors: [err("policy_invalid_command", "policy must be a JSON object")] };
+  }
+  // version 必须为字面量 1
+  if (policy.version === undefined || policy.version === null) {
+    return { ok: false, errors: [err("policy_version_missing", `policy.version is required and must be ${VERIFICATION_POLICY_SCHEMA_VERSION}`)] };
+  }
+  if (policy.version !== VERIFICATION_POLICY_SCHEMA_VERSION) {
+    return { ok: false, errors: [err("policy_version_unknown", `policy.version must be ${VERIFICATION_POLICY_SCHEMA_VERSION}`, { version: policy.version })] };
   }
   if (!Array.isArray(policy.commands)) {
     return { ok: false, errors: [err("policy_invalid_command", "policy.commands must be an array")] };
@@ -371,7 +419,7 @@ export function validateVerificationPolicy(policy: unknown): ValidationResult<Va
     errors.push(err("policy_duplicate_id", "policy.commands contains duplicate id(s)", { ids: [...new Set(dupIds)] }));
   }
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: { commands }, errors: [] };
+  return { ok: true, value: { version: VERIFICATION_POLICY_SCHEMA_VERSION, commands }, errors: [] };
 }
 
 // ----------------------------------------------------------------------------
@@ -389,7 +437,8 @@ export interface VerificationCheckFact {
 export interface VerificationDeriveInput {
   /** 仓库根是否包含 `ANVIL.verify.json`;false → not_configured。 */
   policyPresent: boolean;
-  /** 实际执行后的检查结果(已过滤掉 spawn_failed 等不可比较状态)。 */
+  /** 实际执行后的检查结果。`exit_code === null` 表示 spawn 失败(spawn 本身
+   *  不暴露为公开 Check 状态,而是直接派生为 failed,与"required 失败"等价)。 */
   checks: VerificationCheckFact[];
   /** 验证前后 head_commit 是否一致(由 Runner 读取并填充)。 */
   headUnchanged: boolean;
@@ -398,12 +447,12 @@ export interface VerificationDeriveInput {
 }
 
 /**
- * 派生 Verification Run 终态(FR-001 验收 criteria):
+ * 派生 Verification Run 终态(FR-001 验收 criteria,严格对齐 PRD §8 state taxonomy):
  * 1. `policyPresent=false` → `not_configured`
- * 2. 任一 required 失败 / 超时 / spawn 失败 → `failed`
+ * 2. 任一 required 退出码非 0、超时或 spawn 失败(`exit_code === null`)→ `failed`
  * 3. 全部 required 通过,但 `!worktreeClean` → `dirty`
  * 4. 全部 required 通过,但 `!headUnchanged` → `stale`
- * 5. 全部 required 通过,但存在 optional 失败 / 超时 → `partial`
+ * 5. 全部 required 通过,但存在 optional 失败 / 超时 / spawn 失败 → `partial`
  * 6. 全部 required 通过、optional 全通过、head unchanged、worktree clean → `passed`
  *
  * 注意:`legacy` 不在派生函数中处理,只对迁移前 v1 Task 显式写入。
@@ -431,48 +480,59 @@ export function deriveVerificationStatus(input: VerificationDeriveInput): Verifi
 // ----------------------------------------------------------------------------
 
 export interface ShaTripleResult {
-  /** 三者全部存在(非空)且归一后相等。 */
+  /** 三者全部存在(非空)、均为完整 40 位 hex SHA、归一后相等。 */
   equal: boolean;
-  /** 缺失的 key(report / head / verification)。 */
+  /** null / 空字符串 / 非字符串 —— 视为"缺失"。 */
   missing: string[];
-  /** 不一致对(`report!=head`、`head!=verification`、`report!=verification` 的子集)。 */
+  /** 存在但不是完整 40 位 hex SHA —— 视为"格式非法"。 */
+  invalid: string[];
+  /** 三者均存在且格式合法但归一后不全相等。 */
   mismatch: string[];
 }
 
 /**
  * 比较 Report / head / verification 三个 SHA-1:
- * - 任一为空字符串或非字符串 → 计入 missing
- * - 全部存在但归一后不全相等 → 计入 mismatch
- * - 全部存在且归一后相等 → equal
+ * 1. 任一为非字符串 / null / 空字符串 → 计入 missing
+ * 2. 存在但不是完整 40 位 hex SHA → 计入 invalid
+ * 3. 全部存在、格式合法但归一后不全相等 → 计入 mismatch
+ * 4. 全部存在、格式合法、归一后相等 → equal
  *
  * 大小写不敏感:Git SHA-1 通常小写,但允许 runner/agent 大小写不一致。
+ * 三个值即使相同,若任一不是 40 位 hex 也**不能**判 equal(完整性优先于表面一致)。
  */
 export function compareThreeShas(values: {
   report?: string | null;
   head?: string | null;
   verification?: string | null;
 }): ShaTripleResult {
-  const present = {
+  const present: { report: boolean; head: boolean; verification: boolean } = {
     report: typeof values.report === "string" && values.report.length > 0,
     head: typeof values.head === "string" && values.head.length > 0,
     verification: typeof values.verification === "string" && values.verification.length > 0,
   };
-  if (!present.report || !present.head || !present.verification) {
-    const missing: string[] = [];
-    if (!present.report) missing.push("report");
-    if (!present.head) missing.push("head");
-    if (!present.verification) missing.push("verification");
-    return { equal: false, missing, mismatch: [] };
+  const missing: string[] = [];
+  if (!present.report) missing.push("report");
+  if (!present.head) missing.push("head");
+  if (!present.verification) missing.push("verification");
+  if (missing.length > 0) {
+    return { equal: false, missing, invalid: [], mismatch: [] };
   }
   const r = (values.report as string).toLowerCase();
   const h = (values.head as string).toLowerCase();
   const v = (values.verification as string).toLowerCase();
-  if (r === h && h === v) return { equal: true, missing: [], mismatch: [] };
+  const invalid: string[] = [];
+  if (!SHA1_40_PATTERN.test(r)) invalid.push("report");
+  if (!SHA1_40_PATTERN.test(h)) invalid.push("head");
+  if (!SHA1_40_PATTERN.test(v)) invalid.push("verification");
+  if (invalid.length > 0) {
+    return { equal: false, missing: [], invalid, mismatch: [] };
+  }
+  if (r === h && h === v) return { equal: true, missing: [], invalid: [], mismatch: [] };
   const mismatch: string[] = [];
   if (r !== h) mismatch.push("report!=head");
   if (h !== v) mismatch.push("head!=verification");
   if (r !== v) mismatch.push("report!=verification");
-  return { equal: false, missing: [], mismatch };
+  return { equal: false, missing: [], invalid: [], mismatch };
 }
 
 // ----------------------------------------------------------------------------
@@ -510,13 +570,15 @@ export function reportHash(report: ValidatedDeliveryReport): string {
   return sha256Hex(normalizeReportForHash(report));
 }
 
-/** 计算归一化 Verification Policy 的 SHA-256;Runner 把结果作为 `policy_hash` 落库。 */
-export function policyHash(policy: ValidatedVerificationPolicy): string {
-  return sha256Hex(stableStringify({
-    commands: [...policy.commands]
-      .map((c) => ({ id: c.id, label: c.label, command: c.command, required: c.required, timeout_ms: c.timeout_ms }))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-  }));
+/**
+ * 计算 ANVIL.verify.json 原始内容的 SHA-256,作为 `policy_hash` 落库。
+ *
+ * **必须**对 base_commit 对应版本的文件原始字节直接做 SHA-256;不得先解析、
+ * 按 id 排序再哈希 —— 否则不同命令顺序的策略会产生相同 hash,破坏"标识真实内容"
+ * 的契约。Runner 通常通过 `git show <base_commit>:ANVIL.verify.json` 拿到原始文本。
+ */
+export function policyHash(rawFileText: string): string {
+  return sha256Hex(rawFileText);
 }
 
 // ----------------------------------------------------------------------------
@@ -526,13 +588,15 @@ export function policyHash(policy: ValidatedVerificationPolicy): string {
 export type ParsedResultJson =
   | { kind: "absent" }
   | { kind: "incomplete"; raw: string; reason: string }
+  | { kind: "unsupported"; raw: string; schemaVersion: number }
   | { kind: "valid"; raw: string; value: Record<string, unknown> };
 
 /**
  * 安全解析 `Task.result_json`:
  * - `null` / `undefined` / 空字符串 → absent
  * - JSON.parse 失败或顶层不是对象 → incomplete(不抛)
- * - 否则返回 valid
+ * - 顶层是对象但 `schema_version` 不是当前支持的版本(2)→ unsupported
+ * - 顶层是对象且 `schema_version === 2` → valid
  */
 export function parseResultJson(raw: string | null | undefined): ParsedResultJson {
   if (raw == null || raw.length === 0) return { kind: "absent" };
@@ -546,33 +610,33 @@ export function parseResultJson(raw: string | null | undefined): ParsedResultJso
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return { kind: "incomplete", raw, reason: "top-level value must be an object" };
   }
-  return { kind: "valid", raw, value: parsed as Record<string, unknown> };
+  const obj = parsed as Record<string, unknown>;
+  const v = obj.schema_version;
+  if (typeof v === "number" && v === 2) {
+    return { kind: "valid", raw, value: obj };
+  }
+  if (typeof v === "number") {
+    return { kind: "unsupported", raw, schemaVersion: v };
+  }
+  return { kind: "incomplete", raw, reason: "missing schema_version" };
 }
 
-/** 判定 v1 旧 result_json 是否仍然可读。 */
-export type ResultJsonClassification = "legacy" | "incomplete" | "valid";
+/** 判定 v1 旧 result_json 的可读性。 */
+export type ResultJsonClassification = "legacy" | "incomplete" | "unsupported" | "valid";
 
 /**
  * 判定 v1 旧 result_json:
- * - 缺失或无 schema_version → legacy(可读,不属于 v2)
- * - 解析失败或非对象 → incomplete(损坏,UI 应显示为 legacy + 损坏)
- * - schema_version >= 2 → valid(v2)
+ * - `absent`(空 / null)→ `legacy`(无 v1 数据可读,UI 直接按 legacy 处理)
+ * - `incomplete`(解析失败 / 非对象 / 缺 schema_version)→ `incomplete`
+ * - `unsupported`(解析成功但 schema_version 不是 2)→ `unsupported`
+ * - `valid`(schema_version === 2)→ `valid`
  */
 export function classifyResultJson(raw: string | null | undefined): ResultJsonClassification {
   const parsed = parseResultJson(raw);
-  if (parsed.kind === "absent") return "legacy";
-  if (parsed.kind === "incomplete") return "incomplete";
-  const v = parsed.value.schema_version;
-  if (typeof v === "number" && v >= 2) return "valid";
-  return "legacy";
-}
-
-// ----------------------------------------------------------------------------
-// Review Packet 裁决资格辅助
-// ----------------------------------------------------------------------------
-
-/** Review Packet 状态判定:仅 `ready` / `decision_recorded` 视为可正常裁决;其余
- *  视为不可普通合入(server 在 B01 进一步控制行为,这里只做最小判定)。 */
-export function isPacketDecisionEligible(status: ReviewPacketStatus): boolean {
-  return status === "ready" || status === "decision_recorded";
+  switch (parsed.kind) {
+    case "absent": return "legacy";
+    case "incomplete": return "incomplete";
+    case "unsupported": return "unsupported";
+    case "valid": return "valid";
+  }
 }
