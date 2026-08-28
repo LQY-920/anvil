@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { newId, type Db } from "../db/client.js";
 import { sha256Hex } from "../lib/hash.js";
 import { getIssue, addComment } from "./issues.js";
+import { DELIVERY_CONTRACT_CURRENT_VERSION } from "@anvil/core";
 import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 
 export const LEASE_MS = 2 * 60 * 1000;
@@ -78,7 +79,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
 
 /** 失败落库 + 有限重试：attempt 未满则派生子任务重新入队。 */
 export function failTaskInternal(db: Db, taskId: string, reason: string, error: string, workDir: string | null) {
-  const task = getTask(db, taskId);
+  const task = getTask(db, taskId) as (Task & { target_branch?: string | null; base_commit?: string | null }) | null;
   if (!task || task.status === "completed" || task.status === "failed" || task.status === "cancelled") return;
   const now = new Date().toISOString();
   db.$client.transaction(() => {
@@ -95,10 +96,18 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
       .prepare(`SELECT id FROM tasks WHERE issue_id = ? AND status IN ('queued','dispatched') LIMIT 1`)
       .get(task.issue_id);
     if (pending) return;
+    // A02 · D-007:自动重试子 Task 必须显式 v2;可继承父 Task 的 target_branch / base_commit
+    // (Runner 尚未起跑时也是 null,继续传 null),其余 v2 字段(head_commit、verification_*、
+    // payload hash/response json)全部不能复制 —— 重试是新的执行尝试,不是父 Task 已完成状态的延续。
     db.$client
-      .prepare(`INSERT INTO tasks (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts, parent_task_id, created_at)
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
-      .run(newId(), task.workspace_id, task.issue_id, task.agent_id, task.priority, task.attempt + 1, task.max_attempts, task.id, now);
+      .prepare(`INSERT INTO tasks
+                (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
+                 parent_task_id, delivery_contract_version, target_branch, base_commit, created_at)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(newId(), task.workspace_id, task.issue_id, task.agent_id,
+           task.priority, task.attempt + 1, task.max_attempts,
+           task.id, DELIVERY_CONTRACT_CURRENT_VERSION,
+           task.target_branch, task.base_commit, now);
     addComment(db, task.issue_id, {
       author_type: "system", author_id: "system", type: "system",
       body: `任务失败（${reason}），自动重试 ${task.attempt + 1}/${task.max_attempts}`,

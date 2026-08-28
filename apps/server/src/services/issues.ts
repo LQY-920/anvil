@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { newId, type Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
-import { priorityWeight, type CreateIssueRequest, type Issue, type IssueWithTask, type LatestTaskSummary, type Task, type UpdateIssueRequest } from "@anvil/core";
+import { DELIVERY_CONTRACT_CURRENT_VERSION, priorityWeight, type CreateIssueRequest, type Issue, type IssueWithTask, type LatestTaskSummary, type Task, type UpdateIssueRequest } from "@anvil/core";
 
 function rowToIssue(r: typeof schema.issues.$inferSelect): Issue {
   return r as unknown as Issue;
@@ -47,7 +47,9 @@ export function enqueueForComment(db: Db, issue: Issue): CommentEnqueueResult {
   return { enqueued: true, task };
 }
 
-/** 插入 queued 任务并写系统时间线；已有 pending 任务（部分唯一索引冲突）时返回 null。 */
+/** 插入 queued 任务并写系统时间线；已有 pending 任务（部分唯一索引冲突）时返回 null。
+ *  A02 · D-007:所有 v2 创建入口必须显式写 delivery_contract_version=DELIVERY_CONTRACT_CURRENT_VERSION,
+ *  不依赖 DB 默认值。评论接力和 rerun 都走本入口,故本函数是 v2 写路径的唯一公共点。 */
 function insertQueuedTask(db: Db, issue: Issue, trigger: string): Task | null {
   const now = new Date().toISOString();
   const id = newId();
@@ -56,6 +58,7 @@ function insertQueuedTask(db: Db, issue: Issue, trigger: string): Task | null {
       id, workspace_id: issue.workspace_id, issue_id: issue.id,
       agent_id: issue.assignee_id!, status: "queued", // 调用方已守卫 assignee_id 非空
       priority: priorityWeight(issue.priority), attempt: 1, max_attempts: 3,
+      delivery_contract_version: DELIVERY_CONTRACT_CURRENT_VERSION,
       created_at: now,
     }).run();
   } catch (e: any) {
