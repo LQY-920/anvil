@@ -187,6 +187,10 @@ export const LIMITS = {
   CHECK_EXCERPT_BYTES: 8 * 1024,
   /** FR-001:验证载荷总摘录上限(64KB)。 */
   VERIFICATION_TOTAL_BYTES: 64 * 1024,
+  /** FR-001:单条 verification 命令字符串长度上限(500 字符)。
+   *  与 PRD §6 FR-001 "ANVIL.verify.json 命令" 安全契约对齐:
+   *  限制命令长度,避免被恶意/手误塞入长字符串影响 shell 调用可读性。 */
+  VERIFICATION_COMMAND_CHARS: 500,
   /** FR-001:timeout 下界(ms)。 */
   MIN_VERIFICATION_TIMEOUT_MS: 1_000,
   /** FR-001:timeout 上界(ms)。 */

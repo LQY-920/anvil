@@ -116,7 +116,9 @@ describe("start anchor validation (compatibility + full v2)", () => {
     expect(r.json().details.field).toBe("task_branch");
   });
 
-  it("空 target_branch → 400 invalid_git_anchor", async () => {
+  it("空 target_branch → 400 invalid_schema(路由层格式校验,先于 service)", async () => {
+    // R1-FIX1:空字符串是路由层类型/格式错,返回 invalid_schema;service 的
+    // invalid_git_anchor 留给更严格的 Git ref 格式校验。
     const pkg = await claimOne();
     const r = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, {
       daemon_id: "d1", work_dir: "/w1",
@@ -126,11 +128,14 @@ describe("start anchor validation (compatibility + full v2)", () => {
       delivery_contract_version: 2,
     }, daemonToken);
     expect(r.statusCode).toBe(400);
-    expect(r.json().code).toBe("invalid_git_anchor");
+    expect(r.json().code).toBe("invalid_schema");
     expect(r.json().details.field).toBe("target_branch");
   });
 
-  it("非 40 位 SHA → 400 invalid_git_anchor", async () => {
+  it("非 40 位 SHA → 400 invalid_schema(路由层格式校验,先于 service)", async () => {
+    // R1-FIX1:非 40 hex SHA 属于"类型/格式错",路由层用 invalid_schema 拒绝,
+    // 不会进入 service 的 validateStartAnchors。service 仍负责更严格的
+    // 业务校验(分支名空白/特殊字符),使用 invalid_git_anchor。
     const pkg = await claimOne();
     const r = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, {
       daemon_id: "d1", work_dir: "/w1",
@@ -140,7 +145,7 @@ describe("start anchor validation (compatibility + full v2)", () => {
       delivery_contract_version: 2,
     }, daemonToken);
     expect(r.statusCode).toBe(400);
-    expect(r.json().code).toBe("invalid_git_anchor");
+    expect(r.json().code).toBe("invalid_schema");
     expect(r.json().details.field).toBe("base_commit");
   });
 
@@ -894,8 +899,9 @@ describe("invalid_git_anchor strict branch validation (FIX4)", () => {
     "release/v1.2.3",
   ];
   // 非法 examples:对应禁止字符/模式
+  // R1-FIX1:空字符串 "" 已被路由层用 invalid_schema 拦截,不再列入此表;
+  // 本表只覆盖路由放行(类型正确)后由 service validateGitRef 拒掉的格式错。
   const INVALID_BRANCHES: Array<[string, string]> = [
-    ["", "empty string"],
     ["  main", "leading whitespace"],
     ["main  ", "trailing whitespace"],
     ["main evil", "contains space"],
@@ -979,7 +985,9 @@ describe("invalid_git_anchor strict branch validation (FIX4)", () => {
     });
   }
 
-  it("非 40 位 SHA → 400 invalid_git_anchor", async () => {
+  it("非 40 位 SHA → 400 invalid_schema(路由层格式校验)", async () => {
+    // R1-FIX1:非 40 hex SHA 是路由层格式错,返回 invalid_schema;service 的
+    // invalid_git_anchor 留给更严格的 Git ref 格式校验(分支名空白/特殊字符等)。
     const pkg = await claimOne();
     const r = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, {
       daemon_id: "d1", work_dir: "/w1",
@@ -989,7 +997,7 @@ describe("invalid_git_anchor strict branch validation (FIX4)", () => {
       delivery_contract_version: 2,
     }, daemonToken);
     expect(r.statusCode).toBe(400);
-    expect(r.json().code).toBe("invalid_git_anchor");
+    expect(r.json().code).toBe("invalid_schema");
     expect(r.json().details.field).toBe("base_commit");
   });
 
@@ -1042,5 +1050,175 @@ describe("invalid_git_anchor strict branch validation (FIX4)", () => {
     // 锚点未变
     const row = app.db.$client.prepare(`SELECT task_branch FROM tasks WHERE id=?`).get(pkg.task.id) as any;
     expect(row.task_branch).toBe("task/orig");
+  });
+});
+
+// ============================================================================
+// R1-FIX1 · 事务内部 idempotency recheck 命中(replayed=true 透传)
+// ============================================================================
+//
+// 本节直接调用 runXxxInTransaction 内部函数,绕过事务前 fast path,
+// 模拟"pre-check miss、in-tx recheck hit"的情形。
+// 这正是原实现下会硬编码 replayed:false 的 bug;修复后必须透传 true。
+//
+// 关键断言(每个 operation 都要):
+// - service 返回的 outcome.replayed === true
+// - 状态/Agent/Issue/评论/广播均无变化
+// - 不发生第二次业务写入
+
+import {
+  runStartInTransaction,
+  runCompleteInTransaction,
+  runFailInTransaction,
+  normalizeOpPayload,
+} from "../src/services/tasks.js";
+import { canonicalJsonHash } from "@anvil/core";
+
+const SHA_FULL = "0123456789abcdef0123456789abcdef01234567";
+
+describe("R1-FIX1: 事务内部 idempotency recheck 命中 → replayed=true 透传", () => {
+  it("start: 事务内 hit → replayed=true,无副作用", async () => {
+    const pkg = await claimOne();
+    // 模拟"pre-check miss、in-tx 已有同 hash":直接预置 idempotency 记录
+    const hash = canonicalJsonHash(normalizeOpPayload("start", {
+      daemon_id: "d1", work_dir: "/w1",
+      task_branch: "task/orig", target_branch: "main",
+      base_commit: SHA_FULL, delivery_contract_version: 2,
+    }));
+    const response = { ok: true, task_id: pkg.task.id, status: "running" };
+    app.db.$client.prepare(
+      `UPDATE tasks SET start_payload_hash=?, start_response_json=? WHERE id=?`
+    ).run(hash, JSON.stringify(response), pkg.task.id);
+
+    const beforeStatus = (app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    const beforeStartPayloadHash = (app.db.$client.prepare(`SELECT start_payload_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_payload_hash;
+    const beforeComments = (app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n;
+
+    // 直接调用事务体(bypass pre-check,模拟 in-tx recheck 命中)
+    const outcome = runStartInTransaction(app.db, pkg.task.id, hash, {
+      daemon_id: "d1", work_dir: "/w1",
+      task_branch: "task/orig", target_branch: "main",
+      base_commit: SHA_FULL, delivery_contract_version: 2,
+    });
+
+    expect(outcome.replayed).toBe(true);
+    expect(outcome.response).toEqual(response);
+    expect(outcome.advancedIssue).toBeNull();
+    // 状态不变(start 仍是 dispatched)
+    expect((app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status).toBe(beforeStatus);
+    // hash 未被覆盖
+    expect((app.db.$client.prepare(`SELECT start_payload_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_payload_hash).toBe(beforeStartPayloadHash);
+    // 评论不变
+    expect((app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n).toBe(beforeComments);
+  });
+
+  it("complete: 事务内 hit → replayed=true,无副作用(不重复评论/状态迁移/广播)", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
+    // 预置 complete 的 idempotency 记录
+    const payload = { daemon_id: "d1", branch: "task/abc", worktree_clean: true };
+    const hash = canonicalJsonHash(normalizeOpPayload("complete", payload));
+    const response = { ok: true, task_id: pkg.task.id, status: "completed" };
+    app.db.$client.prepare(
+      `UPDATE tasks SET complete_payload_hash=?, complete_response_json=? WHERE id=?`
+    ).run(hash, JSON.stringify(response), pkg.task.id);
+
+    const beforeComments = (app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n;
+    const beforeIssue = (app.db.$client.prepare(`SELECT status FROM issues WHERE id=?`).get(issueId) as any).status;
+
+    // 直接调事务体,bypass pre-check
+    const outcome = runCompleteInTransaction(app.db, pkg.task.id, hash, payload);
+
+    expect(outcome.replayed).toBe(true);
+    expect(outcome.response).toEqual(response);
+    // 状态仍是 running(complete 还没真正落库)
+    expect((app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status).toBe("running");
+    // 评论/Issue 不变
+    expect((app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n).toBe(beforeComments);
+    expect((app.db.$client.prepare(`SELECT status FROM issues WHERE id=?`).get(issueId) as any).status).toBe(beforeIssue);
+  });
+
+  it("fail: 事务内 hit → replayed=true,无副作用(不创建 retry Task/不重评论)", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
+    // 预置 fail idempotency
+    const payload = { daemon_id: "d1", failure_reason: "non_zero_exit", error: "boom" };
+    const hash = canonicalJsonHash(normalizeOpPayload("fail", payload));
+    const response = { ok: true, task_id: pkg.task.id, status: "failed" };
+    app.db.$client.prepare(
+      `UPDATE tasks SET fail_payload_hash=?, fail_response_json=? WHERE id=?`
+    ).run(hash, JSON.stringify(response), pkg.task.id);
+
+    const beforeTasks = (app.db.$client.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE issue_id=?`).get(issueId) as any).n;
+    const beforeComments = (app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n;
+
+    // 直接调事务体
+    const outcome = runFailInTransaction(app.db, pkg.task.id, hash, payload);
+
+    expect(outcome.replayed).toBe(true);
+    expect(outcome.response).toEqual(response);
+    // 任务数量不变(无 retry Task 创建)
+    expect((app.db.$client.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE issue_id=?`).get(issueId) as any).n).toBe(beforeTasks);
+    // 评论数量不变(无 retry 评论)
+    expect((app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(issueId) as any).n).toBe(beforeComments);
+  });
+
+  it("start: 事务内 hash 不同时仍抛 idempotency_conflict(code 字段)", async () => {
+    const pkg = await claimOne();
+    // 预置 hash X
+    const hashX = "a".repeat(64);
+    const response = { ok: true, task_id: pkg.task.id, status: "running" };
+    app.db.$client.prepare(
+      `UPDATE tasks SET start_payload_hash=?, start_response_json=? WHERE id=?`
+    ).run(hashX, JSON.stringify(response), pkg.task.id);
+    // 调事务体,传入不同 hash Y
+    const hashY = "b".repeat(64);
+    try {
+      runStartInTransaction(app.db, pkg.task.id, hashY, {
+        daemon_id: "d1", work_dir: "/w1",
+      });
+      expect.fail("expected to throw");
+    } catch (e: any) {
+      expect(e.code).toBe("idempotency_conflict");
+      expect(e.http).toBe(409);
+    }
+  });
+
+  it("complete: 事务内 hash 不同时仍抛 idempotency_conflict(code 字段)", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
+    const hashX = "a".repeat(64);
+    app.db.$client.prepare(
+      `UPDATE tasks SET complete_payload_hash=?, complete_response_json=? WHERE id=?`
+    ).run(hashX, JSON.stringify({ ok: true, task_id: pkg.task.id, status: "completed" }), pkg.task.id);
+    const hashY = "b".repeat(64);
+    try {
+      runCompleteInTransaction(app.db, pkg.task.id, hashY, {
+        daemon_id: "d1", branch: "task/abc",
+      });
+      expect.fail("expected to throw");
+    } catch (e: any) {
+      expect(e.code).toBe("idempotency_conflict");
+      expect(e.http).toBe(409);
+    }
+  });
+
+  it("fail: 事务内 hash 不同时仍抛 idempotency_conflict(code 字段)", async () => {
+    const pkg = await claimOne();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
+    const hashX = "a".repeat(64);
+    app.db.$client.prepare(
+      `UPDATE tasks SET fail_payload_hash=?, fail_response_json=? WHERE id=?`
+    ).run(hashX, JSON.stringify({ ok: true, task_id: pkg.task.id, status: "failed" }), pkg.task.id);
+    const hashY = "b".repeat(64);
+    try {
+      runFailInTransaction(app.db, pkg.task.id, hashY, {
+        daemon_id: "d1", failure_reason: "non_zero_exit", error: "boom",
+      });
+      expect.fail("expected to throw");
+    } catch (e: any) {
+      expect(e.code).toBe("idempotency_conflict");
+      expect(e.http).toBe(409);
+    }
   });
 });

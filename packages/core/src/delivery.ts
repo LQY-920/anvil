@@ -390,6 +390,18 @@ export function validateVerificationPolicy(policy: unknown): ValidationResult<Va
       errors.push(err("policy_invalid_command", `commands[${i}].command is required`, { id: raw.id }));
       continue;
     }
+    // R1-FIX1:每条命令的字符长度上限 500,超限直接拒绝,避免
+    // 不受控的长命令污染策略 hash 与执行日志。500 字符刚好足够
+    // 真实命令(pnpm test、pnpm exec tsc --noEmit -p tsconfig.json 等),
+    // 又能限制异常输入。
+    if (raw.command.length > LIMITS.VERIFICATION_COMMAND_CHARS) {
+      errors.push(err(
+        "policy_invalid_command",
+        `commands[${i}].command exceeds ${LIMITS.VERIFICATION_COMMAND_CHARS} characters`,
+        { id: raw.id, length: raw.command.length, limit: LIMITS.VERIFICATION_COMMAND_CHARS },
+      ));
+      continue;
+    }
     if (typeof raw.required !== "boolean") {
       errors.push(err("policy_required_missing", `commands[${i}].required must be boolean`, { id: raw.id }));
       continue;

@@ -333,3 +333,394 @@ describe("broadcast and idle state side effects (no duplication)", () => {
     expect(statusAfterReplay).toBe("idle");
   });
 });
+
+// ============================================================================
+// R1-FIX1 · start/complete/fail 严格运行时校验
+// ============================================================================
+//
+// 通用要求:
+// - request body 必须是非 null、非数组的普通 JSON 对象
+// - 未知字段 → 400 invalid_schema,零副作用
+// - 类型错误 / 空字符串 / 未知枚举 → 400 invalid_schema,零副作用
+// - 校验必须发生在调用 service 和计算/写入幂等 hash 之前
+// - 校验失败:Task 状态不变 / Issue 状态不变 / 不写 payload_hash / 不写 response_json
+//   / 不清空 token / 不新增评论 / 不发送广播
+
+describe("R1-FIX1: start 严格运行时校验", () => {
+  it("work_dir: 123 → 400 invalid_schema,零副作用", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const beforeStatus = (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    const beforeBroadcasts = env.hubBroadcasts.length;
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: 123 },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("work_dir");
+    // 零副作用:状态/广播/幂等字段均未变
+    expect((env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status).toBe(beforeStatus);
+    expect(env.hubBroadcasts.length).toBe(beforeBroadcasts);
+    const idem = env.app.db.$client.prepare(`SELECT start_payload_hash, start_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any;
+    expect(idem.start_payload_hash).toBeNull();
+    expect(idem.start_response_json).toBeNull();
+  });
+
+  it("未知字段 unknown_nonce → 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w", unknown_nonce: "abc" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("unknown_nonce");
+  });
+
+  it("两次仅 unknown_nonce 值不同,都被拒绝,不能被当作同 payload replay", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const beforeStatus = (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    const r1 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w", unknown_nonce: "first" },
+    });
+    expect(r1.statusCode).toBe(400);
+    const r2 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w", unknown_nonce: "second" },
+    });
+    expect(r2.statusCode).toBe(400);
+    // 两次都 400,没有任何一次被当成合法 replay
+    expect((env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status).toBe(beforeStatus);
+  });
+
+  it("非法 SHA(非 40 hex)→ 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: {
+        daemon_id: "d1", work_dir: "D:/w",
+        task_branch: "task/abc", target_branch: "main",
+        base_commit: "deadbeef",  // 太短
+        delivery_contract_version: 2,
+      },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("base_commit");
+  });
+
+  it("现有合法 Start 仍通过", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w" },
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
+  it("合法 Start replay 仍通过(同 payload)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const payload = { daemon_id: "d1", work_dir: "D:/w" };
+    const r1 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r1.statusCode).toBe(200);
+    const r2 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json()).toEqual(r1.json());
+  });
+
+  it("完全不提供 v2 anchors 的兼容路径仍通过", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w" },  // 不传任何 anchor
+    });
+    expect(r.statusCode).toBe(200);
+    const row = env.app.db.$client.prepare(`SELECT task_branch, target_branch, base_commit FROM tasks WHERE id=?`).get(pkg.task.id) as any;
+    expect(row.task_branch).toBeNull();
+    expect(row.target_branch).toBeNull();
+    expect(row.base_commit).toBeNull();
+  });
+});
+
+describe("R1-FIX1: complete 严格运行时校验", () => {
+  it("branch: 123 → 400 invalid_schema,零副作用", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const beforeStatus = (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    const beforeBroadcasts = env.hubBroadcasts.length;
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: 123 },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    // 零副作用
+    expect((env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status).toBe(beforeStatus);
+    expect(env.hubBroadcasts.length).toBe(beforeBroadcasts);
+    const idem = env.app.db.$client.prepare(`SELECT complete_payload_hash, complete_response_json, result_json FROM tasks WHERE id=?`).get(pkg.task.id) as any;
+    expect(idem.complete_payload_hash).toBeNull();
+    expect(idem.complete_response_json).toBeNull();
+    expect(idem.result_json).toBeNull();
+  });
+
+  it("pushed: \"yes\" → 400 invalid_schema(禁止字符串伪装 boolean)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: "task/abc", pushed: "yes" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("pushed");
+  });
+
+  it("worktree_clean: \"no\" → 400 invalid_schema(禁止字符串伪装 boolean)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: "task/abc", worktree_clean: "no" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("worktree_clean");
+  });
+
+  it("未知顶层字段 → 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: "task/abc", evil_unknown: "boom" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("evil_unknown");
+  });
+
+  it("校验失败后 Task、token、hash、response、Issue、评论、广播均不变化", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const before = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      broadcasts: env.hubBroadcasts.length,
+      commentCount: (env.app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(env.issueId) as any).n,
+    };
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: 999 },  // 类型错
+    });
+    expect(r.statusCode).toBe(400);
+    const after = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      broadcasts: env.hubBroadcasts.length,
+      commentCount: (env.app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(env.issueId) as any).n,
+    };
+    expect(after.taskStatus).toBe(before.taskStatus);
+    expect(after.taskToken).toBe(before.taskToken);
+    expect(after.broadcasts).toBe(before.broadcasts);
+    expect(after.commentCount).toBe(before.commentCount);
+  });
+
+  it("现有合法 Complete 仍通过", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", branch: "task/abc", worktree_clean: true },
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
+  it("合法 Complete replay 仍通过(同 payload)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    await startTask(env, { taskId: pkg.task.id, token: env.daemonToken, daemonId: "d1" });
+    const payload = { daemon_id: "d1", branch: "task/abc", worktree_clean: true };
+    const r1 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r1.statusCode).toBe(200);
+    const r2 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/complete`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json()).toEqual(r1.json());
+  });
+});
+
+describe("R1-FIX1: fail 严格运行时校验", () => {
+  it("failure_reason: \"totally_unknown\" → 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "totally_unknown", error: "boom" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("failure_reason");
+  });
+
+  it("error 非字符串(数字)→ 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: 123 },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("error");
+  });
+
+  it("error 空字符串 → 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: "" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.field).toBe("error");
+  });
+
+  it("未知字段(任意)→ 400 invalid_schema", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: "x", worktree_clean: true },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("worktree_clean");
+  });
+
+  it("head_commit 字段被明确拒绝(不允许夹带 Git 锚点)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: "x", head_commit: "abc" },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("head_commit");
+  });
+
+  it("delivery_contract_version 字段被明确拒绝", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: "x", delivery_contract_version: 2 },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("delivery_contract_version");
+  });
+
+  it("校验失败后 Task 不进入 failed,token/hash/response 不变化", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const before = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      failHash: (env.app.db.$client.prepare(`SELECT fail_payload_hash, fail_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).fail_payload_hash,
+    };
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "totally_unknown", error: "x" },
+    });
+    expect(r.statusCode).toBe(400);
+    const after = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      failHash: (env.app.db.$client.prepare(`SELECT fail_payload_hash, fail_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).fail_payload_hash,
+    };
+    expect(after.taskStatus).toBe(before.taskStatus);
+    expect(after.taskToken).toBe(before.taskToken);
+    expect(after.failHash).toBeNull();
+  });
+
+  it("现有合法 Fail 仍通过", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", failure_reason: "non_zero_exit", error: "boom" },
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
+  it("合法 Fail replay 仍通过(同 payload)", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const payload = { daemon_id: "d1", failure_reason: "non_zero_exit", error: "boom" };
+    const r1 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r1.statusCode).toBe(200);
+    const r2 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/fail`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload,
+    });
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json()).toEqual(r1.json());
+  });
+});

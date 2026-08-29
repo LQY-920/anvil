@@ -40,7 +40,10 @@ import {
   sha256Hex,
   validateDeliveryReport,
   validateVerificationPolicy,
+  type V2CompleteRequest,
   type V2CompleteResponse,
+  type V2FailRequest,
+  type VerificationCheck,
   type VerificationRun,
 } from "../src/index.js";
 
@@ -1045,47 +1048,14 @@ describe("V2CompleteResponse", () => {
 // ============================================================================
 
 describe("VerificationRun required fields", () => {
-  it("completed_at is required (not nullable) even for not_configured", () => {
-    // 编译期类型断言:completed_at: string 不是 string | null
-    // 运行时也必须接受合法的"无策略但记录了完成时间"形态
-    const run: VerificationRun = {
-      schema_version: 1,
-      policy_source: "none",
-      policy_hash: null,
-      base_commit: "0123456789abcdef0123456789abcdef01234567",
-      verification_sha: null,
-      status: "not_configured",
-      started_at: null,           // not_configured 允许 null
-      completed_at: "2026-08-28T10:00:00.000Z",  // 但 completed_at 仍是必填 ISO 时间
-      checks: [],
-    };
-    expect(run.completed_at).toBe("2026-08-28T10:00:00.000Z");
-    expect(run.started_at).toBeNull();
-  });
-
-  it("started_at can be null but completed_at must be present", () => {
-    // 运行时断言:只检查 completed_at 非空,started_at 可为 null
-    const run = {
-      schema_version: 1 as const,
-      policy_source: "none" as const,
-      policy_hash: null,
-      base_commit: "0123456789abcdef0123456789abcdef01234567",
-      verification_sha: null,
-      status: "not_configured" as const,
-      started_at: null,
-      completed_at: "2026-08-28T11:00:00.000Z",
-      checks: [],
-    };
-    expect(run.started_at).toBeNull();
-    expect(run.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
-
+  // R1-FIX1:VerificationRun 是 Runner 提交的 wire DTO,status 必须属于
+  // RunnerSubmittableVerificationStatus(排除 legacy 与 not_configured)。
+  // "not_configured" 是 server 派生值;Runner 提交过去就是类型错。
   it("executed run has both timestamps as ISO strings", () => {
     const run: VerificationRun = {
       schema_version: 1,
       policy_source: "ANVIL.verify.json",
       policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      base_commit: "0123456789abcdef0123456789abcdef01234567",
       verification_sha: "0123456789abcdef0123456789abcdef01234567",
       status: "passed",
       started_at: "2026-08-28T12:00:00.000Z",
@@ -1094,5 +1064,184 @@ describe("VerificationRun required fields", () => {
     };
     expect(run.started_at).toBe("2026-08-28T12:00:00.000Z");
     expect(run.completed_at).toBe("2026-08-28T12:05:00.000Z");
+  });
+
+  it("started_at can be null but completed_at must be present", () => {
+    // 运行时断言:started_at 可为 null(代表 spawn 立即失败),但 completed_at
+    // 仍是必填的 ISO 时间戳(用于派生 Packet 状态)。
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "ANVIL.verify.json",
+      policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      verification_sha: null,
+      status: "failed",
+      started_at: null,
+      completed_at: "2026-08-28T11:00:00.000Z",
+      checks: [],
+    };
+    expect(run.started_at).toBeNull();
+    expect(run.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+// ============================================================================
+// R1-FIX1 · Wire DTO 边界与不变式
+// ============================================================================
+//
+// 本节锁定的 4 个事实:
+// 1) VerificationCheck 不要求 per-check started_at / completed_at
+// 2) VerificationRun 不要求重复 base_commit
+// 3) V2CompleteRequest 的 base_commit 位于顶层
+// 4) V2FailRequest 可以按 PRD 精确字段构造
+// 不使用 any / 强制类型断言掩盖类型问题:以下构造全部走编译期检查。
+
+describe("wire DTO invariants (R1-FIX1)", () => {
+  it("VerificationCheck 不要求 per-check started_at/completed_at", () => {
+    // 编译期:构造一个不包含 started_at/completed_at 的 Check,类型必须能通过。
+    const check: VerificationCheck = {
+      id: "tests",
+      label: "全量测试",
+      command: "pnpm test",
+      required: true,
+      status: "passed",
+      exit_code: 0,
+      duration_ms: 180_000,
+      output_excerpt: "187 tests passed",
+    };
+    expect((check as Record<string, unknown>).started_at).toBeUndefined();
+    expect((check as Record<string, unknown>).completed_at).toBeUndefined();
+  });
+
+  it("VerificationRun 不要求重复 base_commit", () => {
+    // 编译期:不写 base_commit,TypeScript 必须能正常构造。
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "ANVIL.verify.json",
+      policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      verification_sha: "0123456789abcdef0123456789abcdef01234567",
+      status: "passed",
+      started_at: "2026-08-28T12:00:00.000Z",
+      completed_at: "2026-08-28T12:05:00.000Z",
+      checks: [],
+    };
+    expect((run as Record<string, unknown>).base_commit).toBeUndefined();
+  });
+
+  it("V2CompleteRequest 的 base_commit 位于顶层", () => {
+    // 编译期 + 运行时:base_commit 在 V2CompleteRequest 顶层,不在 verification 内。
+    const req: V2CompleteRequest = {
+      daemon_id: "d1",
+      branch: "task/abc",
+      work_dir: "D:/wt",
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      head_commit: "fedcba9876543210fedcba9876543210fedcba98",
+      worktree_clean: true,
+      verification: {
+        schema_version: 1,
+        policy_source: "ANVIL.verify.json",
+        policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        verification_sha: "fedcba9876543210fedcba9876543210fedcba98",
+        status: "passed",
+        started_at: "2026-08-28T12:00:00.000Z",
+        completed_at: "2026-08-28T12:05:00.000Z",
+        checks: [],
+      },
+    };
+    expect(req.base_commit).toBe("0123456789abcdef0123456789abcdef01234567");
+    // 验证 verification 内没有 base_commit
+    expect((req.verification as Record<string, unknown>).base_commit).toBeUndefined();
+  });
+
+  it("V2FailRequest 可以按 PRD 精确字段构造(daemon_id/failure_reason/error/work_dir)", () => {
+    // 编译期:4 个字段,不包含 head_commit / worktree_clean / delivery_contract_version。
+    const req: V2FailRequest = {
+      daemon_id: "d1",
+      failure_reason: "non_zero_exit",
+      error: "boom",
+      work_dir: "D:/wt",
+    };
+    expect(req.daemon_id).toBe("d1");
+    expect(req.failure_reason).toBe("non_zero_exit");
+    expect(req.error).toBe("boom");
+    expect(req.work_dir).toBe("D:/wt");
+    expect((req as Record<string, unknown>).head_commit).toBeUndefined();
+    expect((req as Record<string, unknown>).worktree_clean).toBeUndefined();
+    expect((req as Record<string, unknown>).delivery_contract_version).toBeUndefined();
+  });
+
+  it("V2FailRequest 的 work_dir 可选(可省略)", () => {
+    // 编译期:只填必填三项,work_dir 留空。
+    const req: V2FailRequest = {
+      daemon_id: "d1",
+      failure_reason: "lease_expired",
+      error: "lost lease",
+    };
+    expect(req.work_dir).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// R1-FIX1 · Verification command 长度上限(500 字符)
+// ============================================================================
+
+describe("VERIFICATION_COMMAND_CHARS=500 boundary (R1-FIX1)", () => {
+  // LIMITS 常量是契约的单一来源,任何 500 的硬编码散落都是 bug。
+  it("LIMITS.VERIFICATION_COMMAND_CHARS === 500", () => {
+    expect(LIMITS.VERIFICATION_COMMAND_CHARS).toBe(500);
+  });
+
+  it("accepts command of length exactly 500", () => {
+    const command = "a".repeat(500);
+    expect(command.length).toBe(500);
+    const r = validateVerificationPolicy({
+      version: 1,
+      commands: [{
+        id: "c1", label: "label", command, required: true, timeout_ms: 60_000,
+      }],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects command of length 501", () => {
+    const command = "a".repeat(501);
+    expect(command.length).toBe(501);
+    const r = validateVerificationPolicy({
+      version: 1,
+      commands: [{
+        id: "c1", label: "label", command, required: true, timeout_ms: 60_000,
+      }],
+    });
+    expect(r.ok).toBe(false);
+    const errCodes = r.errors.map((e) => e.code);
+    expect(errCodes).toContain("policy_invalid_command");
+    // 错误 details 应带 length 与 limit,便于诊断
+    const overflowErr = r.errors.find((e) => e.code === "policy_invalid_command" && e.details?.id === "c1");
+    expect(overflowErr?.details?.length).toBe(501);
+    expect(overflowErr?.details?.limit).toBe(500);
+  });
+
+  it("rejects when any one of multiple commands exceeds 500", () => {
+    // 第 1 条 500 字符合法,第 2 条 501 字符非法 → 整个 policy 拒绝。
+    const r = validateVerificationPolicy({
+      version: 1,
+      commands: [
+        { id: "ok", label: "ok", command: "a".repeat(500), required: true, timeout_ms: 60_000 },
+        { id: "bad", label: "bad", command: "a".repeat(501), required: true, timeout_ms: 60_000 },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    const errForBad = r.errors.find((e) => e.code === "policy_invalid_command" && e.details?.id === "bad");
+    expect(errForBad).toBeDefined();
+    expect(errForBad?.details?.length).toBe(501);
+  });
+
+  it("empty command still rejected (length 0)", () => {
+    // 现有 'policy_invalid_command' 路径仍优先捕获空字符串,不被新的长度检查干扰。
+    const r = validateVerificationPolicy({
+      version: 1,
+      commands: [{ id: "c", label: "l", command: "", required: true, timeout_ms: 1000 }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.code === "policy_invalid_command")).toBe(true);
   });
 });

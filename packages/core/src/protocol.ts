@@ -88,7 +88,9 @@ export interface VerificationPolicyDoc {
   commands: VerificationCommandSpec[];
 }
 
-/** Verification 单条检查(FR-001 §9 complete.body.verification.checks[])。 */
+/** Verification 单条检查(FR-001 §9 complete.body.verification.checks[])。
+ *  字段集合与 PRD Complete 请求的 checks 项严格对齐;`started_at` /
+ *  `completed_at` 只在 Run 顶层记录,不要求每条 check 重复提交时间戳。 */
 export interface VerificationCheck {
   id: string;
   label: string;
@@ -96,26 +98,26 @@ export interface VerificationCheck {
   required: boolean;
   status: VerificationCheckStatus;
   exit_code: number | null;
-  started_at: string;
-  completed_at: string;
   duration_ms: number;
   output_excerpt: string;
 }
 
+/** Runner 提交 DTO 允许的 verification.status 子集。
+ *  排除 `legacy`(只用于 v1 历史任务,由 server 从 result_json 派生,不是 Runner 上报值)
+ *  与 `not_configured`(server 端在没有策略文件时独立派生,Runner 不能直接上报该值)。 */
+export type RunnerSubmittableVerificationStatus = Exclude<VerificationStatus, "legacy" | "not_configured">;
+
 /** Verification Run 整体记录(FR-001 §9 complete.body.verification)。
- *  字段同时支持 not_configured(无策略文件)与已执行两种形态:
- *  - not_configured: policy_source="none"、policy_hash=null、verification_sha=null、
- *    started_at=null;但 completed_at 仍是检测完成时间的 ISO 字符串,
- *    因为"决定有没有策略"这个事实也必须有时间戳,server 端在派生 Packet 状态时使用
- *  - 已执行:所有字段非空,checks 至少 1 条
- */
+ *  `base_commit` 不在此处重复,只存在于 `V2CompleteRequest` 顶层。
+ *  字段同时支持 not_configured(由 server 派生)与已执行两种形态:
+ *  - not_configured: server 端独立派生,Runner 实际只提交"已执行"形态
+ *  - 已执行:所有字段非空,checks 至少 1 条 */
 export interface VerificationRun {
   schema_version: 1;
   policy_source: "ANVIL.verify.json" | "none";
   policy_hash: string | null;
-  base_commit: string;
   verification_sha: string | null;
-  status: VerificationStatus;
+  status: RunnerSubmittableVerificationStatus;
   started_at: string | null;
   completed_at: string;
   checks: VerificationCheck[];
@@ -140,15 +142,20 @@ export interface V2CompleteResponse {
   review_packet_status: ReviewPacketStatus;
 }
 
-/** v2 Fail:Runner 终检失败或执行失败时上报(FR-001)。 */
+/** v2 Fail:Runner 终检失败或执行失败时上报(FR-001)。
+ *  字段集合严格对齐 PRD Fail 请求,只包含:
+ *  - `daemon_id`                  (必填,Runner plane 鉴权)
+ *  - `failure_reason`             (必填,`FailureReason` 枚举)
+ *  - `error`                      (必填,Runner 自由文本,持久化前必须脱敏)
+ *  - `work_dir`                   (可选,失败时的 worktree 路径)
+ *  Runner 不得在 Fail 请求里夹带 `head_commit` / `worktree_clean` /
+ *  `delivery_contract_version` 等其他字段;Git 锚点由 `result_json`
+ *  派生或由 complete 端点提交,不在 Fail 的 wire DTO 内。 */
 export interface V2FailRequest {
   daemon_id: string;
   failure_reason: FailureReason;
   error: string;
-  work_dir: string | null;
-  head_commit: string | null;
-  worktree_clean: boolean;
-  delivery_contract_version: 2;
+  work_dir?: string | null;
 }
 export interface V2FailResponse {
   ok: true;

@@ -373,8 +373,9 @@ export const COMPLETE_ALLOWED_FIELDS = new Set<string>([
  * 故意不包含 token、Authorization、任何随机 ID 或时间戳。
  * A03-FIX:start 接受完整 v2 锚点(task_branch / target_branch / base_commit / delivery_contract_version),
  * 都必须参与 hash 参与 replay 检测。
+ * R1-FIX1:导出供测试与 runXxxInTransaction 共用同一规范化逻辑。
  */
-function normalizeOpPayload(op: "start" | "complete" | "fail", body: unknown): unknown {
+export function normalizeOpPayload(op: "start" | "complete" | "fail", body: unknown): unknown {
   if (op === "start") {
     const b = body as {
       daemon_id?: string; work_dir?: string;
@@ -693,6 +694,16 @@ export interface DaemonOpResult<T> {
   advancedIssue?: Issue | null;
 }
 
+/** R1-FIX1 · 事务体内部结果(不含 `task`,由外层包装后填)。
+ *  这是把"事务内 replayed 透传"逻辑独立成可测试单元后的契约;
+ *  外层 startTaskForDaemon / completeTaskForDaemon / failTaskForDaemon 负责
+ *  把 outcome 转成 DaemonOpResult(填 task 字段)。 */
+export interface DaemonOpTxResult<T> {
+  response: T;
+  replayed: boolean;
+  advancedIssue: Issue | null;
+}
+
 interface DaemonOpError extends Error {
   code: AnvilErrorCode;
   http: number;
@@ -737,17 +748,44 @@ export function startTaskForDaemon(
     }
     throw makeOpError(409, "idempotency_conflict", "start 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
   }
+  // R1-FIX1:start 事务内幂等 recheck + 业务写入。返回带 replayed 标志的结果,
+  // 事务内 recheck 命中时必须把 replayed=true 透传出去,避免外层硬编码 false 重复广播。
+  const outcome = runStartInTransaction(db, taskId, hash, payload);
+  return {
+    response: outcome.response,
+    task: getTask(db, taskId)!,
+    replayed: outcome.replayed,
+    advancedIssue: outcome.advancedIssue,
+  };
+}
+
+/** R1-FIX1 · start 事务体(可独立测试)。
+ *  内部不持有"事务前 fast path"逻辑;调用方负责先读一次 idempotency,
+ *  本函数负责事务内 recheck + 业务写入。recheck 命中时返回 `replayed: true`,
+ *  不执行任何状态修改 / 评论 / 广播触发副作用。 */
+export function runStartInTransaction(
+  db: Db, taskId: string, hash: string,
+  payload: {
+    daemon_id: string; work_dir: string;
+    task_branch?: string | null; target_branch?: string | null;
+    base_commit?: string | null; delivery_contract_version?: number | null;
+  },
+): DaemonOpTxResult<{ ok: true; task_id: string; status: "running" }> {
+  const outcome: {
+    response: { ok: true; task_id: string; status: "running" };
+    replayed: boolean;
+    advancedIssue: Issue | null;
+  } = { response: { ok: true, task_id: taskId, status: "running" }, replayed: false, advancedIssue: null };
   const now = new Date().toISOString();
-  let response: { ok: true; task_id: string; status: "running" };
-  let advancedIssue: Issue | null = null;
-  // 同一 transaction:状态守卫 → 锚点落库 → start 幂等 → autoAdvanceIssue + 系统评论。
+  // 同一 transaction:recheck → 状态守卫 → 锚点落库 → autoAdvanceIssue + 系统评论 → 幂等写入。
   // 任一异常都会让 better-sqlite3 自动 ROLLBACK,不留半完成状态。
   db.$client.transaction(() => {
-    // 事务内重新读幂等:防止两个并发 start 各自走到这一步
     const idem = readOpIdempotency(db, taskId, "start");
     if (idem.hash && idem.response) {
       if (idem.hash === hash) {
-        response = JSON.parse(idem.response);
+        outcome.response = JSON.parse(idem.response);
+        outcome.replayed = true;
+        outcome.advancedIssue = null;
         return;
       }
       throw makeOpError(409, "idempotency_conflict", "start 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
@@ -776,11 +814,14 @@ export function startTaskForDaemon(
     }
     // autoAdvanceIssue + 系统评论同 transaction:start 落库成功 → Issue 推进 → 评论写入
     // 必须在写 hash 之前,这样 start 失败时整条 transaction 一起回滚,不留半完成副作用
-    advancedIssue = autoAdvanceIssue(db, getTask(db, taskId)!, "start");
-    response = { ok: true, task_id: taskId, status: "running" };
+    const advanced = autoAdvanceIssue(db, getTask(db, taskId)!, "start");
+    const response: { ok: true; task_id: string; status: "running" } = { ok: true, task_id: taskId, status: "running" };
     writeOpIdempotency(db, taskId, "start", hash, JSON.stringify(response));
+    outcome.response = response;
+    outcome.advancedIssue = advanced;
+    outcome.replayed = false;
   })();
-  return { response: response!, task: getTask(db, taskId)!, replayed: false, advancedIssue };
+  return outcome;
 }
 
 /** A03-FIX · complete 包装:状态守卫 + 事务 + 幂等 + 副作用(syncAgentIdle,Issue 状态与评论)。
@@ -803,22 +844,41 @@ export function completeTaskForDaemon(
     }
     throw makeOpError(409, "idempotency_conflict", "complete 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
   }
+  // R1-FIX1:事务内 recheck + 业务写入。recheck 命中时返回 replayed=true。
+  const tx = runCompleteInTransaction(db, taskId, hash, payload);
+  return {
+    response: tx.response,
+    task: getTask(db, taskId)!,
+    replayed: tx.replayed,
+    advancedIssue: tx.advancedIssue,
+  };
+}
+
+/** R1-FIX1 · complete 事务体(可独立测试)。 */
+export function runCompleteInTransaction(
+  db: Db, taskId: string, hash: string, payload: Record<string, unknown>,
+): DaemonOpTxResult<{ ok: true; task_id: string; status: "completed" }> {
+  const outcome: {
+    response: { ok: true; task_id: string; status: "completed" };
+    replayed: boolean;
+    advancedIssue: Issue | null;
+  } = { response: { ok: true, task_id: taskId, status: "completed" }, replayed: false, advancedIssue: null };
   const now = new Date().toISOString();
   // A03-FIX4 · result_json 业务对象:只包含业务字段(daemon_id 已被剥离)
   // 该对象与 hash 输入的字段集合一一对应,任何"持久化但未参与 hash"或反向的不一致
   // 都是 bug,会导致第二/三次请求命中错误的 replay。
   const businessResult = buildCompleteResultJson(payload);
   const body = businessResult as { branch?: string; diff_stat?: string; work_dir?: string; session_id?: string; head_commit?: string; base_commit?: string; worktree_clean?: boolean; verification?: unknown; pushed?: boolean; undelivered?: boolean };
-  let response: { ok: true; task_id: string; status: "completed" };
-  let advancedIssue: Issue | null = null;
-  // 同一 transaction:状态守卫 → 终态更新 → Agent 同步 → Issue 推进 → 系统评论 → 幂等写入。
+  // 同一 transaction:recheck → 状态守卫 → 终态更新 → Agent 同步 → Issue 推进 → 系统评论 → 幂等写入。
   // 任一异常触发 ROLLBACK,不留半完成证据。
   db.$client.transaction(() => {
     // 事务内重新读幂等记录(防 TOCTOU 与并发竞争)
     const idem = readOpIdempotency(db, taskId, "complete");
     if (idem.hash && idem.response) {
       if (idem.hash === hash) {
-        response = JSON.parse(idem.response);
+        outcome.response = JSON.parse(idem.response);
+        outcome.replayed = true;
+        outcome.advancedIssue = null;
         return;
       }
       throw makeOpError(409, "idempotency_conflict", "complete 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
@@ -839,11 +899,14 @@ export function completeTaskForDaemon(
     }
     syncAgentIdle(db, cur.agent_id);
     // Issue 自动流转 + 系统评论(同 transaction)
-    advancedIssue = autoAdvanceIssue(db, getTask(db, taskId)!, "complete");
-    response = { ok: true, task_id: taskId, status: "completed" };
+    const advanced = autoAdvanceIssue(db, getTask(db, taskId)!, "complete");
+    const response: { ok: true; task_id: string; status: "completed" } = { ok: true, task_id: taskId, status: "completed" };
     writeOpIdempotency(db, taskId, "complete", hash, JSON.stringify(response));
+    outcome.response = response;
+    outcome.advancedIssue = advanced;
+    outcome.replayed = false;
   })();
-  return { response: response!, task: getTask(db, taskId)!, replayed: false, advancedIssue };
+  return outcome;
 }
 
 
@@ -869,18 +932,39 @@ export function failTaskForDaemon(
     }
     throw makeOpError(409, "idempotency_conflict", "fail 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
   }
+  // R1-FIX1:事务内 recheck + 业务写入。recheck 命中时返回 replayed=true。
+  const tx = runFailInTransaction(db, taskId, hash, payload);
+  return {
+    response: tx.response,
+    task: getTask(db, taskId)!,
+    replayed: tx.replayed,
+    advancedIssue: tx.advancedIssue,
+  };
+}
+
+/** R1-FIX1 · fail 事务体(可独立测试)。 */
+export function runFailInTransaction(
+  db: Db, taskId: string, hash: string,
+  payload: { daemon_id: string; failure_reason: string; error: string; work_dir?: string | null },
+): DaemonOpTxResult<{ ok: true; task_id: string; status: "failed" }> {
+  const outcome: {
+    response: { ok: true; task_id: string; status: "failed" };
+    replayed: boolean;
+    advancedIssue: Issue | null;
+  } = { response: { ok: true, task_id: taskId, status: "failed" }, replayed: false, advancedIssue: null };
   const now = new Date().toISOString();
   // A03-FIX4 · 持久化字段(error 已脱敏、failure_reason 原样、work_dir 原样)
   const persisted = buildFailPersistedFields(payload);
-  let response: { ok: true; task_id: string; status: "failed" };
-  // 同一 transaction:幂等重检 → 状态守卫 → 终态更新 → 重试子任务 + Agent 同步 + 评论 → 幂等写入。
+  // 同一 transaction:recheck → 状态守卫 → 终态更新 → 重试子任务 + Agent 同步 + 评论 → 幂等写入。
   // 任一异常触发 ROLLBACK,不留半完成副作用。
   db.$client.transaction(() => {
     // 事务内重新读幂等(防 TOCTOU 与并发竞争)
     const idem = readOpIdempotency(db, taskId, "fail");
     if (idem.hash && idem.response) {
       if (idem.hash === hash) {
-        response = JSON.parse(idem.response);
+        outcome.response = JSON.parse(idem.response);
+        outcome.replayed = true;
+        outcome.advancedIssue = null;
         return;
       }
       throw makeOpError(409, "idempotency_conflict", "fail 操作已有不同 payload 的同 operation 记录", { task_id: taskId });
@@ -919,8 +1003,10 @@ export function failTaskForDaemon(
         });
       }
     }
-    response = { ok: true, task_id: taskId, status: "failed" };
+    const response: { ok: true; task_id: string; status: "failed" } = { ok: true, task_id: taskId, status: "failed" };
     writeOpIdempotency(db, taskId, "fail", hash, JSON.stringify(response));
+    outcome.response = response;
+    outcome.replayed = false;
   })();
-  return { response: response!, task: getTask(db, taskId)!, replayed: false, advancedIssue: null };
+  return outcome;
 }
