@@ -6,6 +6,9 @@ import { execFileSync } from "node:child_process";
 import {
   ensureGitAvailable, git, prepareWorkdir, gitDiffStat, readWorktreeHead,
   readGitCommonDir, assertResumeRepository, canonicalizeFsPath,
+  canonicalizePathForCompare, reposEqualById, isAnchorProvided,
+  hasAnySavedAnchor, areAllAnchorsPresent, resolveRealPath,
+  type GitCommonDirId,
 } from "../src/worktree.js";
 import type { Issue } from "@anvil/core";
 
@@ -601,5 +604,331 @@ describe("readWorktreeHead", () => {
     const repo = seedWorktreeRepo();
     const head = await readWorktreeHead(repo);
     expect(head).toMatch(SHA1_40);
+  });
+});
+
+// =============================================================================
+// A04-FIX3 · 仓库身份精度(BigIntStats) + 路径规范化(Windows 长路径/UNC) +
+//              仓库身份比较(reposEqualById) + 空字符串锚点状态矩阵
+//
+// 关键不变量(对应 Codex 在 A04-FIX2 review 中识别的两类 bug):
+//  1. 仓库身份 dev/ino 必须直接来自 fs.statSync(path, { bigint: true }) 精确读取,
+//     不得先取普通 fs.Stats 再 BigInt(number) 转换(Windows inode 会丢精度)。
+//  2. 仓库身份比较必须综合规范路径与精确 dev/ino,避免 0n/0n 跨路径误判。
+//  3. Windows 路径归一必须正确处理 \\?\ 与 \\?\UNC\ 前缀(UNC 根保留双反斜杠)。
+//  4. hasAnySavedAnchor / areAllAnchorsPresent 严格按 null/undefined 判断,
+//     空字符串视为"已提供但非法",被状态矩阵拒绝(不得绕过非法状态守卫)。
+// =============================================================================
+
+describe("A04-FIX3 · readGitCommonDir 精确 BigIntStats", () => {
+  it("A04-FIX3: dev/ino 与 fs.statSync(path, { bigint: true }) 精确相等,不只校验 typeof === 'bigint'", async () => {
+    const repo = seedRepo();
+    const id = await readGitCommonDir(repo);
+    // 必须用 bigint:true 拿一次对照值,然后逐字段 ===
+    const realStat = fs.statSync(id.realPath, { bigint: true });
+    expect(typeof id.dev).toBe("bigint");
+    expect(typeof id.ino).toBe("bigint");
+    expect(id.dev).toBe(realStat.dev);
+    expect(id.ino).toBe(realStat.ino);
+    // 显式反向校验:普通 statSync 拿 number 后再用 BigInt(number) 包装,
+    // 如果原始值超过 Number.MAX_SAFE_INTEGER,BigInt(number) 会得到一个与真实值不同的 bigint。
+    // 这正是 A04-FIX3 修复的"先用普通 stat 再 BigInt"反模式;这里证明 readGitCommonDir
+    // 走的是 bigint:true 直读,而不是 BigInt(number) 包装出来的"伪 bigint"。
+    const smallStat = fs.statSync(id.realPath);
+    if (BigInt(smallStat.dev) !== realStat.dev || BigInt(smallStat.ino) !== realStat.ino) {
+      // 平台 inode 超 MAX_SAFE_INTEGER(典型 Windows NTFS):只有 BigIntStats 才是真值
+      expect(id.dev).toBe(realStat.dev);
+      expect(id.ino).toBe(realStat.ino);
+      expect(BigInt(smallStat.ino)).not.toBe(realStat.ino);
+    }
+  });
+
+  it("A04-FIX3: resolveRealPath 返回真实可访问路径,不进行大小写归一", () => {
+    const repo = seedRepo();
+    const real = resolveRealPath(repo);
+    expect(fs.existsSync(real)).toBe(true);
+    // 真实路径不得被 canonicalizeFsPath 改大小写;resolveRealPath 与 realpath 行为一致
+    const rp = fs.realpathSync(repo);
+    expect(real).toBe(rp);
+  });
+});
+
+describe("A04-FIX3 · reposEqualById 仓库身份比较规则", () => {
+  function id(path: string, dev: bigint, ino: bigint): GitCommonDirId {
+    return { realPath: path, path, dev, ino };
+  }
+
+  it("A04-FIX3: 相同规范路径 + 两边 0n/0n → 相同(规范路径优先级最高)", () => {
+    const a = id("c:\\repo\\.git", 0n, 0n);
+    const b = id("c:\\repo\\.git", 0n, 0n);
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX3: 不同规范路径 + 两边都是 0n/0n → 不同(不得把两个未取到文件标识的目录判同)", () => {
+    const a = id("c:\\repo-a\\.git", 0n, 0n);
+    const b = id("c:\\repo-b\\.git", 0n, 0n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX3: 不同规范路径 + 相同精确非零 dev/ino → 相同(8.3 / 符号链接 / 长路径别名场景)", () => {
+    const a = id("c:\\repo\\.git", 12345n, 67890n);
+    const b = id("\\\\?\\c:\\repo\\.git", 12345n, 67890n);
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX3: 不同规范路径 + dev 不同 → 不同", () => {
+    const a = id("c:\\repo-a\\.git", 11111n, 22222n);
+    const b = id("c:\\repo-b\\.git", 33333n, 22222n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX3: 不同规范路径 + ino 不同 → 不同", () => {
+    const a = id("c:\\repo-a\\.git", 12345n, 11111n);
+    const b = id("c:\\repo-b\\.git", 12345n, 22222n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX3: 一侧 0n/0n 另一侧非零 dev/ino 但不同路径 → 仍按 dev/ino 比较,允许判同(8.3 别名)", () => {
+    const a = id("c:\\repo\\.git", 0n, 0n);
+    const b = id("\\\\?\\c:\\repo\\.git", 12345n, 67890n);
+    // a 没有有效文件标识,只能依赖路径;路径不同 ⇒ 一定不同
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+});
+
+describe("A04-FIX3 · canonicalizePathForCompare Windows 路径归一", () => {
+  it("A04-FIX3: \\\\?\\C:\\Repo\\.git → 去除长路径前缀并小写归一", () => {
+    expect(canonicalizePathForCompare("\\\\?\\C:\\Repo\\.git", true)).toBe("c:\\repo\\.git");
+  });
+
+  it("A04-FIX3: \\\\?\\UNC\\server\\share\\repo\\.git → 还原为 \\\\server\\share\\repo\\.git(保留双反斜杠)", () => {
+    const out = canonicalizePathForCompare("\\\\?\\UNC\\server\\share\\repo\\.git", true);
+    expect(out).toBe("\\\\server\\share\\repo\\.git");
+    // 不能错误地变成 UNC\server\...(没有前导双反斜杠)
+    expect(out.startsWith("\\\\")).toBe(true);
+    expect(out.startsWith("UNC\\")).toBe(false);
+  });
+
+  it("A04-FIX3: 普通 UNC 路径(无长路径前缀)不丢开头的双反斜杠", () => {
+    const out = canonicalizePathForCompare("\\\\server\\share\\repo\\.git", true);
+    expect(out).toBe("\\\\server\\share\\repo\\.git");
+  });
+
+  it("A04-FIX3: POSIX 路径不主动小写,只把分隔符归一为 /", () => {
+    expect(canonicalizePathForCompare("C:\\Repo\\.git", false)).toBe("C:/Repo/.git");
+    expect(canonicalizePathForCompare("/tmp/Repo/.git", false)).toBe("/tmp/Repo/.git");
+  });
+
+  it("A04-FIX3: 在非 Windows 跑测时也能显式校验 Windows 归一行为(win32Mode 显式传 true)", () => {
+    // 即便运行平台不是 Windows,函数显式 win32Mode=true 也走 Windows 分支
+    const out = canonicalizePathForCompare("\\\\?\\UNC\\srv\\share\\repo", true);
+    expect(out).toBe("\\\\srv\\share\\repo");
+  });
+});
+
+describe("A04-FIX3 · 锚点字段提供判定(严格按 null/undefined)", () => {
+  it("A04-FIX3: isAnchorProvided 严格区分 null/undefined 与空字符串", () => {
+    expect(isAnchorProvided("task/abc")).toBe(true);
+    expect(isAnchorProvided("")).toBe(true);
+    expect(isAnchorProvided(null)).toBe(false);
+    expect(isAnchorProvided(undefined)).toBe(false);
+  });
+
+  it("A04-FIX3: hasAnySavedAnchor 空字符串视为已提供(空字符串也按 anchor 算)", () => {
+    // 三项全 null ⇒ false
+    expect(hasAnySavedAnchor({ taskBranch: null, targetBranch: null, baseCommit: null })).toBe(false);
+    expect(hasAnySavedAnchor(null)).toBe(false);
+    // 任一字段是空字符串 ⇒ true(空字符串算"已提供但非法")
+    expect(hasAnySavedAnchor({ taskBranch: "", targetBranch: null, baseCommit: null })).toBe(true);
+    expect(hasAnySavedAnchor({ taskBranch: null, targetBranch: "", baseCommit: null })).toBe(true);
+    expect(hasAnySavedAnchor({ taskBranch: null, targetBranch: null, baseCommit: "" })).toBe(true);
+  });
+
+  it("A04-FIX3: areAllAnchorsPresent 严格按 null/undefined,空字符串也算已提供", () => {
+    expect(areAllAnchorsPresent(null)).toBe(false);
+    expect(areAllAnchorsPresent({ taskBranch: null, targetBranch: null, baseCommit: null })).toBe(false);
+    // 空字符串算"齐全"(但 prepareWorkdir 后续会按格式校验拒绝)
+    expect(areAllAnchorsPresent({ taskBranch: "", targetBranch: "", baseCommit: "" })).toBe(true);
+    expect(areAllAnchorsPresent({ taskBranch: "task/a", targetBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567" })).toBe(true);
+  });
+});
+
+describe("A04-FIX3 · 空字符串锚点状态矩阵(Git 任务)", () => {
+  it("A04-FIX3: priorWorkDir=null + taskBranch='' → 明确失败,不创建 worktree", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    await expect(prepareWorkdir(
+      issue, "ff000001-aaaa", runnerRoot, null,
+      { taskBranch: "", targetBranch: null, baseCommit: null },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor|空字符串|纯空白/i);
+    // 不应创建 fresh worktree
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "ff000001"))).toBe(false);
+    // 也不应在 repo 中创建 task/ff000001 分支
+    const branches = execFileSync("git", ["branch", "--list"], { cwd: repo }).toString();
+    expect(branches).not.toContain("task/ff000001");
+  });
+
+  it("A04-FIX3: priorWorkDir=null + targetBranch='' → 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    await expect(prepareWorkdir(
+      issue, "ff000002-aaaa", runnerRoot, null,
+      { taskBranch: null, targetBranch: "", baseCommit: null },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor|空字符串|纯空白/i);
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "ff000002"))).toBe(false);
+  });
+
+  it("A04-FIX3: priorWorkDir=null + baseCommit='' → 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    await expect(prepareWorkdir(
+      issue, "ff000003-aaaa", runnerRoot, null,
+      { taskBranch: null, targetBranch: null, baseCommit: "" },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor|空字符串|纯空白/i);
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "ff000003"))).toBe(false);
+  });
+
+  it("A04-FIX3: priorWorkDir 存在 + 三项齐全但 taskBranch='' → 明确失败,不进入 Resume", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "11223344-ffff", runnerRoot, null);
+    await expect(prepareWorkdir(
+      issue, "55667788-eeee", runnerRoot, first.workDir,
+      { taskBranch: "", targetBranch: "main", baseCommit: first.baseCommit },
+    )).rejects.toThrow(/空字符串|纯空白|sha|sha1|40/i);
+  });
+
+  it("A04-FIX3: priorWorkDir 存在 + 三项齐全但 targetBranch='' → 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "11223344-ffff", runnerRoot, null);
+    await expect(prepareWorkdir(
+      issue, "55667788-eeee", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: "", baseCommit: first.baseCommit },
+    )).rejects.toThrow(/空字符串|纯空白/i);
+  });
+
+  it("A04-FIX3: priorWorkDir 存在 + 三项齐全但 baseCommit='' → 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "11223344-ffff", runnerRoot, null);
+    await expect(prepareWorkdir(
+      issue, "55667788-eeee", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: "" },
+    )).rejects.toThrow(/sha|sha1|40/i);
+  });
+
+  it("A04-FIX3: priorWorkDir 存在 + 三项齐全但 targetBranch='  '(纯空白)→ 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "11223344-ffff", runnerRoot, null);
+    await expect(prepareWorkdir(
+      issue, "55667788-eeee", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: "   ", baseCommit: first.baseCommit },
+    )).rejects.toThrow(/空字符串|纯空白/i);
+  });
+});
+
+describe("A04-FIX3 · 空字符串锚点状态矩阵(无 repo_path 普通目录任务)", () => {
+  it("A04-FIX3: 无 repo_path + taskBranch='' → 明确失败,不得创建普通目录", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix3-norepo-"));
+    const issue = { repo_path: null } as Issue;
+    await expect(prepareWorkdir(
+      issue, "aa00bb00-cccc", runnerRoot, priorDir,
+      { taskBranch: "", targetBranch: null, baseCommit: null },
+    )).rejects.toThrow(/无 repo_path|saved.*anchor|Git.*锚点|空字符串/i);
+  });
+
+  it("A04-FIX3: 无 repo_path + targetBranch='' → 明确失败,不得创建普通目录", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix3-norepo-"));
+    const issue = { repo_path: null } as Issue;
+    await expect(prepareWorkdir(
+      issue, "aa00bb00-cccc", runnerRoot, priorDir,
+      { taskBranch: null, targetBranch: "", baseCommit: null },
+    )).rejects.toThrow(/无 repo_path|saved.*anchor|Git.*锚点|空字符串/i);
+  });
+
+  it("A04-FIX3: 无 repo_path + baseCommit='' → 明确失败,不得创建普通目录", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix3-norepo-"));
+    const issue = { repo_path: null } as Issue;
+    await expect(prepareWorkdir(
+      issue, "aa00bb00-cccc", runnerRoot, priorDir,
+      { taskBranch: null, targetBranch: null, baseCommit: "" },
+    )).rejects.toThrow(/无 repo_path|saved.*anchor|Git.*锚点|空字符串/i);
+  });
+
+  it("A04-FIX3: 无 repo_path 失败时不得在 runnerRoot 下创建新 worktree 目录", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix3-norepo-"));
+    const issue = { repo_path: null } as Issue;
+    await expect(prepareWorkdir(
+      issue, "aa00bb00-cccc", runnerRoot, priorDir,
+      { taskBranch: "", targetBranch: null, baseCommit: null },
+    )).rejects.toThrow();
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "aa00bb00"))).toBe(false);
+  });
+});
+
+describe("A04-FIX3 · 正常回归(确保 A04-FIX2 行为不被破坏)", () => {
+  it("A04-FIX3: Git 任务 prior=null + 三 anchor 全 null → 合法 fresh", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const prepared = await prepareWorkdir(issue, "abcdef00-1111", runnerRoot, null, {
+      taskBranch: null, targetBranch: null, baseCommit: null,
+    });
+    expect(prepared.resumed).toBe(false);
+    expect(prepared.taskBranch).toBe("task/abcdef00");
+  });
+
+  it("A04-FIX3: Git 任务 prior 存在 + 完整合法 SavedAnchors + 同仓库 + 分支一致 → Resume 成功", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "abcdef00-2222", runnerRoot, null);
+    const second = await prepareWorkdir(
+      issue, "abcdef00-3333", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    );
+    expect(second.resumed).toBe(true);
+    expect(second.workDir).toBe(first.workDir);
+    expect(second.taskBranch).toBe(first.taskBranch);
+  });
+
+  it("A04-FIX3: 无 repo_path + prior=null + 三 anchor 全 null → 创建普通目录,三 anchor 全 null", async () => {
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: null } as Issue;
+    const prepared = await prepareWorkdir(issue, "abcdef00-4444", runnerRoot, null, {
+      taskBranch: null, targetBranch: null, baseCommit: null,
+    });
+    expect(prepared.taskBranch).toBeNull();
+    expect(prepared.targetBranch).toBeNull();
+    expect(prepared.baseCommit).toBeNull();
+    expect(prepared.resumed).toBe(false);
+    expect(fs.existsSync(prepared.workDir)).toBe(true);
+  });
+
+  it("A04-FIX3: 无 repo_path + prior 存在 + 三 anchor 全 null → 复用目录,resumed=true", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix3-prior-"));
+    fs.writeFileSync(path.join(priorDir, "leftover.txt"), "keep");
+    const issue = { repo_path: null } as Issue;
+    const prepared = await prepareWorkdir(issue, "abcdef00-5555", runnerRoot, priorDir, {
+      taskBranch: null, targetBranch: null, baseCommit: null,
+    });
+    expect(prepared.workDir).toBe(priorDir);
+    expect(prepared.resumed).toBe(true);
+    expect(prepared.taskBranch).toBeNull();
+    expect(fs.existsSync(path.join(prepared.workDir, "leftover.txt"))).toBe(true);
   });
 });

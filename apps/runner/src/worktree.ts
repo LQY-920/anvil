@@ -65,35 +65,87 @@ export async function ensureGitAvailable(): Promise<void> {
 //        priorWorkDir 与 issue.repo_path 同仓库,worktree 分支 === saved taskBranch。
 //     C. 非法矛盾:上述条件任一不满足 → 任何 git worktree add / Start 之前明确失败。
 //  8. 无 repo_path 普通目录任务不得携带任何 saved Git anchor(防止忽略异常锚点)。
+//
+// A04-FIX3 · 仓库身份精度 + 空字符串锚点严格化:
+//  9. 仓库身份 dev/ino 必须直接从 fs.statSync(path, { bigint: true }) 取得,
+//     不得先取普通 fs.Stats 再 BigInt(number) 转换(Windows 上 inode 会丢失精度)。
+// 10. 仓库身份比较规则:同规范路径 ⇒ 相同;不同路径 + 两边都是 0n/0n ⇒ 不同;
+//     不同路径 + 精确非零 dev/ino 相同 ⇒ 相同;其余 ⇒ 不同。
+// 11. stat 必须作用于真实可访问的路径;小写化与长路径前缀归一化只能用于比较字符串。
+// 12. hasAnySavedAnchor / areAllAnchorsPresent 严格按 null/undefined 判断,
+//     空字符串视为"已提供但非法",后续必须按格式校验失败。
 // =============================================================================
 
 const SHA1_40 = /^[0-9a-f]{40}$/i;
 
 // -----------------------------------------------------------------------------
-// A04-FIX2 · 路径规范化与 Git common directory 读取
+// A04-FIX3 · 路径规范化与仓库身份比较(纯函数,可独立测试)
 // -----------------------------------------------------------------------------
+
+/**
+ * Windows 路径纯字符串归一(用于比较展示,绝不直接喂给 fs.statSync):
+ *  - 去除 `\\?\` 长路径前缀;
+ *  - 把 `\\?\UNC\<server>\<share>\...` 还原成 `<server>\<share>\...` 形式的 UNC 路径,
+ *    **保留开头的双反斜杠**,不能错误地变成 `UNC\...`;
+ *  - 统一大小写(NTFS 不区分大小写)和分隔符。
+ *
+ * 非 Windows 平台(或 `win32Mode=false`):不主动小写,只把分隔符归一为 POSIX。
+ * 显式 `win32Mode` 是为让非 Windows 跑测时可以覆盖 Windows 行为,防止平台差异掩盖 bug。
+ */
+export function canonicalizePathForCompare(p: string, win32Mode: boolean = process.platform === "win32"): string {
+  if (win32Mode) {
+    let s = p;
+    if (s.startsWith("\\\\?\\UNC\\")) {
+      // 形如 \\?\UNC\server\share\repo\.git  →  \\server\share\repo\.git
+      s = `\\\\${s.slice("\\\\?\\UNC\\".length)}`;
+    } else if (s.startsWith("\\\\?\\")) {
+      s = s.slice("\\\\?\\".length);
+    }
+    s = s.replace(/\//g, "\\");
+    return s.toLowerCase();
+  }
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * 真实路径 stat:必须作用于真实可访问的路径,不得先 lowercase 再 stat。
+ * 返回值直接来自 fs.statSync 的 BigIntStats,保留 dev/ino 完整精度。
+ */
+function statBigInt(existingPath: string): fs.BigIntStats {
+  try {
+    return fs.statSync(existingPath, { bigint: true });
+  } catch (e: any) {
+    throw new Error(`无法 stat 路径 (${existingPath}): ${e?.message ?? e}`);
+  }
+}
+
+/**
+ * 把任意路径解析为真实可访问的绝对路径(realpath 解析符号链接与 `.`/`..`),
+ * stat 阶段必须使用此返回值(避免小写化或长路径归一破坏 stat)。
+ */
+export function resolveRealPath(p: string): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    // 路径可能不存在/无权限访问,fall back 到绝对路径
+    return abs;
+  }
+}
 
 /**
  * 把任意路径转成稳定可比较的规范形式:
  *  - path.resolve 取得绝对路径
  *  - fs.realpathSync 解析符号链接
- *  - Windows 去掉 `\\?\` 长路径前缀并小写(NTFS 不区分大小写)
+ *  - Windows 去掉 `\\?\` 长路径前缀并小写(NTFS 不区分大小写),UNC 根保留双反斜杠
  *  - POSIX 保持原样(区分大小写)
  * 失败时(如路径不存在)回退到绝对路径,不抛错。
+ *
+ * 重要:此函数返回的是**字符串**,仅用于比较与错误展示。
+ * 任何需要 stat 的调用方都应当先拿 `resolveRealPath` 取得真实路径,再 stat。
  */
 export function canonicalizeFsPath(p: string): string {
-  let abs = path.resolve(p);
-  try {
-    abs = fs.realpathSync(abs);
-  } catch {
-    // 路径可能不存在/无权限访问,fall back 到绝对路径
-  }
-  if (process.platform === "win32") {
-    let s = abs;
-    if (s.startsWith("\\\\?\\")) s = s.slice(4);
-    return s.toLowerCase();
-  }
-  return abs;
+  return canonicalizePathForCompare(resolveRealPath(p));
 }
 
 /**
@@ -102,9 +154,15 @@ export function canonicalizeFsPath(p: string): string {
  * 大小写差异、符号链接等场景的可靠比对。
  *
  * 失败抛错(由调用方收敛);不修改任何缓存/远程状态。
+ *
+ * A04-FIX3 关键不变量:dev/ino 直接来自 `fs.statSync(path, { bigint: true })`,
+ * 不得先取普通 fs.Stats 再 BigInt(number) 转换(Windows inode 可能超过
+ * Number.MAX_SAFE_INTEGER,普通 stat 已丢精度)。
  */
 export interface GitCommonDirId {
-  /** canonicalizeFsPath 之后的路径字符串,仅用于错误信息展示。 */
+  /** 真实可访问的 common dir 绝对路径(用于 stat,绝不带小写化与长路径归一)。 */
+  realPath: string;
+  /** canonicalizeFsPath 之后的路径字符串,仅用于比较与错误信息展示。 */
   path: string;
   /** volume serial(Windows) / dev(POSIX),统一为 bigint 便于比较。 */
   dev: bigint;
@@ -112,21 +170,38 @@ export interface GitCommonDirId {
   ino: bigint;
 }
 
+/**
+ * A04-FIX3 · 仓库身份比较规则(纯函数,可独立测试):
+ *  1. 两侧 canonicalize 后的 path 相同 ⇒ 视为相同(允许 dev/ino 任意,包括 0n/0n);
+ *  2. 两侧 path 不同 + 两边都是 dev=0n 且 ino=0n ⇒ 视为不同(0n/0n 不能跨路径匹配);
+ *  3. 两侧 path 不同 + 精确相等的非零 dev/ino ⇒ 视为相同(8.3 / 符号链接 / 长路径别名);
+ *  4. 其余(任意 dev/ino 不一致)⇒ 视为不同。
+ *
+ * 注意:不得仅根据 (dev, ino) 判断仓库相同;也不得把两个 (0n, 0n) 的不同路径判定为同一仓库。
+ */
+export function reposEqualById(a: GitCommonDirId, b: GitCommonDirId): boolean {
+  // 1. 规范路径相同 ⇒ 一定相同
+  if (a.path === b.path) return true;
+  // 2. 不同路径 + 两边都 0n/0n ⇒ 不能判同(可能是完全不相关的目录,stat 拿不到文件标识)
+  if (a.dev === 0n && a.ino === 0n) return false;
+  if (b.dev === 0n && b.ino === 0n) return false;
+  // 3. 不同路径 + 精确非零 dev/ino 相同 ⇒ 相同(Windows 长路径/8.3/符号链接别名)
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
 export async function readGitCommonDir(repoDir: string): Promise<GitCommonDirId> {
   const out = await git(repoDir, ["rev-parse", "--git-common-dir"]);
-  const resolved = canonicalizeFsPath(path.resolve(repoDir, out.trim()));
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(resolved);
-  } catch (e: any) {
-    throw new Error(`无法 stat git common dir (${resolved}): ${e?.message ?? e}`);
-  }
-  return { path: resolved, dev: BigInt(stat.dev), ino: BigInt(stat.ino) };
+  // 关键顺序:先解析真实可访问的路径,再对真实路径 stat,最后才生成用于比较的规范化字符串。
+  // 反过来(先 canonicalize 再 stat)会让 lowercase 与长路径归一破坏 stat 行为。
+  const realPath = resolveRealPath(path.resolve(repoDir, out.trim()));
+  const stat = statBigInt(realPath);
+  const comparePath = canonicalizeFsPath(realPath);
+  return { realPath, path: comparePath, dev: stat.dev, ino: stat.ino };
 }
 
 /**
  * 验证 priorWorkDir 所属 Git 仓库与 issue.repo_path 一致:
- *  - 本地仓库:分别读两者的 git common directory 的 (dev,ino),相等才算同仓库。
+ *  - 本地仓库:分别读两者的 git common directory 的身份,通过 `reposEqualById` 比较。
  *  - URL 仓库:推导 issue.repo_path 对应的本地缓存目录 <cache>/.git,与 priorWorkDir 的 common dir 比对。
  * 不得执行 fetch / merge / 任何改变状态的操作,也不得修改 target/base。
  * 不一致 → 抛错(由 executeTask 收敛为 fail)。
@@ -148,16 +223,10 @@ export async function assertResumeRepository(
   let expected: GitCommonDirId;
   if (isRepoUrl(issueRepoPath)) {
     const cacheDir = repoCachePath(issueRepoPath, runnerRoot);
-    const expectedPath = canonicalizeFsPath(path.join(cacheDir, ".git"));
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(expectedPath);
-    } catch (e: any) {
-      throw new Error(
-        `Resume 身份校验失败:URL ${issueRepoPath} 对应缓存 ${expectedPath} 不存在或不可访问: ${e?.message ?? e}`,
-      );
-    }
-    expected = { path: expectedPath, dev: BigInt(stat.dev), ino: BigInt(stat.ino) };
+    // URL 缓存目录先 resolveRealPath,得到真实路径(可能还未存在则回退到绝对路径)
+    const realCacheGit = resolveRealPath(path.join(cacheDir, ".git"));
+    const stat = statBigInt(realCacheGit);
+    expected = { realPath: realCacheGit, path: canonicalizeFsPath(realCacheGit), dev: stat.dev, ino: stat.ino };
   } else {
     try {
       expected = await readGitCommonDir(issueRepoPath);
@@ -165,8 +234,8 @@ export async function assertResumeRepository(
       throw new Error(`Resume 身份校验失败:issue.repo_path 不是有效 Git 仓库(${issueRepoPath}): ${e?.message ?? e}`);
     }
   }
-  // 跨 Windows 8.3 短路径/长路径、大小写、符号链接的可靠比对:用 (dev, ino) 文件标识。
-  if (prior.dev !== expected.dev || prior.ino !== expected.ino) {
+  // 通过 reposEqualById 综合路径与 dev/ino 判定同仓库
+  if (!reposEqualById(prior, expected)) {
     throw new Error(
       `Resume 仓库与 Issue repo_path 不一致:priorWorkDir=${priorWorkDir} 属于 ${prior.path} (dev=${prior.dev},ino=${prior.ino}),` +
       `而 issue.repo_path=${issueRepoPath} 指向 ${expected.path} (dev=${expected.dev},ino=${expected.ino})`,
@@ -275,15 +344,20 @@ async function resolveUrlRepoAnchors(cacheDir: string): Promise<{ targetBranch: 
  *      仓库身份一致 + worktree 分支 === saved taskBranch → resumed=true。
  *   C. 非法矛盾(任何一条不满足,执行任何 git worktree add / Start 之前明确抛错):
  *      C1. priorWorkDir 非空但目录不存在;
- *      C2. priorWorkDir 非空但 savedAnchors 缺任意一项;
- *      C3. priorWorkDir 为空但 savedAnchors 任意一项非空;
- *      C4. savedAnchors 部分非空(只传 1~2 项);
+ *      C2. priorWorkDir 非空但 savedAnchors 缺任意一项(null/undefined);
+ *      C3. priorWorkDir 为空但 savedAnchors 任意一项"已提供"(包括空字符串);
+ *      C4. savedAnchors 部分"已提供"(只传 1~2 项,空字符串也算已提供);
  *      C5. priorWorkDir 所属仓库与 issue.repo_path 不一致;
  *      C6. saved taskBranch 与实际 worktree 分支不一致;
  *      C7. saved baseCommit 非完整 40 位 hex;
- *      C8. saved taskBranch/targetBranch 为空或非字符串。
+ *      C8. saved taskBranch/targetBranch 是空字符串或纯空白。
  *   D. 无 repo_path 普通目录:priorWorkDir 复用 + 不要求 Git 锚点;
- *      若 Task 携带任何 saved Git anchor → 明确失败(不得忽略异常锚点)。 */
+ *      若 Task 携带任何 saved Git anchor(含空字符串)→ 明确失败(不得忽略异常锚点)。
+ *
+ *  A04-FIX3 · 空字符串/纯空白严格化:
+ *   - hasAnySavedAnchor / areAllAnchorsPresent 严格按 null/undefined 判断,
+ *     空字符串视为"已提供但非法",后续会被 C3/C4/C7/C8 拦截。
+ *   - 任何 anchor 是空字符串或纯空白字符串,执行任何 git worktree add / Start 之前明确失败。 */
 export async function prepareWorkdir(
   issue: Issue,
   taskId: string,
@@ -359,16 +433,18 @@ export async function prepareWorkdir(
     );
   }
 
-  // 此时 savedAnchors 三项均为非空字符串,做格式校验
-  // C8 · taskBranch/targetBranch 不得为空字符串
+  // 此时 savedAnchors 三项"均已提供"(非 null/undefined),做格式校验。
+  // 注意:空字符串在这里被视作非法值,不会因为 allAnchorsPresent=true 而跳过校验。
+  // C8 · taskBranch/targetBranch 不得为空字符串或纯空白字符串
   if (!savedAnchors!.taskBranch!.trim() || !savedAnchors!.targetBranch!.trim()) {
     throw new Error(
-      "Resume saved Git 锚点含空字符串" +
+      "Resume saved Git 锚点含空字符串或纯空白" +
       ` (taskBranch=${JSON.stringify(savedAnchors!.taskBranch)},` +
-      ` targetBranch=${JSON.stringify(savedAnchors!.targetBranch)})`,
+      ` targetBranch=${JSON.stringify(savedAnchors!.targetBranch)},` +
+      ` baseCommit=${JSON.stringify(savedAnchors!.baseCommit)})`,
     );
   }
-  // C7 · baseCommit 必须为完整 40 位 hex
+  // C7 · baseCommit 必须为完整 40 位 hex(空字符串在此被严格拒绝)
   assertFullSha1("saved baseCommit", savedAnchors!.baseCommit!);
 
   // C5 · 仓库身份校验:priorWorkDir 与 issue.repo_path 必须指向同一 Git common dir
@@ -403,14 +479,23 @@ export async function prepareWorkdir(
   };
 }
 
-/** savedAnchors 任一项非 null 视为"有锚点"——用于 C3 / C4 / D 守卫。 */
-function hasAnySavedAnchor(a: SavedAnchors | null | undefined): boolean {
-  return !!(a && (a.taskBranch || a.targetBranch || a.baseCommit));
+/** A04-FIX3 · 单字段"已提供"判定:严格按 null/undefined,空字符串视为已提供但非法。 */
+export function isAnchorProvided(value: string | null | undefined): boolean {
+  return value !== null && value !== undefined;
 }
 
-/** savedAnchors 三项全部非空字符串视为"齐全"——用于 B / C2 校验。 */
-function areAllAnchorsPresent(a: SavedAnchors | null | undefined): boolean {
-  return !!(a && a.taskBranch && a.targetBranch && a.baseCommit);
+/** savedAnchors 任一项不是 null/undefined 视为"已提供"——用于 C3 / C4 / D 守卫。
+ *  注意:空字符串也算"已提供",后续 prepareWorkdir 会按格式校验拒绝。 */
+export function hasAnySavedAnchor(a: SavedAnchors | null | undefined): boolean {
+  if (!a) return false;
+  return isAnchorProvided(a.taskBranch) || isAnchorProvided(a.targetBranch) || isAnchorProvided(a.baseCommit);
+}
+
+/** savedAnchors 三项都不是 null/undefined 视为"齐全"——用于 B / C2 校验。
+ *  "齐全"只表示字段存在,不代表合法,后续还要继续做 trim / 40 位 SHA / 仓库身份 / 分支校验。 */
+export function areAllAnchorsPresent(a: SavedAnchors | null | undefined): boolean {
+  if (!a) return false;
+  return isAnchorProvided(a.taskBranch) && isAnchorProvided(a.targetBranch) && isAnchorProvided(a.baseCommit);
 }
 
 /** A · 全新 Git worktree:从当前 issue.repo_path 拉默认分支 + baseCommit,创建 task/<shortId>。 */
