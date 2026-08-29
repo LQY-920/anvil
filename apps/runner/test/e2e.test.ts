@@ -61,7 +61,7 @@ it("create issue → daemon claims → completes end to end", async () => {
     providers: [{ provider: "kimi", version: "e2e" }],
     pollMs: 50,
     heartbeatMs: 1000,
-    executor: (pkg) => executeTask({ client, backend: fakeBackend, runnerRoot, cancelPollMs: 100 }, pkg),
+    executor: (pkg) => executeTask({ client, backend: fakeBackend, runnerRoot, cancelPollMs: 100, daemonId: 'e2e-daemon' }, pkg),
   });
   await daemon.start();
 

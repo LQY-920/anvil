@@ -19,7 +19,8 @@ async function main() {
     providers,
     pollMs: 10_000,
     heartbeatMs: 15_000,
-    executor: (pkg) => executeTask({ client, backend, runnerRoot: cfg.runnerRoot }, pkg),
+    // A03 · 显式把 cfg.daemonId 传给 executor,不能从 process.env 读取
+    executor: (pkg) => executeTask({ client, backend, runnerRoot: cfg.runnerRoot, daemonId: cfg.daemonId }, pkg),
   });
   await daemon.start();
   console.log(`anvil runner started: daemon=${cfg.daemonId}, providers=${providers.map((p) => p.provider).join(",")}`);

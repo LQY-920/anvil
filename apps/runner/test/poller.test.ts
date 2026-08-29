@@ -101,7 +101,7 @@ describe("daemon poller", () => {
       daemonId: "d-test",
       providers: [{ provider: "kimi", version: "test" }],
       pollMs: 50, heartbeatMs: 1000,
-      executor: (pkg) => executeTask({ client, backend, runnerRoot, cancelPollMs: 50 }, pkg),
+      executor: (pkg) => executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId: 'd-test' }, pkg),
     });
     await daemon.start();
     await new Promise((r) => setTimeout(r, 300)); // 等任务被 claim 并 spawn

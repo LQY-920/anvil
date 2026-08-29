@@ -124,9 +124,9 @@ describe("constant sets are exact", () => {
     expect(VERIFICATION_POLICY_SCHEMA_VERSION).toBe(1);
   });
 
-  it("ANVIL_ERROR_CODE_VALUES is exactly the 8 PRD machine codes", () => {
+  it("ANVIL_ERROR_CODE_VALUES is exactly the 9 PRD machine codes", () => {
     expect([...ANVIL_ERROR_CODE_VALUES].sort()).toEqual([
-      "base_mismatch", "idempotency_conflict", "invalid_schema", "invalid_transition",
+      "base_mismatch", "idempotency_conflict", "invalid_git_anchor", "invalid_schema", "invalid_transition",
       "invalid_verification", "payload_too_large", "runtime_ownership_mismatch", "task_not_active",
     ]);
   });

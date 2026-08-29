@@ -43,8 +43,8 @@ describe("claim/start broadcasts", () => {
     const spy = vi.spyOn(app.hub, "broadcast");
     const s = await app.inject({
       method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
-      headers: { authorization: `Bearer ${pkg.task_token}` },
-      payload: { work_dir: "/tmp/w1" },
+      headers: { authorization: `Bearer ${daemonToken}` },
+      payload: { daemon_id: "d1", work_dir: "/tmp/w1" },
     });
     expect(s.statusCode).toBe(200);
     expect(spy).toHaveBeenCalledWith({

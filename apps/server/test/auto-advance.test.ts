@@ -38,7 +38,7 @@ describe("issue status auto-advance", () => {
   it("start: todo → in_progress，写 system 评论并广播 issue.updated", async () => {
     const pkg = await claimOne();
     const spy = vi.spyOn(app.hub, "broadcast");
-    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     expect(s.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("in_progress");
@@ -51,7 +51,7 @@ describe("issue status auto-advance", () => {
   it("start: blocked 不动", async () => {
     setIssueStatus("blocked");
     const pkg = await claimOne();
-    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     expect(s.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("blocked");
@@ -61,7 +61,7 @@ describe("issue status auto-advance", () => {
   it("start: in_review 不动", async () => {
     setIssueStatus("in_review");
     const pkg = await claimOne();
-    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     expect(s.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("in_review");
@@ -70,9 +70,9 @@ describe("issue status auto-advance", () => {
 
   it("complete 有 branch: in_progress → in_review", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     const spy = vi.spyOn(app.hub, "broadcast");
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { branch: "task/abc", diff_stat: "2 files changed" }, pkg.task_token);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "task/abc", diff_stat: "2 files changed" }, daemonToken);
     expect(c.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("in_review");
@@ -83,7 +83,7 @@ describe("issue status auto-advance", () => {
 
   it("complete 有 branch: todo → in_review，且不写 delivered_at", async () => {
     const pkg = await claimOne();
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { branch: "task/abc" }, pkg.task_token);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "task/abc" }, daemonToken);
     expect(c.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("in_review");
@@ -96,8 +96,8 @@ describe("issue status auto-advance", () => {
 
   it("complete 无 branch 不动", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { diff_stat: "no branch" }, pkg.task_token);
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", diff_stat: "no branch" }, daemonToken);
     expect(c.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("in_progress");
@@ -107,7 +107,7 @@ describe("issue status auto-advance", () => {
   it("complete 有 branch 但 issue 为 done 不动", async () => {
     const pkg = await claimOne();
     setIssueStatus("done");
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { branch: "task/abc" }, pkg.task_token);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "task/abc" }, daemonToken);
     expect(c.statusCode).toBe(200);
     const detail = await issueDetail();
     expect(detail.issue.status).toBe("done");

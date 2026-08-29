@@ -200,6 +200,7 @@ export interface DeliveryQueryResponse {
  *  route 在内部验证失败时把原因放进 `details` 字段;本联合是公开 API 的契约。 */
 export type AnvilErrorCode =
   | "invalid_schema"
+  | "invalid_git_anchor"
   | "payload_too_large"
   | "invalid_verification"
   | "runtime_ownership_mismatch"
@@ -211,6 +212,7 @@ export type AnvilErrorCode =
 /** 公开 `AnvilErrorCode` 的运行时值集合(供测试与运行时校验使用)。 */
 export const ANVIL_ERROR_CODE_VALUES: readonly AnvilErrorCode[] = [
   "invalid_schema",
+  "invalid_git_anchor",
   "payload_too_large",
   "invalid_verification",
   "runtime_ownership_mismatch",

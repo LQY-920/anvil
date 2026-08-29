@@ -11,6 +11,8 @@ export interface ExecutorDeps {
   client: ApiClient;
   backend: AgentBackend;
   runnerRoot: string;
+  /** A03-FIX · daemonId:Runner 配置显式传入,不能从 Agent 环境或全局读取。必填。 */
+  daemonId: string;
   idleTimeoutMs?: number;  // 默认 30min（spec §6：idle watchdog）
   cancelPollMs?: number;   // 默认 5s
 }
@@ -75,13 +77,14 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
 
 /** 单任务完整旅程：准备目录 → start → spawn → 流式上报 → complete/fail。任何异常收敛为 fail 上报，绝不外抛。 */
 export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise<void> {
-  const { client, backend } = deps;
+  const { client, backend, daemonId } = deps;
   const { task, issue, prior_work_dir, task_token } = pkg;
   let workDir: string | null = null;
   try {
     const prepared = await prepareWorkdir(issue, task.id, deps.runnerRoot, prior_work_dir);
     workDir = prepared.workDir;
-    await client.startTask(task.id, task_token, workDir);
+    // A03 · start / complete / fail 使用 daemon token + body.daemon_id,不再传 task_token
+    await client.startTask(task.id, daemonId, workDir);
 
     // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
     const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
@@ -108,7 +111,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
     let session = backend.execute(execOpts);
 
-    // 取消轮询：server 端终态 → 杀进程组
+    // 取消轮询：server 端终态 → 杀进程组(task plane 继续用 task token)
     const cancelTimer = setInterval(async () => {
       try {
         const st = await client.taskStatus(task.id, task_token);
@@ -171,26 +174,71 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
             pushed = false;
           }
         }
-        await client.complete(task.id, task_token, {
-          branch: prepared.branch ?? undefined,
-          diff_stat: diffStat || undefined,
-          work_dir: workDir,
-          ...(pushed === undefined ? {} : { pushed }),
-          ...(delivered ? {} : { undelivered: true }),
-        });
+        // A03-FIX · complete 失败(transport 耗尽 / 4xx)不构造新 fail,记录脱敏日志并结束:
+        // "终态回执不确定"——可能是 server 已写入但响应丢失,重复 fail 反而会污染状态。
+        try {
+          await client.complete(task.id, daemonId, {
+            branch: prepared.branch ?? undefined,
+            diff_stat: diffStat || undefined,
+            work_dir: workDir,
+            ...(pushed === undefined ? {} : { pushed }),
+            ...(delivered ? {} : { undelivered: true }),
+          });
+        } catch (e: any) {
+          // 不外抛;不构造新的 fail payload。日志脱敏(不打印 token / Authorization / 完整响应)
+          const status = typeof e?.status === "number" ? e.status : "transport";
+          const msg = String(e?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+          console.error(`[anvil-executor] task ${task.id} complete terminal receipt uncertain (${status}):`, msg);
+          // 安全结束,不外抛
+          return;
+        }
       } else if (result.status === "cancelled") {
         // server 已置 cancelled，不再上报
       } else if (result.status === "timeout") {
-        await client.fail(task.id, task_token, "idle_timeout", result.error ?? "idle watchdog", workDir);
+        // A03 · fail 用 daemon token
+        try {
+          await client.fail(task.id, daemonId, "idle_timeout", result.error ?? "idle watchdog", workDir);
+        } catch (e: any) {
+          // fail 自身失败:记录脱敏日志,安全结束,不外抛
+          const status = typeof e?.status === "number" ? e.status : "transport";
+          const msg = String(e?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+          console.error(`[anvil-executor] task ${task.id} fail ${status} after timeout:`, msg);
+        }
       } else {
         const reason = result.error?.includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
-        await client.fail(task.id, task_token, reason, result.error ?? `exit ${result.exitCode}`, workDir);
+        try {
+          await client.fail(task.id, daemonId, reason, result.error ?? `exit ${result.exitCode}`, workDir);
+        } catch (e: any) {
+          const status = typeof e?.status === "number" ? e.status : "transport";
+          const msg = String(e?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+          console.error(`[anvil-executor] task ${task.id} fail ${status} after spawn:`, msg);
+        }
       }
     } finally {
       clearInterval(cancelTimer);
     }
   } catch (e: any) {
-    const reason = String(e?.message ?? "").includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
-    await client.fail(task.id, task_token, reason, String(e?.message ?? e), workDir ?? undefined).catch(() => {});
+    // A03-FIX · 任何 catch 都不外抛:executeTask 必须收敛,poller 不应被影响
+    if (e && typeof e.status === "number" && e.status >= 400) {
+      // start 4xx / 完整 v2 状态路由错误:best-effort 调 fail,失败后吞掉并记录
+      const status = e.status;
+      const msg = String(e?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+      console.error(`[anvil-executor] task ${pkg.task.id} start ${status}:`, msg);
+      try {
+        await client.fail(pkg.task.id, daemonId, "non_zero_exit", `start rejected: ${status}`, workDir ?? undefined);
+      } catch (e2: any) {
+        const msg2 = String(e2?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+        console.error(`[anvil-executor] task ${pkg.task.id} best-effort fail also failed:`, msg2);
+      }
+    } else {
+      // spawn / 5xx 耗尽 / transport:try fail,失败后吞掉
+      const reason = String(e?.message ?? "").includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
+      try {
+        await client.fail(pkg.task.id, daemonId, reason, String(e?.message ?? e), workDir ?? undefined);
+      } catch (e2: any) {
+        const msg2 = String(e2?.message ?? "").replace(/Bearer\s+[A-Za-z0-9_-]+/g, "Bearer ***");
+        console.error(`[anvil-executor] task ${pkg.task.id} fail after spawn/5xx also failed:`, msg2);
+      }
+    }
   }
 }

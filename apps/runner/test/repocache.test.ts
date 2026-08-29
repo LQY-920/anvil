@@ -163,7 +163,7 @@ describe("executeTask with repo URL", () => {
         };
       },
     };
-    await executeTask({ client: daemonClient, backend: success, runnerRoot, cancelPollMs: 50 }, pkg);
+    await executeTask({ client: daemonClient, backend: success, runnerRoot, cancelPollMs: 50, daemonId: 'd1' }, pkg);
 
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("completed");

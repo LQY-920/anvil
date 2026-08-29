@@ -29,20 +29,23 @@ const tpost = (url: string, payload: unknown, token: string) =>
 describe("task lifecycle", () => {
   it("start → running; complete → completed with result", async () => {
     const pkg = await claimOne();
-    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    // A03: start / complete 改用 daemon token,body 必须带 daemon_id
+    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     expect(s.statusCode).toBe(200);
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { branch: "task/abc", diff_stat: "2 files changed", work_dir: "/tmp/w1" }, pkg.task_token);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "task/abc", diff_stat: "2 files changed", work_dir: "/tmp/w1" }, daemonToken);
     expect(c.statusCode).toBe(200);
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("completed");
     expect(got.json().task.work_dir).toBe("/tmp/w1");
+    // A03: 用 task token 调 complete 必须 401/403
     const again = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, {}, pkg.task_token);
-    expect(again.statusCode).toBe(401);
+    expect([401, 403]).toContain(again.statusCode);
   });
 
   it("fail creates retry child until max_attempts", async () => {
     const pkg = await claimOne();
-    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { failure_reason: "non_zero_exit", error: "exit 1" }, pkg.task_token);
+    // A03: fail 改用 daemon token
+    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { daemon_id: "d1", failure_reason: "non_zero_exit", error: "exit 1" }, daemonToken);
     expect(f.statusCode).toBe(200);
     const tasks = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
     expect(tasks.json()).toHaveLength(2);
@@ -53,7 +56,7 @@ describe("task lifecycle", () => {
     app.db.$client.prepare(`UPDATE tasks SET attempt = 3, max_attempts = 3 WHERE id = ?`).run(child.id);
     const pkg2 = await claimOne();
     expect(pkg2.task.id).toBe(child.id);
-    await tpost(`/api/daemon/tasks/${pkg2.task.id}/fail`, { failure_reason: "non_zero_exit", error: "exit 1" }, pkg2.task_token);
+    await tpost(`/api/daemon/tasks/${pkg2.task.id}/fail`, { daemon_id: "d1", failure_reason: "non_zero_exit", error: "exit 1" }, daemonToken);
     const tasks2 = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
     expect(tasks2.json()).toHaveLength(2);
   });
@@ -68,8 +71,9 @@ describe("task lifecycle", () => {
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("queued");
     expect(got.json().task.attempt).toBe(2); // 重派计入 attempt，防无限重派
-    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/x" }, pkg.task_token);
-    expect(s.statusCode).toBe(401);
+    // A03: 租约清扫后用 task token 调 start 必失败
+    const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/x" }, pkg.task_token);
+    expect([401, 403]).toContain(s.statusCode);
     const pkg2 = await claimOne();
     expect(pkg2.task.id).toBe(pkg.task.id);
   });
@@ -91,9 +95,11 @@ describe("task lifecycle", () => {
 
   it("cancel from web sets cancelled; runner status endpoint reflects it", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    // A03: start 改用 daemon token
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     const res = await app.inject({ method: "POST", url: `/api/tasks/${pkg.task.id}/cancel` });
     expect(res.statusCode).toBe(200);
+    // status 端点继续用 task token(保持 A01 行为)
     const st = await app.inject({ method: "GET", url: `/api/daemon/tasks/${pkg.task.id}/status`, headers: { authorization: `Bearer ${pkg.task_token}` } });
     expect([200, 401]).toContain(st.statusCode);
     if (st.statusCode === 200) expect(st.json().status).toBe("cancelled");
@@ -103,7 +109,8 @@ describe("task lifecycle", () => {
 
   it("agent callback moves issue to in_review and writes timeline", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    // A03: start 改用 daemon token;issue-status 仍用 task token
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     const res = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "in_review", note: "做完了，请 review" }, pkg.task_token);
     expect(res.statusCode).toBe(200);
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issueId}` });
@@ -115,7 +122,7 @@ describe("task lifecycle", () => {
 
   it("delivery endpoint: false before issue-status callback, true after", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     const tget = (url: string, token: string) =>
       app.inject({ method: "GET", url, headers: { authorization: `Bearer ${token}` } });
     const before = await tget(`/api/daemon/tasks/${pkg.task.id}/delivery`, pkg.task_token);
@@ -129,12 +136,13 @@ describe("task lifecycle", () => {
 
   it("skips retry child when a pending task already exists for the issue", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    // A03: start/fail 改用 daemon token
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     // running 期间手动 rerun：由于父任务已离开 queued/dispatched，索引放行，产生第二条 pending
     const rerun = await app.inject({ method: "POST", url: `/api/issues/${issueId}/rerun` });
     expect([201, 409]).toContain(rerun.statusCode);
     // 父任务失败：不应 500，且不应产生第三条任务
-    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { failure_reason: "non_zero_exit", error: "exit 1" }, pkg.task_token);
+    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { daemon_id: "d1", failure_reason: "non_zero_exit", error: "exit 1" }, daemonToken);
     expect(f.statusCode).toBe(200);
     const tasks = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
     expect(tasks.json().length).toBeLessThanOrEqual(2);
@@ -143,7 +151,7 @@ describe("task lifecycle", () => {
 
   it("cancelled task token cannot advance issue status", async () => {
     const pkg = await claimOne();
-    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { work_dir: "/tmp/w1" }, pkg.task_token);
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     await app.inject({ method: "POST", url: `/api/tasks/${pkg.task.id}/cancel` });
     const res = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "done" }, pkg.task_token);
     expect(res.statusCode).toBe(400);

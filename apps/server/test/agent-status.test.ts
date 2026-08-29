@@ -51,7 +51,7 @@ describe("agent status reflects real work", () => {
     const [pkg] = await claim();
     expect(pkg).toBeTruthy();
     expect(await agentStatus()).toBe("working");
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { branch: "b" }, pkg.task_token);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "b" }, daemonToken);
     expect(c.statusCode).toBe(200);
     expect(await agentStatus()).toBe("idle");
   });
@@ -62,16 +62,16 @@ describe("agent status reflects real work", () => {
     const pkgs = await claim(2);
     expect(pkgs).toHaveLength(2);
     expect(await agentStatus()).toBe("working");
-    await tpost(`/api/daemon/tasks/${pkgs[0].task.id}/complete`, {}, pkgs[0].task_token);
+    await tpost(`/api/daemon/tasks/${pkgs[0].task.id}/complete`, { daemon_id: "d1" }, daemonToken);
     expect(await agentStatus()).toBe("working");
-    await tpost(`/api/daemon/tasks/${pkgs[1].task.id}/complete`, {}, pkgs[1].task_token);
+    await tpost(`/api/daemon/tasks/${pkgs[1].task.id}/complete`, { daemon_id: "d1" }, daemonToken);
     expect(await agentStatus()).toBe("idle");
   });
 
   it("fail with retry child (queued) sets agent back to idle", async () => {
     const [pkg] = await claim();
     expect(await agentStatus()).toBe("working");
-    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { failure_reason: "non_zero_exit", error: "exit 1" }, pkg.task_token);
+    const f = await tpost(`/api/daemon/tasks/${pkg.task.id}/fail`, { daemon_id: "d1", failure_reason: "non_zero_exit", error: "exit 1" }, daemonToken);
     expect(f.statusCode).toBe(200);
     // 重试子任务是 queued，不算 running
     expect(await agentStatus()).toBe("idle");
