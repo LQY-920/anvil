@@ -474,6 +474,17 @@ function syncAgentIdle(db: Db, agentId: string) {
  * 原子认领：候选按 priority DESC, created_at ASC 排序；
  * 逐个用单条 UPDATE ... WHERE status='queued' 判赢（better-sqlite3 同步执行 + SQLite 单写者，
  * 语义等价 FOR UPDATE SKIP LOCKED）。认领前检查 agent 并发上限。
+ *
+ * A04-FIX1 · 跨 Task 锚点接力:
+ *  - Git 仓库任务:优先读 prior Task 的 task_branch / target_branch / base_commit,
+ *    全部完整且合法时,在认领 UPDATE 中一并 SET 到当前 Task;prior_work_dir 一并下发。
+ *    当前 Task 已存锚点与 prior 一致时允许补齐缺失字段;不一致则拒绝继承
+ *    (prior_work_dir 也不下发,Runner 走 fresh worktree 路径)。
+ *  - 无 repo_path 普通目录任务:prior_work_dir 正常下发,三锚点保持 null,不要求继承。
+ *  - 历史 v1 prior(有 work_dir 但缺完整锚点):不向 Runner 返回该 prior_work_dir,
+ *    不猜测锚点,新 Task 走 fresh worktree。
+ *  - 锚点继承绝不能复制 head_commit / verification_status / verification_run_id /
+ *    任何 payload hash 或 response JSON 等完成证据。
  */
 export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTasks: number): TaskPackage[] {
   const providers = (db.$client
@@ -502,18 +513,69 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
     const taskToken = `atk_${crypto.randomBytes(24).toString("hex")}`;
     const lease = new Date(Date.now() + LEASE_MS).toISOString();
     const now = new Date().toISOString();
+    // A04-FIX1 · 读 prior Task 的 Git 锚点(只为判定继承,不当成完成证据使用)。
+    // 故意只 SELECT 锚点字段,不读 head_commit / verification_* / 任何 hash / response_json:
+    // 这些是完成证据,本次认领不得复制。
+    const prior = db.$client
+      .prepare(`SELECT work_dir, task_branch, target_branch, base_commit
+                FROM tasks WHERE issue_id = ? AND id != ? AND work_dir IS NOT NULL
+                ORDER BY created_at DESC LIMIT 1`)
+      .get(cand.issue_id, cand.id) as any;
+
+    // 计算继承决策:issue.repo_path 决定本次任务是 Git 还是普通目录
+    const issueForType = getIssue(db, cand.issue_id);
+    const issueHasRepo = !!issueForType?.repo_path;
+    let priorWorkDir: string | null = null;
+    let inheritTaskBranch: string | null = null;
+    let inheritTargetBranch: string | null = null;
+    let inheritBaseCommit: string | null = null;
+
+    if (prior?.work_dir) {
+      if (!issueHasRepo) {
+        // A · 无 repo_path 普通目录任务:prior_work_dir 正常下发,三锚点保持 null
+        priorWorkDir = prior.work_dir;
+      } else {
+        // B · Git 仓库任务:必须 prior 三锚点齐全才继承
+        const tBranch = typeof prior.task_branch === "string" && prior.task_branch.length > 0 ? prior.task_branch : null;
+        const tgBranch = typeof prior.target_branch === "string" && prior.target_branch.length > 0 ? prior.target_branch : null;
+        const bCommit = typeof prior.base_commit === "string" && isValidGitSha1Hex40(prior.base_commit) ? prior.base_commit.toLowerCase() : null;
+        if (tBranch && tgBranch && bCommit) {
+          // 当前 cand 已有锚点必须与 prior 一致,否则不继承
+          const curBranch = typeof cand.task_branch === "string" && cand.task_branch.length > 0 ? cand.task_branch : null;
+          const curTg = typeof cand.target_branch === "string" && cand.target_branch.length > 0 ? cand.target_branch : null;
+          const curBase = typeof cand.base_commit === "string" && isValidGitSha1Hex40(cand.base_commit) ? cand.base_commit.toLowerCase() : null;
+          const branchOk = curBranch == null || curBranch === tBranch;
+          const tgOk = curTg == null || curTg === tgBranch;
+          const baseOk = curBase == null || curBase === bCommit;
+          if (branchOk && tgOk && baseOk) {
+            priorWorkDir = prior.work_dir;
+            inheritTaskBranch = tBranch;
+            inheritTargetBranch = tgBranch;
+            inheritBaseCommit = bCommit;
+          }
+          // 任一不一致 → priorWorkDir 保持 null,Runner 走 fresh worktree
+        }
+        // C · prior 锚点不全(任一 null 或 base_commit 非 40 位)→ 历史 v1 兼容,不下发 prior_work_dir
+      }
+    }
+
+    // 原子认领:同一 UPDATE 同时写 status 与继承的三个锚点(全部继承时才会写)
+    const setInherit = inheritTaskBranch != null
+      ? `, task_branch=?, target_branch=?, base_commit=?`
+      : "";
+    const updateParams: any[] = [runtime.id, sha256Hex(taskToken), lease, now];
+    if (inheritTaskBranch != null) {
+      updateParams.push(inheritTaskBranch, inheritTargetBranch, inheritBaseCommit);
+    }
+    updateParams.push(cand.id);
     const res = db.$client
-      .prepare(`UPDATE tasks SET status='dispatched', runtime_id=?, task_token_hash=?, lease_expires_at=?, dispatched_at=?
+      .prepare(`UPDATE tasks SET status='dispatched', runtime_id=?, task_token_hash=?, lease_expires_at=?, dispatched_at=?${setInherit}
                 WHERE id=? AND status='queued'`)
-      .run(runtime.id, sha256Hex(taskToken), lease, now, cand.id);
+      .run(...updateParams);
     if (res.changes !== 1) continue; // 被别人抢先
     db.$client.prepare(`UPDATE agents SET status='working' WHERE id = ?`).run(cand.agent_id);
 
-    // 同 issue 上一次完成任务的 work_dir，用于会话连续性
-    const prior = db.$client
-      .prepare(`SELECT work_dir FROM tasks WHERE issue_id = ? AND id != ? AND work_dir IS NOT NULL
-                ORDER BY created_at DESC LIMIT 1`)
-      .get(cand.issue_id, cand.id) as any;
+    // 重新读取以反映继承后的真实状态(anchors 已落库)
     const task = getTask(db, cand.id)!;
     const issue = getIssue(db, cand.issue_id)!;
     // issue 最近 10 条评论随任务包下发（组 prompt 用）；rowid 作 created_at 同毫秒的决胜序，返回反转为时间正序
@@ -521,7 +583,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
       .prepare(`SELECT author_type, body, created_at FROM comments WHERE issue_id = ?
                 ORDER BY created_at DESC, rowid DESC LIMIT 10`)
       .all(cand.issue_id) as TaskComment[]).reverse();
-    out.push({ task, issue, prior_work_dir: prior?.work_dir ?? null, task_token: taskToken, comments });
+    out.push({ task, issue, prior_work_dir: priorWorkDir, task_token: taskToken, comments });
   }
   return out;
 }
@@ -547,12 +609,15 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
     db.$client
       .prepare(`INSERT INTO tasks
                 (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                 parent_task_id, delivery_contract_version, target_branch, base_commit, created_at)
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`)
+                 parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(newId(), task.workspace_id, task.issue_id, task.agent_id,
            task.priority, task.attempt + 1, task.max_attempts,
            task.id, DELIVERY_CONTRACT_CURRENT_VERSION,
-           task.target_branch, task.base_commit, now);
+           // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
+           // 不得覆盖已有的不一致锚点,也不得继承 head_commit / verification_* /
+           // 任何 payload hash / response_json 等完成证据。
+           task.task_branch, task.target_branch, task.base_commit, now);
     addComment(db, task.issue_id, {
       author_type: "system", author_id: "system", type: "system",
       body: `任务失败(${reason}),自动重试 ${task.attempt + 1}/${task.max_attempts}`,
@@ -991,12 +1056,14 @@ export function runFailInTransaction(
         db.$client
           .prepare(`INSERT INTO tasks
                     (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                     parent_task_id, delivery_contract_version, target_branch, base_commit, created_at)
-                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`)
+                     parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(newId(), cur.workspace_id, cur.issue_id, cur.agent_id,
                cur.priority, cur.attempt + 1, cur.max_attempts,
                cur.id, DELIVERY_CONTRACT_CURRENT_VERSION,
-               cur.target_branch, cur.base_commit, now);
+               // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
+               // 不得继承 head_commit / verification_* / 任何 hash / response_json。
+               cur.task_branch, cur.target_branch, cur.base_commit, now);
         addComment(db, cur.issue_id, {
           author_type: "system", author_id: "system", type: "system",
           body: `任务失败(${persisted.failure_reason}),自动重试 ${cur.attempt + 1}/${cur.max_attempts}`,

@@ -171,12 +171,16 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
           }
         }
         if (!delivered) console.error(`[anvil-executor] task ${task.id} completed undelivered after ${followups} follow-up(s)`);
-        // A04 · 固定 base..head 范围:Git 任务先读当前完整 HEAD 作为 headCommit(完整 40 位),
-        // 再以 prepared.baseCommit..headCommit 计算 diff_stat;Agent 已 commit 后 git diff HEAD 通常为空,
-        // 旧实现会用空 diff 误导,必须改用已固化的 base..head。无 repo_path 任务 diff_stat 为空。
+        // A04-FIX1 · 固定 base..head 范围 + 分支身份验证:
+        // 1) readWorktreeHead 会先确认当前分支 === prepared.taskBranch,detached HEAD 或切到其他分支
+        //    都会明确抛错,落到下方 catch 收敛为 fail(不会发送 complete);
+        // 2) 分支身份确认后再读完整 40 位 SHA,非 40 位同样抛错;
+        // 3) 失败时整个 executeTask 由 catch 块负责 fail 上报,不外抛;
+        // 4) Agent 已 commit 后 git diff HEAD 通常为空,所以 diff 必须用 base..head。
+        // 无 repo_path 任务 diff_stat 为空。
         let diffStat = "";
         if (prepared.baseCommit != null) {
-          const headCommit = await readWorktreeHead(workDir); // 校验 40 位,非 40 位抛错
+          const headCommit = await readWorktreeHead(workDir, prepared.taskBranch);
           diffStat = await gitDiffStat(workDir, prepared.baseCommit, headCommit);
         }
         // URL 仓库:把任务分支推回远程,server 验收合并时用。推送失败不阻断 complete(分支仍在本地缓存)。

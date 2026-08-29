@@ -116,4 +116,44 @@ describe("comment-driven tasks", () => {
     expect(pkg.task.id).toBe(res.trigger.task_id);
     expect(pkg.comments.some((c: any) => c.body === "接着把边界情况补一下" && c.author_type === "member")).toBe(true);
   });
+
+  // -------------------------------------------------------------------------
+  // A04-FIX1 · 评论接力产生的 queued Task 本身不带锚点,锚点由 claimTasks 在认领时继承。
+  // 验证:enqueueForComment 产出的 Task 的三个 Git 锚点必须为 null(不在入队阶段写入)。
+  // -------------------------------------------------------------------------
+  it("A04-FIX1: 评论接力的 queued Task 三 Git 锚点保持 null(不在入队阶段写入)", async () => {
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId });
+    app.db.prepare(`UPDATE tasks SET status='failed', failure_reason='non_zero_exit'`).run();
+    const res = await postComment(issue.id);
+    expect(res.trigger.enqueued).toBe(true);
+    const queuedTaskId = res.trigger.task_id;
+    // 从数据库直接读取 queued Task
+    const row = app.db.$client.prepare(`SELECT task_branch, target_branch, base_commit FROM tasks WHERE id=?`).get(queuedTaskId) as any;
+    expect(row.task_branch).toBeNull();
+    expect(row.target_branch).toBeNull();
+    expect(row.base_commit).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // A04-FIX1 · 评论接力后,无 repo_path 任务的 prior_work_dir 正常下发,三锚点保持 null。
+  // -------------------------------------------------------------------------
+  it("A04-FIX1: 无 repo_path + 评论接力,claim 后 prior_work_dir 下发且三 Git 锚点保持 null", async () => {
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId });
+    // 把默认 task 设为 completed + 设 work_dir,模拟"上一次执行留下 work_dir"且已结束
+    app.db.prepare(`UPDATE tasks SET status='completed', work_dir=? WHERE issue_id=?`).run("/tmp/prev-work", issue.id);
+    // 评论接力
+    const res = await postComment(issue.id, "接着改");
+    expect(res.trigger.enqueued).toBe(true);
+    // claim
+    const claim = await app.inject({ method: "POST", url: "/api/daemon/claim", headers: auth(), payload: { daemon_id: "d1" } });
+    const pkg = claim.json().tasks[0];
+    expect(pkg).toBeTruthy();
+    expect(pkg.task.id).toBe(res.trigger.task_id);
+    // 关键:prior_work_dir 必须下发
+    expect(pkg.prior_work_dir).toBe("/tmp/prev-work");
+    // 三 Git 锚点保持 null(无 repo_path 不继承)
+    expect(pkg.task.task_branch).toBeNull();
+    expect(pkg.task.target_branch).toBeNull();
+    expect(pkg.task.base_commit).toBeNull();
+  });
 });

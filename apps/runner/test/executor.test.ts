@@ -729,3 +729,380 @@ describe("executor · A04 Git anchors & fixed diff", () => {
     expect(task.base_commit).toMatch(/^[0-9a-f]{40}$/i);
   });
 });
+
+// =============================================================================
+// A04-FIX1 · 执行期间分支漂移:detached HEAD / 切换到其他分支 → 不发 complete,改走 fail
+// =============================================================================
+
+describe("executor · A04-FIX1 branch drift", () => {
+  async function setupGitIssue() {
+    const { client, url, daemonId, daemonToken } = await setup();
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-drift-repo-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: `bot-drift-${Date.now()}`, provider: "kimi" } })).json();
+    const i = (await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "drift 任务", assignee_type: "agent", assignee_id: a.id, repo_path: repo },
+    })).json();
+    const claim = await client.claim("d1", 5);
+    const pkg = claim.tasks.find((t: any) => t.issue.id === i.id)!;
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-drift-runner-"));
+    return { client, url, daemonId, daemonToken, runnerRoot, repo, pkg };
+  }
+
+  /** Agent 行为:execute 时主动切换 worktree 分支(模拟 Agent 跑完后切换了分支)。 */
+  function makeDriftBackend(action: "detach" | "switchBranch" | "normal", label: string): AgentBackend {
+    let didDrift = false;
+    return {
+      provider: "kimi",
+      execute(opts) {
+        const cwd = opts.workDir;
+        try {
+          execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+          execFileSync("git", ["config", "user.name", "t"], { cwd });
+          if (action === "detach") {
+            const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+            execFileSync("git", ["checkout", "--detach", head], { cwd });
+            didDrift = true;
+          } else if (action === "switchBranch") {
+            const other = `other/${label}`;
+            try {
+              execFileSync("git", ["checkout", "-b", other], { cwd });
+            } catch {
+              execFileSync("git", ["checkout", other], { cwd });
+            }
+            fs.writeFileSync(path.join(cwd, `${label}.txt`), `${label} drift`);
+            execFileSync("git", ["add", "-A"], { cwd });
+            execFileSync("git", ["commit", "-m", `${label} drift commit`], { cwd });
+            didDrift = true;
+          } else {
+            // 正常:在 task/<short> 分支上 commit
+            fs.writeFileSync(path.join(cwd, `${label}.txt`), `${label} change`);
+            execFileSync("git", ["add", "-A"], { cwd });
+            execFileSync("git", ["commit", "-m", `${label} commit`], { cwd });
+          }
+        } catch (e) {
+          // 测试断言会反映错误
+        }
+        return {
+          messages: (async function* () { yield { type: "text", content: `drifted=${didDrift}` }; })(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+  }
+
+  it("A04-FIX1: Agent 执行后 worktree 进入 detached HEAD → 不发 complete,改走 fail,executeTask resolve", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    let completeCalls = 0;
+    let failCalls = 0;
+    const failBodies: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      if (url.includes("/complete")) { completeCalls++; return okJson({ ok: true, task_id: pkg.task.id, status: "completed" }); }
+      if (url.includes("/fail")) { failCalls++; if (init?.body) failBodies.push(init.body as string); return okJson({ ok: true, task_id: pkg.task.id, status: "failed" }); }
+      return okJson({});
+    });
+    try {
+      await expect(executeTask({ client, backend: makeDriftBackend("detach", "d1"), runnerRoot, cancelPollMs: 50, daemonId }, pkg))
+        .resolves.toBeUndefined();
+      // 关键:complete 调用次数必须为 0
+      expect(completeCalls).toBe(0);
+      // fail 至少 1 次(包含 detached HEAD 错误)
+      expect(failCalls).toBeGreaterThan(0);
+      // 失败原因应反映 detached
+      const allErr = failBodies.join("\n");
+      expect(allErr).toMatch(/detached/i);
+    } finally { restore(); }
+  });
+
+  it("A04-FIX1: Agent 切到其他分支(HEAD 仍是合法 40 位 SHA) → 不发 complete,改走 fail", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    let completeCalls = 0;
+    let failCalls = 0;
+    const failBodies: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      if (url.includes("/complete")) { completeCalls++; return okJson({ ok: true, task_id: pkg.task.id, status: "completed" }); }
+      if (url.includes("/fail")) { failCalls++; if (init?.body) failBodies.push(init.body as string); return okJson({ ok: true, task_id: pkg.task.id, status: "failed" }); }
+      return okJson({});
+    });
+    try {
+      await expect(executeTask({ client, backend: makeDriftBackend("switchBranch", "s1"), runnerRoot, cancelPollMs: 50, daemonId }, pkg))
+        .resolves.toBeUndefined();
+      // 关键:complete 调用次数必须为 0
+      expect(completeCalls).toBe(0);
+      // fail 至少 1 次
+      expect(failCalls).toBeGreaterThan(0);
+      const allErr = failBodies.join("\n");
+      expect(allErr).toMatch(/branch|taskBranch|mismatch|不一致/i);
+    } finally { restore(); }
+  });
+
+  it("A04-FIX1: 正常留在 prepared.taskBranch → complete 正常发送,既有 A04 行为不回归", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    let completeCalls = 0;
+    let capturedComplete: any = null;
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      if (url.includes("/complete")) {
+        completeCalls++;
+        capturedComplete = JSON.parse(init.body as string);
+        return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      }
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: makeDriftBackend("normal", "n1"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      expect(completeCalls).toBe(1);
+      expect(capturedComplete).not.toBeNull();
+      expect(capturedComplete.branch).toBe(`task/${pkg.task.id.slice(0, 8)}`);
+      expect(capturedComplete.diff_stat).toContain("n1.txt");
+    } finally { restore(); }
+  });
+});
+
+// =============================================================================
+// A04-FIX1 · ApiClient.startTask 锚点 all-or-none 严格校验
+//   - 三锚点齐全 → 精确六字段 v2 Start
+//   - 三锚点全空(null / 不传)→ 精确两字段兼容 Start
+//   - 任何部分锚点 / 空 branch / 非 40 位 base_commit → 抛错,fetch 不调用
+//   - 合法 Start 的 transport retry 复用同一序列化 payload
+// =============================================================================
+
+describe("ApiClient · A04-FIX1 start anchor validation", () => {
+  function makeClient(): { client: ApiClient; baseUrl: string } {
+    const baseUrl = "http://127.0.0.1:0";
+    return { client: new ApiClient(baseUrl, "anv_dummy"), baseUrl };
+  }
+
+  it("三锚点齐全 → 精确六字段 v2 Start (task_branch/target_branch/base_commit/delivery_contract_version=2)", async () => {
+    const { client } = makeClient();
+    const seen: { url: string; body: string } = { url: "", body: "" };
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: any, init: any) => {
+      seen.url = typeof input === "string" ? input : input.url ?? String(input);
+      seen.body = init?.body as string;
+      return new Response(JSON.stringify({ ok: true, task_id: "t1", status: "running" }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      await client.startTask("t1", "d1", "/tmp/w", {
+        taskBranch: "task/abcd1234", targetBranch: "main",
+        baseCommit: "0123456789abcdef0123456789abcdef01234567",
+      });
+      expect(seen.url).toContain("/api/daemon/tasks/t1/start");
+      const body = JSON.parse(seen.body);
+      expect(body).toEqual({
+        daemon_id: "d1", work_dir: "/tmp/w",
+        task_branch: "task/abcd1234",
+        target_branch: "main",
+        base_commit: "0123456789abcdef0123456789abcdef01234567",
+        delivery_contract_version: 2,
+      });
+    } finally { spy.mockRestore(); }
+  });
+
+  it("anchors=null → 精确两字段兼容 Start,只含 daemon_id + work_dir", async () => {
+    const { client } = makeClient();
+    const seen: { url: string; body: string } = { url: "", body: "" };
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: any, init: any) => {
+      seen.url = typeof input === "string" ? input : input.url ?? String(input);
+      seen.body = init?.body as string;
+      return new Response(JSON.stringify({ ok: true, task_id: "t1", status: "running" }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      await client.startTask("t1", "d1", "/tmp/w", null);
+      const body = JSON.parse(seen.body);
+      expect(body).toEqual({ daemon_id: "d1", work_dir: "/tmp/w" });
+      // 不得含有 v2 字段
+      expect(body.task_branch).toBeUndefined();
+      expect(body.target_branch).toBeUndefined();
+      expect(body.base_commit).toBeUndefined();
+      expect(body.delivery_contract_version).toBeUndefined();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("anchors={全 null} → 精确两字段兼容 Start", async () => {
+    const { client } = makeClient();
+    const seen: { url: string; body: string } = { url: "", body: "" };
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: any, init: any) => {
+      seen.url = typeof input === "string" ? input : input.url ?? String(input);
+      seen.body = init?.body as string;
+      return new Response(JSON.stringify({ ok: true, task_id: "t1", status: "running" }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      await client.startTask("t1", "d1", "/tmp/w", { taskBranch: null, targetBranch: null, baseCommit: null });
+      const body = JSON.parse(seen.body);
+      expect(body).toEqual({ daemon_id: "d1", work_dir: "/tmp/w" });
+    } finally { spy.mockRestore(); }
+  });
+
+  it("只传 taskBranch(部分锚点) → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: "task/abcd", targetBranch: null, baseCommit: null });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      // 错误信息列的是缺失字段(targetBranch, baseCommit),不是已传的 taskBranch
+      const msg = String(thrown.message);
+      expect(msg).toContain("targetBranch");
+      expect(msg).toContain("baseCommit");
+      expect(msg).toContain("缺失");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("只传 targetBranch/baseCommit(部分锚点) → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: null, targetBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567" });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      // 错误信息列的是缺失字段(taskBranch)
+      const msg = String(thrown.message);
+      expect(msg).toContain("taskBranch");
+      expect(msg).toContain("缺失");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("taskBranch 为 null 但 target/baseCommit 有值 → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: null, targetBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567" });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("taskBranch");
+      expect(String(thrown.message)).toContain("缺失");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("空字符串 taskBranch → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: "   ", targetBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567" });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("taskBranch");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("空字符串 targetBranch → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: "task/abcd", targetBranch: "", baseCommit: "0123456789abcdef0123456789abcdef01234567" });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("targetBranch");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("非 40 位 baseCommit(短 SHA) → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", { taskBranch: "task/abcd", targetBranch: "main", baseCommit: "abc123" });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("baseCommit");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("非 40 位 baseCommit(全 40 字符但含非法字符) → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", {
+          taskBranch: "task/abcd", targetBranch: "main",
+          baseCommit: "g".repeat(40),
+        });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("baseCommit");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("非 40 位 baseCommit(40 字符但不是 hex) → 抛错,fetch 0 次", async () => {
+    const { client } = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("fetch should not be called");
+    });
+    try {
+      let thrown: any = null;
+      try {
+        await client.startTask("t1", "d1", "/tmp/w", {
+          taskBranch: "task/abcd", targetBranch: "main",
+          baseCommit: "z".repeat(40),
+        });
+      } catch (e: any) { thrown = e; }
+      expect(thrown).not.toBeNull();
+      expect(String(thrown.message)).toContain("baseCommit");
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("opWithRetry 对合法 Start 仍复用同一个序列化 payload (transport error → 同 body 重试)", async () => {
+    const { client } = makeClient();
+    const seen: string[] = [];
+    let callCount = 0;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: any, init: any) => {
+      seen.push(init?.body as string);
+      callCount++;
+      if (callCount === 1) throw new Error("ECONNRESET transport");
+      return new Response(JSON.stringify({ ok: true, task_id: "t1", status: "running" }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      await client.startTask("t1", "d1", "/tmp/w", {
+        taskBranch: "task/abcd", targetBranch: "main",
+        baseCommit: "0123456789abcdef0123456789abcdef01234567",
+      });
+      expect(callCount).toBeGreaterThanOrEqual(2);
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i]).toBe(seen[0]);
+      }
+    } finally { spy.mockRestore(); }
+  });
+});

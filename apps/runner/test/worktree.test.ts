@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { ensureGitAvailable, git, prepareWorkdir, gitDiffStat } from "../src/worktree.js";
+import { ensureGitAvailable, git, prepareWorkdir, gitDiffStat, readWorktreeHead } from "../src/worktree.js";
 import type { Issue } from "@anvil/core";
 
 const SHA1_40 = /^[0-9a-f]{40}$/i;
@@ -234,5 +234,136 @@ describe("worktree", () => {
     // 同一 base 同样的 head,结果稳定
     const stat2 = await gitDiffStat(prepared.workDir, prepared.baseCommit!, head);
     expect(stat2).toBe(stat);
+  });
+
+  // ---------------------------------------------------------------------------
+  // A04-FIX1 · 无 repo_path 普通目录任务 + prior_work_dir 存在 → 复用,无需锚点
+  // ---------------------------------------------------------------------------
+  it("A04-FIX1: 无 repo_path + prior_work_dir 存在 + null SavedAnchors → 复用,resumed=true,三锚点全 null", async () => {
+    const runnerRoot = tmpRoot();
+    // 任意一个已存在的目录(可以是非 Git 目录,模拟普通目录任务之前的 prior)
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-prior-"));
+    fs.writeFileSync(path.join(priorDir, "leftover.txt"), "from previous task");
+
+    const issue = { repo_path: null } as Issue;
+    // savedAnchors 完全不传
+    const prepared = await prepareWorkdir(issue, "abcdef99-0000", runnerRoot, priorDir, null);
+    expect(prepared.workDir).toBe(priorDir);
+    expect(prepared.resumed).toBe(true);
+    expect(prepared.taskBranch).toBeNull();
+    expect(prepared.targetBranch).toBeNull();
+    expect(prepared.baseCommit).toBeNull();
+    // prior 目录的内容没有被改写
+    expect(fs.existsSync(path.join(prepared.workDir, "leftover.txt"))).toBe(true);
+    // 即便传入全 null 的 SavedAnchors,行为一致
+    const prepared2 = await prepareWorkdir(
+      issue, "abcdef99-0001", runnerRoot, priorDir,
+      { taskBranch: null, targetBranch: null, baseCommit: null },
+    );
+    expect(prepared2.workDir).toBe(priorDir);
+    expect(prepared2.resumed).toBe(true);
+    expect(prepared2.taskBranch).toBeNull();
+    expect(prepared2.targetBranch).toBeNull();
+    expect(prepared2.baseCommit).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // A04-FIX1 · Git 任务 resume:用真实 saved 锚点 + 实际分支一致 → 成功
+  // ---------------------------------------------------------------------------
+  it("A04-FIX1: Git 任务 resume + 完整 SavedAnchors + 实际分支一致 → 成功复用 workDir", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd-task", runnerRoot, null);
+    expect(first.taskBranch).toBe("task/12345678");
+
+    // 模拟 server 端已经把锚点写进 task row:完整三锚点
+    const second = await prepareWorkdir(
+      issue, "87654321-ffff-task", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    );
+    expect(second.resumed).toBe(true);
+    expect(second.workDir).toBe(first.workDir);
+    expect(second.taskBranch).toBe(first.taskBranch);
+    expect(second.targetBranch).toBe(first.targetBranch);
+    expect(second.baseCommit).toBe(first.baseCommit);
+  });
+
+  // ---------------------------------------------------------------------------
+  // A04-FIX1 · Git 任务 resume:缺 target/base → 显式失败,不得从目标分支 HEAD 猜测
+  // ---------------------------------------------------------------------------
+  it("A04-FIX1: Git 任务 resume 缺 target_branch/base_commit → 显式失败,不得猜测", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd-task", runnerRoot, null);
+
+    // target_branch 缺失
+    await expect(prepareWorkdir(
+      issue, "87654321-ffff-task", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: null, baseCommit: first.baseCommit },
+    )).rejects.toThrow(/anchor|target_branch/i);
+    // base_commit 缺失
+    await expect(prepareWorkdir(
+      issue, "87654321-ffff-task", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: null },
+    )).rejects.toThrow(/anchor|base_commit/i);
+  });
+});
+
+// =============================================================================
+// A04-FIX1 · readWorktreeHead 必须验证分支身份 + 完整 40 位 SHA
+// =============================================================================
+
+describe("readWorktreeHead", () => {
+  function seedWorktreeRepo(): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-rwh-repo-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    return repo;
+  }
+
+  it("A04-FIX1: worktree 处于 detached HEAD → readWorktreeHead 明确失败,即使不传 expectedTaskBranch", async () => {
+    const repo = seedWorktreeRepo();
+    // 切到 detached HEAD
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+    execFileSync("git", ["checkout", "--detach", head], { cwd: repo });
+    await expect(readWorktreeHead(repo)).rejects.toThrow(/detached/i);
+  });
+
+  it("A04-FIX1: worktree 当前分支 != expectedTaskBranch → readWorktreeHead 明确失败,即使 HEAD 是合法 SHA", async () => {
+    const repo = seedWorktreeRepo();
+    // 当前是 main,先建一个 task/other 分支然后切过去
+    execFileSync("git", ["checkout", "-b", "task/other"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "b.txt"), "x");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "other change"], { cwd: repo });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+    expect(head).toMatch(SHA1_40);
+    // 期望 task/expected,但实际是 task/other → 必须失败
+    await expect(readWorktreeHead(repo, "task/expected")).rejects.toThrow(/branch|mismatch|taskBranch/i);
+  });
+
+  it("A04-FIX1: worktree 当前分支 === expectedTaskBranch → readWorktreeHead 返回完整 40 位 SHA", async () => {
+    const repo = seedWorktreeRepo();
+    execFileSync("git", ["checkout", "-b", "task/abc12345"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "c.txt"), "x");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "change"], { cwd: repo });
+    const head = await readWorktreeHead(repo, "task/abc12345");
+    expect(head).toMatch(SHA1_40);
+    // 同一分支,git rev-parse 出来的 SHA 必须与 readWorktreeHead 一致
+    const direct = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+    expect(head).toBe(direct);
+  });
+
+  it("A04-FIX1: readWorktreeHead 不传 expectedTaskBranch → 仅校验 40 位 SHA,detached 失败,正常分支成功", async () => {
+    const repo = seedWorktreeRepo();
+    const head = await readWorktreeHead(repo);
+    expect(head).toMatch(SHA1_40);
   });
 });

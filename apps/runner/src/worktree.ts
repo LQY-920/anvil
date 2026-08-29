@@ -79,8 +79,30 @@ export async function readFullShaOfRef(repoDir: string, ref: string): Promise<st
   return assertFullSha1(`ref ${ref}`, out);
 }
 
-/** 读取当前 worktree HEAD 的完整 40 位 SHA-1。detached/非 SHA-1 都会失败。 */
-export async function readWorktreeHead(workDir: string): Promise<string> {
+/**
+ * A04-FIX1 · 读取并验证当前 worktree HEAD:完成阶段先确认分支身份,再读完整 40 位 SHA。
+ *
+ * 关键不变量(代替旧版仅 `git rev-parse HEAD` 的实现):
+ *  1. detached HEAD 必须明确失败,不得把"HEAD"当作合法分支;
+ *  2. 若 `expectedTaskBranch` 非空,当前分支必须与之一致(防止 Agent 切换到其他分支后仍上报 complete);
+ *  3. 只有分支身份通过后,才读 HEAD SHA 并校验完整 40 位 hex;
+ *  4. 任何失败都抛 Error(由 executeTask 的 catch 收敛为 fail 路径,不会进入 complete)。
+ *
+ * 注意:不得用 `prepared.taskBranch` 对应 ref 的 SHA 代替工作树当前 HEAD —— 必须同时
+ * 验证"工作树实际所在分支"和"工作树实际 HEAD SHA",避免 ref 解算绕过工作树被切换的现场。
+ */
+export async function readWorktreeHead(workDir: string, expectedTaskBranch?: string | null): Promise<string> {
+  // 1. 先读当前明确分支,detached HEAD 立即失败
+  const abbrev = await git(workDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = abbrev.trim();
+  if (!branch || branch === "HEAD") {
+    throw new Error(`worktree 处于 detached HEAD,无法读取交付 HEAD(${workDir})`);
+  }
+  // 2. 若传入了期望分支,必须一致(防止 Agent 切换到其他分支后上报)
+  if (expectedTaskBranch != null && expectedTaskBranch !== "" && branch !== expectedTaskBranch) {
+    throw new Error(`worktree 当前分支 ${branch} 与 prepared.taskBranch ${expectedTaskBranch} 不一致,放弃 complete`);
+  }
+  // 3. 分支身份确认后再读完整 40 位 SHA
   const out = await git(workDir, ["rev-parse", "HEAD"]);
   return assertFullSha1("worktree HEAD", out);
 }
@@ -127,7 +149,10 @@ async function resolveUrlRepoAnchors(cacheDir: string): Promise<{ targetBranch: 
 }
 
 /** A04 · 备工作区:Git 任务返回 taskBranch/targetBranch/baseCommit + resumed;
- *  普通目录任务三锚点全 null。detached HEAD、缺失锚点、非法 SHA 一律明确失败。 */
+ *  普通目录任务三锚点全 null。detached HEAD、缺失锚点、非法 SHA 一律明确失败。
+ *
+ *  A04-FIX1 · A:无 repo_path + prior_work_dir 存在 → 直接复用目录,三锚点全 null,
+ *  不要求 SavedAnchors,不伪造 Git 锚点,不因目录不是 Git 仓库而失败。 */
 export async function prepareWorkdir(
   issue: Issue,
   taskId: string,
@@ -136,31 +161,38 @@ export async function prepareWorkdir(
   savedAnchors: SavedAnchors | null = null,
 ): Promise<PreparedWorkdir> {
   await ensureGitAvailable();
-  if (priorWorkDir && fs.existsSync(priorWorkDir)) {
-    // Resume:worktree 已存在,读实际分支(不能是 HEAD)+ Task 已保存锚点。
-    return await resumeWorkdir(priorWorkDir, savedAnchors);
-  }
-  // 首次准备:先确保有 workDir,再视 repo_path 决定是否建 worktree。
+  // 第一次决定 workDir 来源(复用 vs 新建)
   const short = taskId.slice(0, 8);
   const base = path.join(runnerRoot, "worktrees");
   fs.mkdirSync(base, { recursive: true });
-  const dir = path.join(base, short);
+  const freshDir = path.join(base, short);
+
+  // A04-FIX1 · A:无 repo_path 普通目录任务 —— 复用 prior 目录不要求 Git 锚点
   if (!issue.repo_path) {
-    // 普通目录任务:不得伪造 Git 锚点
-    fs.mkdirSync(dir, { recursive: true });
-    return { workDir: dir, taskBranch: null, targetBranch: null, baseCommit: null, resumed: false };
+    if (priorWorkDir && fs.existsSync(priorWorkDir)) {
+      return { workDir: priorWorkDir, taskBranch: null, targetBranch: null, baseCommit: null, resumed: true };
+    }
+    // 首次普通目录任务:创建空目录,不伪造 Git 锚点
+    fs.mkdirSync(freshDir, { recursive: true });
+    return { workDir: freshDir, taskBranch: null, targetBranch: null, baseCommit: null, resumed: false };
   }
+
+  // Git 仓库任务 —— prior 存在则按锚点 resume,否则新建 worktree
+  if (priorWorkDir && fs.existsSync(priorWorkDir)) {
+    return await resumeWorkdir(priorWorkDir, savedAnchors);
+  }
+
   const taskBranch = `task/${short}`;
   if (isRepoUrl(issue.repo_path)) {
     const cacheDir = await ensureRepoCache(issue.repo_path, runnerRoot);
     const { targetBranch, baseCommit } = await resolveUrlRepoAnchors(cacheDir);
     // worktree 必须从已固化的 baseCommit 创建,不在多个命令之间重新读取浮动的 HEAD
-    await git(cacheDir, ["worktree", "add", "-b", taskBranch, dir, baseCommit]);
-    return { workDir: dir, taskBranch, targetBranch, baseCommit, resumed: false };
+    await git(cacheDir, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
+    return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
   }
   const { targetBranch, baseCommit } = await resolveLocalRepoAnchors(issue.repo_path);
-  await git(issue.repo_path, ["worktree", "add", "-b", taskBranch, dir, baseCommit]);
-  return { workDir: dir, taskBranch, targetBranch, baseCommit, resumed: false };
+  await git(issue.repo_path, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
+  return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
 }
 
 async function resumeWorkdir(priorWorkDir: string, savedAnchors: SavedAnchors | null): Promise<PreparedWorkdir> {

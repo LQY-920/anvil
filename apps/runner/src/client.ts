@@ -75,10 +75,19 @@ export class ApiClient {
   }
 
   /**
-   * A04 · daemon plane start:用 daemon token + body.daemon_id。
-   * 当存在 taskBranch / targetBranch / baseCommit(均为非 null 且完整 40 位 SHA)时,
-   * 视为 Git 仓库任务,显式附带 v2 锚点 + delivery_contract_version=2;
-   * 无 repo_path 的普通目录任务只附带 daemon_id + work_dir,不得伪造 Git 锚点。
+   * A04-FIX1 · daemon plane start:用 daemon token + body.daemon_id,all-or-none 锚点校验。
+   *
+   * 合法模式(仅两种,fetch 才会发出):
+   *  1. 三个锚点全部 null/未提供:发送兼容请求 `{ daemon_id, work_dir }`。
+   *  2. 三个锚点全部存在且合法:
+   *     - taskBranch / targetBranch 必须是非空字符串(已 trim);
+   *     - baseCommit 必须是完整 40 位 hex SHA-1。
+   *     发送精确 v2 请求 `{ daemon_id, work_dir, task_branch, target_branch,
+   *     base_commit, delivery_contract_version: 2 }`。
+   *
+   * 任何部分锚点(只 taskBranch / 只 target/base / taskBranch null 但其他有 /
+   * 空白 branch / 非 40 位 baseCommit)都会在发起 fetch 之前抛错,绝不静默降级为
+   * 两字段兼容请求,绝不部分发出。
    */
   startTask(taskId: string, daemonId: string, workDir: string, anchors?: {
     taskBranch: string | null;
@@ -86,12 +95,38 @@ export class ApiClient {
     baseCommit: string | null;
   } | null) {
     const body: Record<string, unknown> = { daemon_id: daemonId, work_dir: workDir };
-    if (anchors && anchors.taskBranch != null && anchors.targetBranch != null && anchors.baseCommit != null) {
-      body.task_branch = anchors.taskBranch;
-      body.target_branch = anchors.targetBranch;
-      body.base_commit = anchors.baseCommit;
-      body.delivery_contract_version = 2;
+    // 没有任何锚点 → 兼容模式,直接发 2 字段 body
+    if (anchors == null) {
+      return this.opWithRetry("POST", `/api/daemon/tasks/${taskId}/start`, body);
     }
+    // 检测"全 null"兼容形态
+    const allNull = anchors.taskBranch == null && anchors.targetBranch == null && anchors.baseCommit == null;
+    if (allNull) {
+      return this.opWithRetry("POST", `/api/daemon/tasks/${taskId}/start`, body);
+    }
+    // 至少一项非空 → 必须三项齐全 + 合法,否则抛错不发请求
+    const missing: string[] = [];
+    if (anchors.taskBranch == null) missing.push("taskBranch");
+    if (anchors.targetBranch == null) missing.push("targetBranch");
+    if (anchors.baseCommit == null) missing.push("baseCommit");
+    if (missing.length > 0) {
+      throw new Error(`Start 锚点部分缺失:${missing.join(", ")};必须 all-or-none,不得部分提供`);
+    }
+    // 类型 / 格式校验
+    if (typeof anchors.taskBranch !== "string" || anchors.taskBranch.trim() === "") {
+      throw new Error(`Start 锚点非法:taskBranch 必须是非空字符串,实际=${JSON.stringify(anchors.taskBranch)}`);
+    }
+    if (typeof anchors.targetBranch !== "string" || anchors.targetBranch.trim() === "") {
+      throw new Error(`Start 锚点非法:targetBranch 必须是非空字符串,实际=${JSON.stringify(anchors.targetBranch)}`);
+    }
+    if (typeof anchors.baseCommit !== "string" || !/^[0-9a-f]{40}$/i.test(anchors.baseCommit)) {
+      throw new Error(`Start 锚点非法:baseCommit 必须是完整 40 位 hex SHA-1,实际=${JSON.stringify(anchors.baseCommit)}`);
+    }
+    // v2 完整模式
+    body.task_branch = anchors.taskBranch;
+    body.target_branch = anchors.targetBranch;
+    body.base_commit = anchors.baseCommit;
+    body.delivery_contract_version = 2;
     return this.opWithRetry("POST", `/api/daemon/tasks/${taskId}/start`, body);
   }
 
