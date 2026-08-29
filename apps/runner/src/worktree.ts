@@ -74,6 +74,27 @@ export async function ensureGitAvailable(): Promise<void> {
 // 11. stat 必须作用于真实可访问的路径;小写化与长路径前缀归一化只能用于比较字符串。
 // 12. hasAnySavedAnchor / areAllAnchorsPresent 严格按 null/undefined 判断,
 //     空字符串视为"已提供但非法",后续必须按格式校验失败。
+//
+// A04-FIX4 · 仓库身份退化判定收紧(在 A04-FIX3 基础上继续修复两类误判):
+// 13. "有效文件标识"严格定义为 dev !== 0n 且 ino !== 0n,缺一不可:
+//     {dev:0n, ino:5n} 与 {dev:5n, ino:0n} 都不得当作有效文件标识。
+// 14. reposEqualById 顺序:
+//     A. 双方都有有效文件标识 ⇒ 仅 dev+ino 同时精确相等 ⇒ 相同;只要文件标识
+//        不同(即使显示层 path 字符串完全相同)就必须返回 false,防止同一路径
+//        已被删除 / 替换 / 重新 clone 后被误认为原仓库。
+//     B. 任意一方没有有效文件标识 ⇒ 不得用不完整 dev/ino 比较,只能退化到
+//        "保留大小写的真实路径"比较(canonicalizeRealPathForIdentity);真实
+//        路径精确相同 ⇒ 相同;不同 ⇒ 不同。
+//     C. canonicalizePathForCompare 的全小写结果(path 字段)只用于显示与错误
+//        信息,不得作为强身份依据;reposEqualById 不允许把它当一等公民。
+// 15. canonicalizeRealPathForIdentity 是新增的纯字符串归一函数:
+//     A. 正确处理 \\?\ 与 \\?\UNC\ 前缀(UNC 根必须保留双反斜杠);
+//     B. 可以统一盘符字母大小写,但不动路径其余段(必须保留 Repo 与 repo 的
+//        区别,不得被显示层小写化抹平);
+//     C. 不主动对路径其余段小写;非 Windows 平台不改变大小写;
+//     D. 不得执行 stat;任何 stat 必须仍作用于 realPath + {bigint:true}。
+// 16. assertResumeRepository 仍然只调 reposEqualById,不在自身内重新做身份
+//     判定;URL 缓存路径也走 realPath + BigIntStats 的精确读取路径。
 // =============================================================================
 
 const SHA1_40 = /^[0-9a-f]{40}$/i;
@@ -103,6 +124,44 @@ export function canonicalizePathForCompare(p: string, win32Mode: boolean = proce
     }
     s = s.replace(/\//g, "\\");
     return s.toLowerCase();
+  }
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * A04-FIX4 · 仓库身份退化比较用的"真实路径"纯字符串归一(不调用 fs.statSync):
+ *  - 与 canonicalizePathForCompare 的关键差异:不动路径其余段的大小写,必须
+ *    保留 `Repo` 与 `repo` 的区分(显示层可小写,身份层不可小写);
+ *  - Windows 下统一 `/` 与 `\`,盘符字母大小写可统一(`c:` ⇒ `C:`),其余段保留原样;
+ *  - 正确处理 `\\?\` 与 `\\?\UNC\` 前缀(UNC 根必须保留开头的双反斜杠);
+ *  - 非 Windows 平台不主动改变大小写,只把分隔符归一为 `/`。
+ *
+ * 重要:此函数只对字符串做归一,不得对结果执行 stat;任何 stat 仍必须作用于
+ * `realPath` + `fs.statSync(p, { bigint: true })` 拿到的真实可访问路径。
+ *
+ * 默认 `win32Mode = process.platform === "win32"`;测试可通过显式 `win32Mode: true`
+ * 在非 Windows 上强制走 Windows 分支验证长路径 / UNC / 大小写保留行为。
+ */
+export function canonicalizeRealPathForIdentity(
+  p: string,
+  win32Mode: boolean = process.platform === "win32",
+): string {
+  if (win32Mode) {
+    let s = p;
+    if (s.startsWith("\\\\?\\UNC\\")) {
+      // \\?\UNC\server\share\repo  →  \\server\share\repo(UNC 根保留双反斜杠)
+      s = `\\\\${s.slice("\\\\?\\UNC\\".length)}`;
+    } else if (s.startsWith("\\\\?\\")) {
+      // \\?\C:\Repo  →  C:\Repo
+      s = s.slice("\\\\?\\".length);
+    }
+    // 统一 / 与 \
+    s = s.replace(/\//g, "\\");
+    // 只把盘符字母变成大写(后续路径段必须保留原大小写,不得被全小写化抹平)
+    if (/^[a-zA-Z]:/.test(s)) {
+      s = s[0].toUpperCase() + s.slice(1);
+    }
+    return s;
   }
   return p.replace(/\\/g, "/");
 }
@@ -171,22 +230,36 @@ export interface GitCommonDirId {
 }
 
 /**
- * A04-FIX3 · 仓库身份比较规则(纯函数,可独立测试):
- *  1. 两侧 canonicalize 后的 path 相同 ⇒ 视为相同(允许 dev/ino 任意,包括 0n/0n);
- *  2. 两侧 path 不同 + 两边都是 dev=0n 且 ino=0n ⇒ 视为不同(0n/0n 不能跨路径匹配);
- *  3. 两侧 path 不同 + 精确相等的非零 dev/ino ⇒ 视为相同(8.3 / 符号链接 / 长路径别名);
- *  4. 其余(任意 dev/ino 不一致)⇒ 视为不同。
+ * A04-FIX4 · 仓库身份比较规则(纯函数,可独立测试):
+ *  1. 双方都有有效文件标识(dev !== 0n 且 ino !== 0n):
+ *     ⇒ 仅 dev+ino 同时精确相等才视为相同;只要文件标识不同(即使
+ *        canonicalizeFsPath 后的显示 path 字符串完全相同)就必须返回 false,
+ *        防止同一路径已被删除 / 替换 / 重新 clone 后被误判为原仓库。
+ *  2. 任意一方没有有效文件标识:
+ *     ⇒ 不得用不完整 dev/ino 比较,只能退化到 canonicalizeRealPathForIdentity
+ *        对 realPath 的精确字符串比较;真实路径相同 ⇒ 相同,不同 ⇒ 不同。
+ *  3. canonicalizePathForCompare 产出的全小写 path 字段只用于显示与错误信息,
+ *     不得作为强身份依据;reposEqualById 不再把它当一等公民。
  *
- * 注意:不得仅根据 (dev, ino) 判断仓库相同;也不得把两个 (0n, 0n) 的不同路径判定为同一仓库。
+ * 注意:上一版(A04-FIX3)把"两边 0n/0n"当作"路径相同时强行同,路径不同时强行不同"
+ * 的兜底分支,会被 `{dev:0n, ino:5n}` / `{dev:5n, ino:0n}` 这类"半有效"标识穿透;
+ * 也会因为 display path 字段全小写化而把 `C:\Root\Repo\.git` 与 `C:\Root\repo\.git`
+ * 误判为同一仓库。本版把这两类误判都关闭。
  */
+export function hasValidFileId(id: GitCommonDirId): boolean {
+  return id.dev !== 0n && id.ino !== 0n;
+}
+
 export function reposEqualById(a: GitCommonDirId, b: GitCommonDirId): boolean {
-  // 1. 规范路径相同 ⇒ 一定相同
-  if (a.path === b.path) return true;
-  // 2. 不同路径 + 两边都 0n/0n ⇒ 不能判同(可能是完全不相关的目录,stat 拿不到文件标识)
-  if (a.dev === 0n && a.ino === 0n) return false;
-  if (b.dev === 0n && b.ino === 0n) return false;
-  // 3. 不同路径 + 精确非零 dev/ino 相同 ⇒ 相同(Windows 长路径/8.3/符号链接别名)
-  return a.dev === b.dev && a.ino === b.ino;
+  const aValid = hasValidFileId(a);
+  const bValid = hasValidFileId(b);
+  // 1. 双方都有有效文件标识 ⇒ 仅 dev+ino 同时精确相等才视为相同
+  if (aValid && bValid) {
+    return a.dev === b.dev && a.ino === b.ino;
+  }
+  // 2. 任意一方没有有效文件标识 ⇒ 退化到保留大小写的真实路径比较
+  return canonicalizeRealPathForIdentity(a.realPath) ===
+    canonicalizeRealPathForIdentity(b.realPath);
 }
 
 export async function readGitCommonDir(repoDir: string): Promise<GitCommonDirId> {

@@ -6,7 +6,8 @@ import { execFileSync } from "node:child_process";
 import {
   ensureGitAvailable, git, prepareWorkdir, gitDiffStat, readWorktreeHead,
   readGitCommonDir, assertResumeRepository, canonicalizeFsPath,
-  canonicalizePathForCompare, reposEqualById, isAnchorProvided,
+  canonicalizePathForCompare, canonicalizeRealPathForIdentity,
+  reposEqualById, hasValidFileId, isAnchorProvided,
   hasAnySavedAnchor, areAllAnchorsPresent, resolveRealPath,
   type GitCommonDirId,
 } from "../src/worktree.js";
@@ -658,9 +659,11 @@ describe("A04-FIX3 · reposEqualById 仓库身份比较规则", () => {
     return { realPath: path, path, dev, ino };
   }
 
-  it("A04-FIX3: 相同规范路径 + 两边 0n/0n → 相同(规范路径优先级最高)", () => {
+  it("A04-FIX3 → A04-FIX4: 双方 0n/0n + 真实路径相同 → 相同(退化到真实路径归一比较)", () => {
     const a = id("c:\\repo\\.git", 0n, 0n);
     const b = id("c:\\repo\\.git", 0n, 0n);
+    // 双方都没有有效文件标识,reposEqualById 退化到 canonicalizeRealPathForIdentity
+    // 对 realPath 的精确比较;真实路径相同 ⇒ 相同。
     expect(reposEqualById(a, b)).toBe(true);
   });
 
@@ -688,11 +691,13 @@ describe("A04-FIX3 · reposEqualById 仓库身份比较规则", () => {
     expect(reposEqualById(a, b)).toBe(false);
   });
 
-  it("A04-FIX3: 一侧 0n/0n 另一侧非零 dev/ino 但不同路径 → 仍按 dev/ino 比较,允许判同(8.3 别名)", () => {
+  it("A04-FIX3: 一侧 0n/0n 另一侧非零 dev/ino 但不同路径 → 退化到真实路径归一比较,等价的 8.3 / 长路径别名应判同", () => {
     const a = id("c:\\repo\\.git", 0n, 0n);
     const b = id("\\\\?\\c:\\repo\\.git", 12345n, 67890n);
-    // a 没有有效文件标识,只能依赖路径;路径不同 ⇒ 一定不同
-    expect(reposEqualById(a, b)).toBe(false);
+    // a 没有有效文件标识,新规则下退化到 canonicalizeRealPathForIdentity(realPath) 比较;
+    // \\?\c:\repo\.git 与 c:\repo\.git 在 Windows 归一下指向同一目录 ⇒ 相同。
+    // (此条由 A04-FIX4 重写;旧规则下因 display path 字段差异判 false。)
+    expect(reposEqualById(a, b)).toBe(true);
   });
 });
 
@@ -930,5 +935,275 @@ describe("A04-FIX3 · 正常回归(确保 A04-FIX2 行为不被破坏)", () => {
     expect(prepared.resumed).toBe(true);
     expect(prepared.taskBranch).toBeNull();
     expect(fs.existsSync(path.join(prepared.workDir, "leftover.txt"))).toBe(true);
+  });
+});
+
+// =============================================================================
+// A04-FIX4 · 仓库身份退化判定收紧
+//
+// 关键不变量(在 A04-FIX3 基础上继续修复两类仓库误判):
+//   1. "有效文件标识" = dev !== 0n 且 ino !== 0n;{dev:0n, ino:5n} 与
+//      {dev:5n, ino:0n} 都不得当有效文件标识。
+//   2. 双方都有有效文件标识 ⇒ 仅 dev+ino 同时精确相等才相同;
+//      同一显示 path 字符串但 dev/ino 不同 ⇒ 一定不同(防止已被删除 / 替换
+//      / 重新 clone 的目录被误认作原仓库)。
+//   3. 任意一方没有有效文件标识 ⇒ 退化到保留大小写的真实路径比较
+//      (canonicalizeRealPathForIdentity);realPath 精确相同才相同,不同则不同。
+//   4. 用于显示的全小写 path 字段不得作为强身份依据;reposEqualById 不允许
+//      因展示层小写化把不同仓库判成同一仓库。
+//   5. canonicalizeRealPathForIdentity 必须正确处理 \\?\ 与 \\?\UNC\ 前缀
+//      (UNC 根保留双反斜杠),可统一盘符字母大小写,但必须保留路径其余段
+//      的大小写(Repo 与 repo 不得被抹平)。
+// =============================================================================
+
+describe("A04-FIX4 · hasValidFileId 有效文件标识判定", () => {
+  it("A04-FIX4: dev !== 0n 且 ino !== 0n ⇒ 有效", () => {
+    expect(hasValidFileId({ realPath: "x", path: "x", dev: 1n, ino: 2n })).toBe(true);
+    expect(hasValidFileId({ realPath: "x", path: "x", dev: 99999n, ino: 1n })).toBe(true);
+  });
+
+  it("A04-FIX4: dev === 0n 或 ino === 0n ⇒ 无效(半有效不视为有效)", () => {
+    // {dev:0n, ino:5n} 不得当有效文件标识
+    expect(hasValidFileId({ realPath: "x", path: "x", dev: 0n, ino: 5n })).toBe(false);
+    // {dev:5n, ino:0n} 也不得当有效文件标识
+    expect(hasValidFileId({ realPath: "x", path: "x", dev: 5n, ino: 0n })).toBe(false);
+    // 双方都 0n 同样无效
+    expect(hasValidFileId({ realPath: "x", path: "x", dev: 0n, ino: 0n })).toBe(false);
+  });
+});
+
+describe("A04-FIX4 · canonicalizeRealPathForIdentity 真实路径归一", () => {
+  it("A04-FIX4: \\?\\C:\\Repo\\.git → 去除长路径前缀;盘符大小写归一;后续路径段大小写保留", () => {
+    const out = canonicalizeRealPathForIdentity("\\\\?\\C:\\Repo\\.git", true);
+    expect(out).toBe("C:\\Repo\\.git");
+    // 后续路径段大小写必须保留
+    expect(out).toContain("Repo");
+    // 不得被全小写化
+    expect(out).not.toBe(out.toLowerCase());
+  });
+
+  it("A04-FIX4: \\?\\c:\\Repo\\.git → 盘符小写也归一为 C:;Repo 仍保留", () => {
+    const out = canonicalizeRealPathForIdentity("\\\\?\\c:\\Repo\\.git", true);
+    expect(out).toBe("C:\\Repo\\.git");
+  });
+
+  it("A04-FIX4: \\?\\UNC\\server\\share\\Repo\\.git → 还原为 \\\\server\\share\\Repo\\.git(UNC 根保留双反斜杠)", () => {
+    const out = canonicalizeRealPathForIdentity("\\\\?\\UNC\\server\\share\\Repo\\.git", true);
+    expect(out).toBe("\\\\server\\share\\Repo\\.git");
+    expect(out.startsWith("\\\\")).toBe(true);
+    // 不能错误地变成 UNC\...(没有前导双反斜杠)
+    expect(out.startsWith("UNC\\")).toBe(false);
+    // Repo 部分大小写必须保留
+    expect(out).toContain("Repo");
+    expect(out).not.toBe(out.toLowerCase());
+  });
+
+  it("A04-FIX4: \\?\\UNC\\srv\\share\\repo\\.git → 还原后路径段 repo 小写也保留", () => {
+    const out = canonicalizeRealPathForIdentity("\\\\?\\UNC\\srv\\share\\repo\\.git", true);
+    expect(out).toBe("\\\\srv\\share\\repo\\.git");
+    expect(out).toContain("repo");
+  });
+
+  it("A04-FIX4: 普通 UNC 路径(无 \\?\\ 前缀)不丢开头双反斜杠;路径段大小写保留", () => {
+    const out = canonicalizeRealPathForIdentity("\\\\server\\share\\Repo\\.git", true);
+    expect(out).toBe("\\\\server\\share\\Repo\\.git");
+  });
+
+  it("A04-FIX4: 普通路径与等价长路径在 Windows 归一下得到相同身份路径", () => {
+    const normal = canonicalizeRealPathForIdentity("C:\\Repo\\.git", true);
+    const long = canonicalizeRealPathForIdentity("\\\\?\\C:\\Repo\\.git", true);
+    expect(normal).toBe(long);
+    // 盘符大小写归一后也应一致
+    const lower = canonicalizeRealPathForIdentity("c:\\Repo\\.git", true);
+    expect(lower).toBe(normal);
+  });
+
+  it("A04-FIX4: C:\\Root\\Repo 与 C:\\Root\\repo 大小写差异必须保留(不得被全小写化)", () => {
+    const a = canonicalizeRealPathForIdentity("C:\\Root\\Repo\\.git", true);
+    const b = canonicalizeRealPathForIdentity("C:\\Root\\repo\\.git", true);
+    expect(a).not.toBe(b);
+    // Repo 大写,repo 小写;必须分别保留
+    expect(a).toContain("Repo");
+    expect(b).toContain("repo");
+  });
+
+  it("A04-FIX4: POSIX 路径不主动改变大小写,只把分隔符归一为 /", () => {
+    expect(canonicalizeRealPathForIdentity("/tmp/Repo/.git", false)).toBe("/tmp/Repo/.git");
+    expect(canonicalizeRealPathForIdentity("/tmp/repo/.git", false)).toBe("/tmp/repo/.git");
+    // 大小写必须保留
+    expect(canonicalizeRealPathForIdentity("/tmp/Repo/.git", false)).not.toBe(
+      canonicalizeRealPathForIdentity("/tmp/repo/.git", false),
+    );
+    // 反斜杠统一为 /
+    expect(canonicalizeRealPathForIdentity("C:\\Repo\\.git", false)).toBe("C:/Repo/.git");
+  });
+
+  it("A04-FIX4: 在非 Windows 跑测时也能显式 win32Mode=true 验证 Windows 归一行为", () => {
+    // 即便运行平台不是 Windows,显式 win32Mode=true 也走 Windows 分支
+    const out = canonicalizeRealPathForIdentity("\\\\?\\UNC\\srv\\share\\Repo", true);
+    expect(out).toBe("\\\\srv\\share\\Repo");
+  });
+
+  it("A04-FIX4: canonicalizeRealPathForIdentity 是纯字符串归一,不执行 stat", () => {
+    // 传一个明显不存在的路径(非 Windows 也用 / 不会触发真实 stat)
+    const out = canonicalizeRealPathForIdentity("/nonexistent/should/not/stat/Repo/.git", false);
+    expect(out).toBe("/nonexistent/should/not/stat/Repo/.git");
+    // 不抛错 ⇒ 纯字符串处理,没有触碰 fs
+  });
+});
+
+describe("A04-FIX4 · reposEqualById 矩阵", () => {
+  // 简化构造:realPath 与 path 使用相同字符串
+  function id(path: string, dev: bigint, ino: bigint): GitCommonDirId {
+    return { realPath: path, path, dev, ino };
+  }
+
+  // 完整构造:realPath 与 path 可不同(用于测"展示层 path 相同但真实文件不同"场景)
+  function rid(realPath: string, dev: bigint, ino: bigint, displayPath?: string): GitCommonDirId {
+    return { realPath, path: displayPath ?? realPath, dev, ino };
+  }
+
+  // -------------------------------------------------------------------------
+  // 一、有效文件标识
+  // -------------------------------------------------------------------------
+  it("A04-FIX4 · 有效 ID:不同 realPath,相同非零 dev/ino → true", () => {
+    const a = id("c:\\repo-a\\.git", 12345n, 67890n);
+    const b = id("c:\\repo-b\\.git", 12345n, 67890n);
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX4 · 有效 ID:相同 realPath,相同非零 dev/ino → true", () => {
+    const a = id("c:\\repo\\.git", 12345n, 67890n);
+    const b = id("c:\\repo\\.git", 12345n, 67890n);
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX4 · 有效 ID:相同规范显示 path,但非零 dev/ino 不同 → false(防止同路径被替换)", () => {
+    // 模拟:canonicalizeFsPath 之后两个仓库的展示 path 字符串都变成小写且完全相同;
+    // 但真实文件已被删除 / 替换 / 重新 clone,dev/ino 已不同。上一版会因
+    // a.path === b.path 误判 true,A04-FIX4 必须按 dev/ino 判 false。
+    const a = rid("C:\\Root\\Repo\\.git", 11111n, 22222n, "c:\\root\\repo\\.git");
+    const b = rid("C:\\Root\\Repo\\.git", 33333n, 44444n, "c:\\root\\repo\\.git");
+    expect(a.path).toBe(b.path);
+    expect(a.realPath).toBe(b.realPath);
+    expect(a.dev).not.toBe(b.dev);
+    expect(a.ino).not.toBe(b.ino);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · 有效 ID:不同路径、dev 不同、ino 相同 → false", () => {
+    const a = id("c:\\repo-a\\.git", 11111n, 67890n);
+    const b = id("c:\\repo-b\\.git", 33333n, 67890n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · 有效 ID:不同路径、dev 相同、ino 不同 → false", () => {
+    const a = id("c:\\repo-a\\.git", 12345n, 11111n);
+    const b = id("c:\\repo-b\\.git", 12345n, 22222n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // 二、退化文件标识(半有效 / 全无效)
+  // -------------------------------------------------------------------------
+  it("A04-FIX4 · 退化 ID:不同路径,双方 {dev:0n, ino:5n} → false(半有效不当有效)", () => {
+    const a = id("c:\\repo-a\\.git", 0n, 5n);
+    const b = id("c:\\repo-b\\.git", 0n, 5n);
+    expect(hasValidFileId(a)).toBe(false);
+    expect(hasValidFileId(b)).toBe(false);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · 退化 ID:不同路径,双方 {dev:5n, ino:0n} → false(半有效不当有效)", () => {
+    const a = id("c:\\repo-a\\.git", 5n, 0n);
+    const b = id("c:\\repo-b\\.git", 5n, 0n);
+    expect(hasValidFileId(a)).toBe(false);
+    expect(hasValidFileId(b)).toBe(false);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · 退化 ID:不同路径,双方 {dev:0n, ino:0n} → false", () => {
+    const a = id("c:\\repo-a\\.git", 0n, 0n);
+    const b = id("c:\\repo-b\\.git", 0n, 0n);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · 退化 ID:相同保留大小写的 realPath,双方无效文件标识 → true", () => {
+    const a = id("C:\\Root\\Repo\\.git", 0n, 0n);
+    const b = id("C:\\Root\\Repo\\.git", 0n, 5n);
+    expect(hasValidFileId(a)).toBe(false);
+    expect(hasValidFileId(b)).toBe(false);
+    // realPath 相同(在 canonicalizeRealPathForIdentity 归一下也相同)⇒ true
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX4 · 退化 ID:一方有效、一方无效,但 realPath 相同 → true", () => {
+    const a = id("C:\\Root\\Repo\\.git", 12345n, 67890n); // 有效
+    const b = id("C:\\Root\\Repo\\.git", 0n, 0n); // 无效
+    expect(hasValidFileId(a)).toBe(true);
+    expect(hasValidFileId(b)).toBe(false);
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  it("A04-FIX4 · 退化 ID:一方有效、一方无效,realPath 不同 → false", () => {
+    const a = id("C:\\Root\\Repo\\.git", 12345n, 67890n); // 有效
+    const b = id("C:\\Root\\repo\\.git", 0n, 0n); // 无效,大小写不同
+    expect(hasValidFileId(a)).toBe(true);
+    expect(hasValidFileId(b)).toBe(false);
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // 三、Windows 大小写敏感路径
+  // -------------------------------------------------------------------------
+  it("A04-FIX4 · Windows 大小写:Repo 与 repo 真实 dev/ino 不同时不得因 path 小写化判同", () => {
+    // 模拟:大小写敏感文件系统(典型 Linux ext4)上,两个真实 dev/ino 不同的仓库;
+    // 展示层 path 都已被 canonicalizeFsPath 全小写化为相同字符串。
+    const a = rid("C:\\Root\\Repo\\.git", 11111n, 22222n, "c:\\root\\repo\\.git");
+    const b = rid("C:\\Root\\repo\\.git", 33333n, 44444n, "c:\\root\\repo\\.git");
+    // 关键不变量:canonicalizeRealPathForIdentity 区分 Repo 与 repo
+    expect(canonicalizeRealPathForIdentity(a.realPath)).not.toBe(
+      canonicalizeRealPathForIdentity(b.realPath),
+    );
+    // 关键不变量:展示 path 都变成小写且完全相同(模拟 canonicalizeFsPath)
+    expect(a.path).toBe(b.path);
+    // reposEqualById 必须按 dev/ino 判定为不同
+    expect(reposEqualById(a, b)).toBe(false);
+  });
+
+  it("A04-FIX4 · Windows 大小写:Repo 与 repo 真实 dev/ino 相同时也按 dev/ino 判同", () => {
+    // 模拟同一真实文件,只是路径文本大小写不同(dev/ino 一致)
+    const a = id("C:\\Root\\Repo\\.git", 12345n, 67890n);
+    const b = id("C:\\Root\\repo\\.git", 12345n, 67890n);
+    // 两边都是有效文件标识,dev/ino 一致 ⇒ true
+    expect(reposEqualById(a, b)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // 四、Windows 长路径
+  // -------------------------------------------------------------------------
+  it("A04-FIX4 · Windows 长路径:reposEqualById 在 \\?\\ 前缀下应正确判同", () => {
+    // 普通路径与等价长路径指向同一目录,有效文件标识相同
+    const a = id("C:\\Repo\\.git", 12345n, 67890n);
+    const b = id("\\\\?\\C:\\Repo\\.git", 12345n, 67890n);
+    // dev/ino 一致 ⇒ 相同
+    expect(reposEqualById(a, b)).toBe(true);
+    // canonicalizeRealPathForIdentity 也必须把两者归一为相同字符串
+    expect(canonicalizeRealPathForIdentity(a.realPath)).toBe(
+      canonicalizeRealPathForIdentity(b.realPath),
+    );
+  });
+
+  it("A04-FIX4 · Windows 长路径:UNC 长路径正确还原,UNC 根保留双反斜杠,Repo 大小写保留", () => {
+    const a = id("\\\\?\\UNC\\server\\share\\Repo\\.git", 12345n, 67890n);
+    const b = id("\\\\server\\share\\Repo\\.git", 12345n, 67890n);
+    // dev/ino 一致 ⇒ 相同
+    expect(reposEqualById(a, b)).toBe(true);
+    // 身份路径归一后也必须相同
+    expect(canonicalizeRealPathForIdentity(a.realPath)).toBe(
+      canonicalizeRealPathForIdentity(b.realPath),
+    );
+    // 必须保留 Repo 大写(不得被全小写化)
+    expect(canonicalizeRealPathForIdentity(a.realPath)).toContain("Repo");
   });
 });
