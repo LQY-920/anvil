@@ -33,14 +33,16 @@ import { FAILURE_REASONS, type ClaimRequest, type DaemonHeartbeatRequest, type D
 /** 完整 40 位 hex SHA-1 正则(与 server-side isValidGitSha1Hex40 等价)。 */
 const SHA1_40_REGEX = /^[0-9a-f]{40}$/i;
 
-/** 字段白名单:start 请求除 `daemon_id` 之外的合法业务字段。 */
+/** 字段白名单:start 请求除 `daemon_id` 之外的合法业务字段。
+ *  R1-FIX2:Start 请求不允许 `head_commit`(它属于 Complete 请求)。
+ *  若 Runner 误把 `head_commit` 放在 Start body,会被"未知字段"分支直接拒绝
+ *  为 400 invalid_schema,在调用 service / 计算 hash / 任何副作用之前。 */
 const START_ALLOWED_FIELDS = new Set<string>([
   "daemon_id",
   "work_dir",
   "task_branch",
   "target_branch",
   "base_commit",
-  "head_commit",
   "delivery_contract_version",
 ]);
 
@@ -175,11 +177,6 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
         return sendInvalidSchema(reply, "base_commit must be a 40-character hex SHA-1", { field: "base_commit" });
       }
     }
-    if (raw.head_commit !== undefined && raw.head_commit !== null) {
-      if (!isValidSha1Hex40(raw.head_commit)) {
-        return sendInvalidSchema(reply, "head_commit must be a 40-character hex SHA-1", { field: "head_commit" });
-      }
-    }
     if (raw.delivery_contract_version !== undefined && raw.delivery_contract_version !== null) {
       if (raw.delivery_contract_version !== 2) {
         return sendInvalidSchema(reply, "delivery_contract_version must be 2 when present", {
@@ -190,7 +187,8 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     }
 
     // 校验全部通过 → 进入 service(零副作用前置守卫)
-    // head_commit 只在 start 路由层做格式校验,不传递给 service(service 暂不消费此字段)
+    // Start body 不允许 head_commit(它属于 Complete 请求);若 Runner 误传,
+    // 上面"未知字段"分支已经在调用 service / 计算 hash 之前返回 400 invalid_schema。
     const body = raw as {
       daemon_id: string; work_dir: string;
       task_branch?: string | null; target_branch?: string | null;

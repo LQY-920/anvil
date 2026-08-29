@@ -724,3 +724,140 @@ describe("R1-FIX1: fail 严格运行时校验", () => {
     expect(r2.json()).toEqual(r1.json());
   });
 });
+
+// ============================================================================
+// R1-FIX2 · Start 请求必须拒绝 head_commit
+// ============================================================================
+//
+// 锁定的事实:
+// 1) Start 请求白名单只有 daemon_id / work_dir / task_branch / target_branch /
+//    base_commit / delivery_contract_version。`head_commit` 属于 Complete 请求,
+//    误传会被"未知字段"分支直接 400 invalid_schema,在调用 service / 计算
+//    hash / 任何副作用之前。
+// 2) 校验失败:Task 保持 dispatched、Issue 状态不变、start_payload_hash=null、
+//    start_response_json=null、task token 不变、评论数量不变、广播数量不变。
+// 3) 两次不同 head_commit 都必须被拒绝(不能因 hash 字段被忽略而变成同 payload
+//    replay 后再被 server 派 200)。
+// 4) 现有合法 Start(兼容路径 + 完整 v2)不受影响。
+
+describe("R1-FIX2: Start 请求必须拒绝 head_commit", () => {
+  it("head_commit 出现在 Start body → 400 invalid_schema,unknown_fields 包含 head_commit,零副作用", async () => {
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    // 收集所有"校验前快照"
+    const before = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      issueStatus: (env.app.db.$client.prepare(`SELECT status FROM issues WHERE id=?`).get(env.issueId) as any).status,
+      startHash: (env.app.db.$client.prepare(`SELECT start_payload_hash, start_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_payload_hash,
+      startResponse: (env.app.db.$client.prepare(`SELECT start_payload_hash, start_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_response_json,
+      broadcasts: env.hubBroadcasts.length,
+      commentCount: (env.app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(env.issueId) as any).n,
+    };
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: {
+        daemon_id: "d1",
+        work_dir: "D:/w",
+        head_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+    // 1) 400 + invalid_schema + unknown_fields 包含 head_commit
+    expect(r.statusCode).toBe(400);
+    expect(r.json().code).toBe("invalid_schema");
+    expect(r.json().details.unknown_fields).toContain("head_commit");
+    // 2) 零副作用:所有快照都未变
+    const after = {
+      taskStatus: (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status,
+      taskToken: (env.app.db.$client.prepare(`SELECT task_token_hash FROM tasks WHERE id=?`).get(pkg.task.id) as any).task_token_hash,
+      issueStatus: (env.app.db.$client.prepare(`SELECT status FROM issues WHERE id=?`).get(env.issueId) as any).status,
+      startHash: (env.app.db.$client.prepare(`SELECT start_payload_hash, start_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_payload_hash,
+      startResponse: (env.app.db.$client.prepare(`SELECT start_payload_hash, start_response_json FROM tasks WHERE id=?`).get(pkg.task.id) as any).start_response_json,
+      broadcasts: env.hubBroadcasts.length,
+      commentCount: (env.app.db.$client.prepare(`SELECT COUNT(*) AS n FROM comments WHERE issue_id=?`).get(env.issueId) as any).n,
+    };
+    expect(after.taskStatus).toBe(before.taskStatus);
+    expect(after.taskStatus).toBe("dispatched");
+    expect(after.taskToken).toBe(before.taskToken);
+    expect(after.issueStatus).toBe(before.issueStatus);
+    expect(after.startHash).toBeNull();
+    expect(after.startResponse).toBeNull();
+    expect(after.broadcasts).toBe(before.broadcasts);
+    expect(after.commentCount).toBe(before.commentCount);
+  });
+
+  it("两个不同 head_commit 都必须 400,不能命中 replay 200", async () => {
+    // 关键回归:修复前 head_commit 会被 route 校验格式后丢弃,导致两次不同 SHA
+    // 因为 service 不消费 head_commit 反而命中"同 payload"路径;修复后 head_commit
+    // 不在白名单,直接作为 unknown_fields 拒绝,两个不同值仍独立 400。
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const beforeStatus = (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    const r1 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: {
+        daemon_id: "d1", work_dir: "D:/w",
+        head_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+    expect(r1.statusCode).toBe(400);
+    expect(r1.json().code).toBe("invalid_schema");
+    const r2 = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: {
+        daemon_id: "d1", work_dir: "D:/w",
+        head_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+    });
+    expect(r2.statusCode).toBe(400);
+    expect(r2.json().code).toBe("invalid_schema");
+    expect(r2.json().details.unknown_fields).toContain("head_commit");
+    // 两次都被拒绝,Task 状态不变,也没有任何一次变成 200
+    const afterStatus = (env.app.db.$client.prepare(`SELECT status FROM tasks WHERE id=?`).get(pkg.task.id) as any).status;
+    expect(afterStatus).toBe(beforeStatus);
+  });
+
+  it("兼容路径(不传任何 anchor)Start 仍按现阶段规则返回 200", async () => {
+    // R1-FIX2 不得破坏现有兼容路径:不传 task_branch / target_branch / base_commit /
+    // delivery_contract_version 的 Start 仍然走兼容模式返回 200,锚点保持 null。
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: { daemon_id: "d1", work_dir: "D:/w" },
+    });
+    expect(r.statusCode).toBe(200);
+    const row = env.app.db.$client.prepare(`SELECT task_branch, target_branch, base_commit FROM tasks WHERE id=?`).get(pkg.task.id) as any;
+    expect(row.task_branch).toBeNull();
+    expect(row.target_branch).toBeNull();
+    expect(row.base_commit).toBeNull();
+  });
+
+  it("完整合法 v2 Start 仍返回 200 并正确落库", async () => {
+    // R1-FIX2 不得破坏完整 v2 锚点路径:四项齐全的合法 Start 仍返回 200。
+    const env = await setupTwoDaemons();
+    const pkg = await env.claimTask();
+    const SHA = "0123456789abcdef0123456789abcdef01234567";
+    const r = await env.app.inject({
+      method: "POST", url: `/api/daemon/tasks/${pkg.task.id}/start`,
+      headers: { authorization: `Bearer ${env.daemonToken}`, "content-type": "application/json" },
+      payload: {
+        daemon_id: "d1", work_dir: "D:/w",
+        task_branch: "task/abc",
+        target_branch: "main",
+        base_commit: SHA,
+        delivery_contract_version: 2,
+      },
+    });
+    expect(r.statusCode).toBe(200);
+    const row = env.app.db.$client.prepare(`SELECT task_branch, target_branch, base_commit, delivery_contract_version FROM tasks WHERE id=?`).get(pkg.task.id) as any;
+    expect(row.task_branch).toBe("task/abc");
+    expect(row.target_branch).toBe("main");
+    expect(row.base_commit).toBe(SHA);
+    expect(row.delivery_contract_version).toBe(2);
+  });
+});

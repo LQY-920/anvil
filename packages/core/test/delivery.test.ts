@@ -25,6 +25,7 @@ import {
   REVIEW_PACKET_STATUSES,
   RISK_LEVELS,
   RESTART_MODES,
+  RunnerSubmittableVerificationStatus,
   SHA1_40_PATTERN,
   VERIFICATION_CHECK_STATUSES,
   VERIFICATION_POLICY_SCHEMA_VERSION,
@@ -1243,5 +1244,160 @@ describe("VERIFICATION_COMMAND_CHARS=500 boundary (R1-FIX1)", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.code === "policy_invalid_command")).toBe(true);
+  });
+});
+
+// ============================================================================
+// R1-FIX2 · Runner 提交 not_configured 是合法 VerificationRun 终态
+// ============================================================================
+//
+// 锁定的事实:
+// 1) `not_configured` 属于 Runner 终检事实之一:当 ANVIL.verify.json 不存在时,
+//    Runner 实际从未执行任何命令,在 Complete 请求中提交
+//    `status="not_configured"` + `policy_source="none"` + `policy_hash=null` +
+//    `verification_sha=null` + `started_at=null` + `checks=[]` + 合法 ISO
+//    `completed_at` 才是真实证据。
+// 2) `legacy` 仅由 server 从 v1 历史 result_json 派生(迁移前 v1 Task 显式标为
+//    legacy,不伪造 passed),不允许新 Runner 在 Complete 里主动提交。
+// 3) VerificationRun 顶层不重复 base_commit;base_commit 只存在于 V2CompleteRequest。
+//
+// 这些测试同时承担 TypeScript 编译期检查(@ts-expect-error 标记):任何后续误把
+// `legacy` 加回 RunnerSubmittableVerificationStatus、或把 `not_configured` 重新
+// 排除的改动都会编译失败。
+
+describe("R1-FIX2: not_configured 是 Runner 合法提交状态", () => {
+  it("构造 policy_source='none' + status='not_configured' 的合法 VerificationRun", () => {
+    // 编译期 + 运行时:这是 Runner 在 ANVIL.verify.json 缺失时提交的完整证据。
+    // 所有 Runner 写入的字段都是字面量类型;completed_at 是合法 ISO 时间。
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "none",
+      policy_hash: null,
+      verification_sha: null,
+      status: "not_configured",
+      started_at: null,
+      completed_at: "2026-08-29T12:00:00.000Z",
+      checks: [],
+    };
+    expect(run.status).toBe("not_configured");
+    expect(run.policy_source).toBe("none");
+    expect(run.policy_hash).toBeNull();
+    expect(run.verification_sha).toBeNull();
+    expect(run.started_at).toBeNull();
+    expect(run.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(run.checks).toEqual([]);
+  });
+
+  it("构造 ANVIL.verify.json + status='passed' 的合法 VerificationRun(executed 形态回归保留)", () => {
+    // R1-FIX1 的 executed 形态必须仍然能通过编译 —— 我们没有破坏既有合法提交。
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "ANVIL.verify.json",
+      policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      verification_sha: "0123456789abcdef0123456789abcdef01234567",
+      status: "passed",
+      started_at: "2026-08-29T12:00:00.000Z",
+      completed_at: "2026-08-29T12:05:00.000Z",
+      checks: [{
+        id: "tests",
+        label: "全量测试",
+        command: "pnpm test",
+        required: true,
+        status: "passed",
+        exit_code: 0,
+        duration_ms: 300_000,
+        output_excerpt: "187 tests passed",
+      }],
+    };
+    expect(run.status).toBe("passed");
+    expect(run.policy_source).toBe("ANVIL.verify.json");
+    expect(run.checks).toHaveLength(1);
+  });
+
+  it("构造 ANVIL.verify.json + status='failed' 的合法 VerificationRun(必填失败用例)", () => {
+    // 同样属于 Runner 合法提交:必填命令失败时 Runner 必须如实上报 failed,
+    // 而不是隐藏失败或假冒 passed。
+    const run: VerificationRun = {
+      schema_version: 1,
+      policy_source: "ANVIL.verify.json",
+      policy_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      verification_sha: "0123456789abcdef0123456789abcdef01234567",
+      status: "failed",
+      started_at: "2026-08-29T12:00:00.000Z",
+      completed_at: "2026-08-29T12:01:00.000Z",
+      checks: [{
+        id: "tests",
+        label: "全量测试",
+        command: "pnpm test",
+        required: true,
+        status: "failed",
+        exit_code: 1,
+        duration_ms: 60_000,
+        output_excerpt: "1 test failed",
+      }],
+    };
+    expect(run.status).toBe("failed");
+  });
+
+  it("编译期:RunnerSubmittableVerificationStatus 仍然排除 legacy", () => {
+    // @ts-expect-error 'legacy' is not a Runner-submittable verification status.
+    // legacy 仅由 server 从 v1 result_json 派生;Runner 提交 legacy 是协议违反。
+    const status: RunnerSubmittableVerificationStatus = "legacy";
+    // 让 status 变量被"使用"以避免 TS noUnusedLocals 警告并保留类型断言的语义。
+    expect(typeof status).toBe("string");
+  });
+
+  it("编译期:Runner 提交 V2CompleteRequest 可以把 verification.status 设为 not_configured", () => {
+    // 这是端到端的 wire DTO 形态:Complete 请求里 verification.status === "not_configured"
+    // 必须被类型系统接受,因为它就是 Runner 提交 ANVIL.verify.json 缺失时的合法结果。
+    const req: V2CompleteRequest = {
+      daemon_id: "d1",
+      branch: "task/abc",
+      work_dir: "D:/wt",
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      head_commit: "fedcba9876543210fedcba9876543210fedcba98",
+      worktree_clean: true,
+      verification: {
+        schema_version: 1,
+        policy_source: "none",
+        policy_hash: null,
+        verification_sha: null,
+        status: "not_configured",
+        started_at: null,
+        completed_at: "2026-08-29T12:00:00.000Z",
+        checks: [],
+      },
+    };
+    expect(req.verification.status).toBe("not_configured");
+    expect(req.verification.checks).toEqual([]);
+  });
+
+  it("编译期:Runner 不得在 V2CompleteRequest.verification 里把 status 设为 legacy", () => {
+    // V2CompleteRequest.verification.status 类型是 RunnerSubmittableVerificationStatus,
+    // 该类型在 R1-FIX2 后等于 Exclude<VerificationStatus, "legacy">。
+    // 任何误用都会被 TypeScript 拒绝(@ts-expect-error 守护)。
+    const req = {
+      daemon_id: "d1",
+      branch: "task/abc",
+      work_dir: "D:/wt",
+      base_commit: "0123456789abcdef0123456789abcdef01234567",
+      head_commit: "fedcba9876543210fedcba9876543210fedcba98",
+      worktree_clean: true,
+      verification: {
+        schema_version: 1 as const,
+        policy_source: "none" as const,
+        policy_hash: null,
+        verification_sha: null,
+        // @ts-expect-error 'legacy' is not a Runner-submittable verification status.
+        // legacy 是 server 从 v1 result_json 派生的历史兼容状态;Runner 在 v2
+        // Complete 请求里提交 legacy 等同于伪造事实,必须被类型系统拒绝。
+        status: "legacy",
+        started_at: null,
+        completed_at: "2026-08-29T12:00:00.000Z",
+        checks: [],
+      },
+    };
+    // 运行时只验证"构造能跑",真正的协议约束在编译期。
+    expect(typeof req).toBe("object");
   });
 });

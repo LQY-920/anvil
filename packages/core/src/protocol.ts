@@ -103,14 +103,27 @@ export interface VerificationCheck {
 }
 
 /** Runner 提交 DTO 允许的 verification.status 子集。
- *  排除 `legacy`(只用于 v1 历史任务,由 server 从 result_json 派生,不是 Runner 上报值)
- *  与 `not_configured`(server 端在没有策略文件时独立派生,Runner 不能直接上报该值)。 */
-export type RunnerSubmittableVerificationStatus = Exclude<VerificationStatus, "legacy" | "not_configured">;
+ *  R1-FIX2:只排除 `legacy`,它仅由 server 从历史 v1 `result_json` 派生,
+ *  不允许新 Runner 主动提交。`not_configured` 属于 Runner 终检事实之一:
+ *  ANVIL.verify.json 不存在时,Runner 实际从未执行任何命令,
+ *  在 Complete 请求里提交 `status="not_configured"` + `policy_source="none"`
+ *  + 空 `checks` 才是真实证据。Server 接收后根据该事实生成 verification_blocked /
+ *  incomplete Packet。
+ *
+ *  两种典型形态:
+ *  - not_configured:policy_source="none"、policy_hash=null、verification_sha=null、
+ *    started_at=null、checks=[]
+ *  - 已执行:policy_source="ANVIL.verify.json"、policy_hash 非空、checks 至少 1 条
+ */
+export type RunnerSubmittableVerificationStatus = Exclude<VerificationStatus, "legacy">;
 
 /** Verification Run 整体记录(FR-001 §9 complete.body.verification)。
- *  `base_commit` 不在此处重复,只存在于 `V2CompleteRequest` 顶层。
- *  字段同时支持 not_configured(由 server 派生)与已执行两种形态:
- *  - not_configured: server 端独立派生,Runner 实际只提交"已执行"形态
+ *  R1-FIX2:`base_commit` 不在此处重复,只存在于 `V2CompleteRequest` 顶层;
+ *  `status` 可以是 `not_configured`(Runner 在未找到策略文件时提交的真实证据)
+ *  或已执行形态(passed/failed/dirty/stale/partial),但 `legacy` 仅由 server
+ *  从 v1 `result_json` 派生,Runner 不得提交。
+ *  字段同时支持 not_configured 与已执行两种形态:
+ *  - not_configured:Runner 真实提交,policy_source="none"、checks=[]
  *  - 已执行:所有字段非空,checks 至少 1 条 */
 export interface VerificationRun {
   schema_version: 1;
