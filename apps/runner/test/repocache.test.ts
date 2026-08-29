@@ -120,20 +120,62 @@ describe("ensureRepoCache", () => {
 });
 
 describe("prepareWorkdir with repo URL", () => {
-  it("从缓存建 worktree：分支 task/<short> 基于缓存默认分支", { timeout: 30000 }, async () => {
+  it("A04: URL 缓存首次准备返回默认 targetBranch + 完整 40 位 baseCommit,worktree 从该 baseCommit 创建", { timeout: 30000 }, async () => {
     const { url } = makeRemote();
     const runnerRoot = tmp("anvil-runner-");
     const issue = { repo_path: url } as Issue;
     const prepared = await prepareWorkdir(issue, "12345678-abcd-task", runnerRoot, null);
-    expect(prepared.branch).toBe("task/12345678");
+    expect(prepared.taskBranch).toBe("task/12345678");
     expect(prepared.resumed).toBe(false);
+    // 目标分支为远程默认分支
+    expect(prepared.targetBranch).toBe("main");
+    // baseCommit 严格 40 位 hex
+    expect(prepared.baseCommit).toMatch(/^[0-9a-f]{40}$/i);
+    // worktree HEAD 与返回的 baseCommit 一致(已固化,不是浮动的 origin/main)
+    expect(await git(prepared.workDir, ["rev-parse", "HEAD"])).toBe(prepared.baseCommit);
+    // worktree 内能正常读出缓存仓库的初始文件
     expect(fs.existsSync(path.join(prepared.workDir, "a.txt"))).toBe(true);
-    // 分支落在缓存仓库里，且指向缓存 main 的提交
+    // 分支落在缓存仓库里
     const cache = repoCachePath(url, runnerRoot);
     expect(await git(cache, ["branch", "--list", "task/12345678"])).toContain("task/12345678");
-    expect(await git(prepared.workDir, ["rev-parse", "HEAD"])).toBe(await git(cache, ["rev-parse", "main"]));
+  });
+
+  it("A04: URL 任务 resume 时目标 origin/main 后续推进,仍保留 Task 已保存的 baseCommit", { timeout: 30000 }, async () => {
+    // 关键:A04 承诺"已返回的 baseCommit 不被后续 origin/target HEAD 覆盖"是指 resume 场景。
+    // 首次 prepareWorkdir 主动读当时 main HEAD;后续若同一 Task 走 resume,
+    // 必须用 Task 已存 baseCommit,即使缓存已 ff 到新 main 也不覆盖。
+    const { url, bareDir, seedDir } = makeRemote();
+    const runnerRoot = tmp("anvil-runner-");
+    const issue = { repo_path: url } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd-task", runnerRoot, null);
+    const savedBase = first.baseCommit!;
+    expect(savedBase).toMatch(/^[0-9a-f]{40}$/i);
+
+    // 远程推进 + 缓存快进(确保 origin/main 与本地 main 都已前进)
+    fs.writeFileSync(path.join(seedDir, "b.txt"), "advanced\n");
+    gitR(seedDir, ["add", "-A"]);
+    gitR(seedDir, ["commit", "-m", "advance"]);
+    gitR(seedDir, ["push", bareDir, "main"]);
+    // 显式 fetch 让本地 origin/main 同步到新提交
+    gitR(repoCachePath(url, runnerRoot), ["fetch", "--all", "--prune"]);
+    gitR(repoCachePath(url, runnerRoot), ["merge", "--ff-only", "@{u}"]);
+    const advancedHead = gitR(repoCachePath(url, runnerRoot), ["rev-parse", "HEAD"]);
+    expect(advancedHead).not.toBe(savedBase);
+
+    // 模拟 resume:priorWorkDir 存在 + savedAnchors = Task 已存值
+    const second = await prepareWorkdir(
+      issue, "87654321-ffff-task", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: savedBase },
+    );
+    expect(second.baseCommit).toBe(savedBase);
+    expect(second.baseCommit).not.toBe(advancedHead);
+    expect(second.resumed).toBe(true);
   });
 });
+
+function cacheFor(url: string, runnerRoot: string): string {
+  return repoCachePath(url, runnerRoot);
+}
 
 describe("executeTask with repo URL", () => {
   it("完成后把任务分支推送到远程（pushed: true）", { timeout: 60000 }, async () => {

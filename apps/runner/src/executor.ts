@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ApiClient } from "./client.js";
 import type { AgentBackend, AgentResult } from "./agents/backend.js";
-import { prepareWorkdir, gitDiffStat, git } from "./worktree.js";
+import { prepareWorkdir, gitDiffStat, readWorktreeHead, git } from "./worktree.js";
 import { MessageUploader } from "./uploader.js";
 
 export interface ExecutorDeps {
@@ -81,10 +81,19 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
   const { task, issue, prior_work_dir, task_token } = pkg;
   let workDir: string | null = null;
   try {
-    const prepared = await prepareWorkdir(issue, task.id, deps.runnerRoot, prior_work_dir);
+    const prepared = await prepareWorkdir(issue, task.id, deps.runnerRoot, prior_work_dir, {
+      taskBranch: task.task_branch ?? null,
+      targetBranch: task.target_branch ?? null,
+      baseCommit: task.base_commit ?? null,
+    });
     workDir = prepared.workDir;
     // A03 · start / complete / fail 使用 daemon token + body.daemon_id,不再传 task_token
-    await client.startTask(task.id, daemonId, workDir);
+    // A04 · Git 仓库任务附带 v2 锚点(daemon_id + work_dir + task_branch + target_branch + base_commit + delivery_contract_version=2)
+    await client.startTask(task.id, daemonId, workDir, {
+      taskBranch: prepared.taskBranch,
+      targetBranch: prepared.targetBranch,
+      baseCommit: prepared.baseCommit,
+    });
 
     // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
     const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
@@ -162,23 +171,32 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
           }
         }
         if (!delivered) console.error(`[anvil-executor] task ${task.id} completed undelivered after ${followups} follow-up(s)`);
-        const diffStat = prepared.branch ? await gitDiffStat(workDir) : "";
-        // URL 仓库：把任务分支推回远程，server 验收合并时用。推送失败不阻断 complete（分支仍在本地缓存）。
+        // A04 · 固定 base..head 范围:Git 任务先读当前完整 HEAD 作为 headCommit(完整 40 位),
+        // 再以 prepared.baseCommit..headCommit 计算 diff_stat;Agent 已 commit 后 git diff HEAD 通常为空,
+        // 旧实现会用空 diff 误导,必须改用已固化的 base..head。无 repo_path 任务 diff_stat 为空。
+        let diffStat = "";
+        if (prepared.baseCommit != null) {
+          const headCommit = await readWorktreeHead(workDir); // 校验 40 位,非 40 位抛错
+          diffStat = await gitDiffStat(workDir, prepared.baseCommit, headCommit);
+        }
+        // URL 仓库:把任务分支推回远程,server 验收合并时用。推送失败不阻断 complete(分支仍在本地缓存)。
         let pushed: boolean | undefined;
-        if (prepared.branch && issue.repo_path && isRepoUrl(issue.repo_path)) {
+        if (prepared.taskBranch && issue.repo_path && isRepoUrl(issue.repo_path)) {
           try {
-            await git(workDir, ["push", "-u", "origin", prepared.branch]);
+            await git(workDir, ["push", "-u", "origin", prepared.taskBranch]);
             pushed = true;
           } catch (e: any) {
-            console.error(`[anvil-executor] push ${prepared.branch} failed, continuing with complete:`, e?.message ?? e);
+            console.error(`[anvil-executor] push ${prepared.taskBranch} failed, continuing with complete:`, e?.message ?? e);
             pushed = false;
           }
         }
         // A03-FIX · complete 失败(transport 耗尽 / 4xx)不构造新 fail,记录脱敏日志并结束:
         // "终态回执不确定"——可能是 server 已写入但响应丢失,重复 fail 反而会污染状态。
+        // A04 · complete payload 沿用当前兼容结构(branch / diff_stat / work_dir / pushed / undelivered),
+        // 头/工作树/verification 等更完整字段由 A07 引入。
         try {
           await client.complete(task.id, daemonId, {
-            branch: prepared.branch ?? undefined,
+            branch: prepared.taskBranch ?? undefined,
             diff_stat: diffStat || undefined,
             work_dir: workDir,
             ...(pushed === undefined ? {} : { pushed }),

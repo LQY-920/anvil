@@ -74,9 +74,25 @@ export class ApiClient {
     return this.req("POST", "/api/daemon/claim", { daemon_id: daemonId, max_tasks: maxTasks });
   }
 
-  /** A03 · daemon plane start:用 daemon token,body 显式带 daemon_id。 */
-  startTask(taskId: string, daemonId: string, workDir: string) {
-    return this.opWithRetry("POST", `/api/daemon/tasks/${taskId}/start`, { daemon_id: daemonId, work_dir: workDir });
+  /**
+   * A04 · daemon plane start:用 daemon token + body.daemon_id。
+   * 当存在 taskBranch / targetBranch / baseCommit(均为非 null 且完整 40 位 SHA)时,
+   * 视为 Git 仓库任务,显式附带 v2 锚点 + delivery_contract_version=2;
+   * 无 repo_path 的普通目录任务只附带 daemon_id + work_dir,不得伪造 Git 锚点。
+   */
+  startTask(taskId: string, daemonId: string, workDir: string, anchors?: {
+    taskBranch: string | null;
+    targetBranch: string | null;
+    baseCommit: string | null;
+  } | null) {
+    const body: Record<string, unknown> = { daemon_id: daemonId, work_dir: workDir };
+    if (anchors && anchors.taskBranch != null && anchors.targetBranch != null && anchors.baseCommit != null) {
+      body.task_branch = anchors.taskBranch;
+      body.target_branch = anchors.targetBranch;
+      body.base_commit = anchors.baseCommit;
+      body.delivery_contract_version = 2;
+    }
+    return this.opWithRetry("POST", `/api/daemon/tasks/${taskId}/start`, body);
   }
 
   /** A03-FIX · daemon plane complete。daemonId 由方法参数最终写入,result.daemon_id 即使存在

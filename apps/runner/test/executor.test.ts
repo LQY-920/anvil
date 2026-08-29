@@ -13,6 +13,7 @@ import type { AgentMessage } from "@anvil/core";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 let app: FastifyInstance;
 
@@ -542,5 +543,189 @@ describe("executor · A03 daemon token surface", () => {
         .resolves.toBeUndefined();
       expect(callCount).toBe(3);
     } finally { restore(); }
+  });
+});
+
+// =============================================================================
+// A04 · Git 锚点 + 固定 Diff 范围 + Start 上报 v2 锚点
+// =============================================================================
+
+describe("executor · A04 Git anchors & fixed diff", () => {
+  // 公共 setup:创建一个本地 Git 仓库,创建带 repo_path 的 issue,claim 出对应 task。
+  // 流程不复用默认 setup() 的"无 repo_path" issue,而是单独造一个本地仓库 + agent + issue。
+  async function setupGitIssue() {
+    const { client, url, daemonId, daemonToken } = await setup();
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-a04-repo-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    const preHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+    const preBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }).toString().trim();
+    // 新建 agent(避免占用 setup() 默认 agent 的并发槽)
+    const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: `bot-a04-${Date.now()}`, provider: "kimi" } })).json();
+    const i = (await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "A04 git 任务", assignee_type: "agent", assignee_id: a.id, repo_path: repo },
+    })).json();
+    const claim = await client.claim("d1", 5);
+    const pkg = claim.tasks.find((t: any) => t.issue.id === i.id)!;
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-a04-runner-"));
+    return { client, url, daemonId, daemonToken, runnerRoot, repo, preHead, preBranch, pkg };
+  }
+
+  /** 制造一个 commit-in-worktree 的 fake backend:首次 execute 在 workDir 内 commit 一个新文件,
+   *  追问轮(同 backend 复用)不再 commit,模拟真实 Agent "提交过就不再补" 的行为。 */
+  function commitBackend(label: string): AgentBackend {
+    let committed = false;
+    return {
+      provider: "kimi",
+      execute(opts) {
+        const cwd = opts.workDir;
+        if (!committed) {
+          execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+          execFileSync("git", ["config", "user.name", "t"], { cwd });
+          fs.writeFileSync(path.join(cwd, `${label}.txt`), `${label} change`);
+          execFileSync("git", ["add", "-A"], { cwd });
+          execFileSync("git", ["commit", "-m", `${label} commit`], { cwd });
+          committed = true;
+        }
+        return {
+          messages: (async function* () { yield { type: "text", content: "working" }; })(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+  }
+
+  it("A04: Git 仓库任务 Start body 精确包含 daemon_id / work_dir / task_branch / target_branch / base_commit / delivery_contract_version=2", async () => {
+    const { client, pkg, runnerRoot, daemonId, preHead, preBranch } = await setupGitIssue();
+    const { calls, restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) {
+        const body = JSON.parse(init.body as string);
+        expect(body.daemon_id).toBe(daemonId);
+        expect(typeof body.work_dir).toBe("string");
+        expect(body.task_branch).toBe(`task/${pkg.task.id.slice(0, 8)}`);
+        expect(body.target_branch).toBe(preBranch);
+        expect(body.base_commit).toBe(preHead);
+        expect(body.delivery_contract_version).toBe(2);
+        // Start body 不含 head_commit
+        expect(body.head_commit).toBeUndefined();
+        return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      }
+      if (url.includes("/complete")) return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: commitBackend("start"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      const startCalls = calls.filter((c) => c.url.includes("/start"));
+      expect(startCalls).toHaveLength(1);
+    } finally { restore(); }
+  });
+
+  it("A04: 无 repo_path 任务继续使用兼容 Start body,只含 daemon_id + work_dir,不含 v2 锚点", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setup(); // setup() 默认 issue 无 repo_path
+    const { calls, restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) {
+        const body = JSON.parse(init.body as string);
+        expect(body.daemon_id).toBe(daemonId);
+        expect(typeof body.work_dir).toBe("string");
+        // 不伪造 Git 锚点
+        expect(body.task_branch).toBeUndefined();
+        expect(body.target_branch).toBeUndefined();
+        expect(body.base_commit).toBeUndefined();
+        expect(body.delivery_contract_version).toBeUndefined();
+        return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      }
+      if (url.includes("/complete")) return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: fakeBackend("success"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      const startCalls = calls.filter((c) => c.url.includes("/start"));
+      expect(startCalls).toHaveLength(1);
+    } finally { restore(); }
+  });
+
+  it("A04: Start transport retry 复用同一序列化 payload,所有重试 body 字节完全一致", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    let callCount = 0;
+    const seenStartBodies: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) {
+        seenStartBodies.push(init.body as string);
+        callCount++;
+        if (callCount === 1) throw new Error("ECONNRESET start transport error");
+        return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      }
+      if (url.includes("/complete")) return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: commitBackend("retry"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      expect(callCount).toBeGreaterThanOrEqual(2);
+      for (let i = 1; i < seenStartBodies.length; i++) {
+        expect(seenStartBodies[i]).toBe(seenStartBodies[0]);
+      }
+    } finally { restore(); }
+  });
+
+  it("A04: Agent commit 后,Complete 的 diff_stat 来自 base..head 而非 HEAD,不能为空", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    let capturedComplete: any = null;
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      if (url.includes("/complete")) {
+        capturedComplete = JSON.parse(init.body as string);
+        return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      }
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: commitBackend("diff"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      expect(capturedComplete).not.toBeNull();
+      // diff_stat 非空且包含本次 commit 的文件
+      expect(typeof capturedComplete.diff_stat).toBe("string");
+      expect(capturedComplete.diff_stat.length).toBeGreaterThan(0);
+      expect(capturedComplete.diff_stat).toContain("diff.txt");
+      // branch 来自 prepared 锚点
+      expect(capturedComplete.branch).toBe(`task/${pkg.task.id.slice(0, 8)}`);
+    } finally { restore(); }
+  });
+
+  it("A04: 现有行为不退化 —— start 仍使用 daemon token", async () => {
+    const { client, pkg, runnerRoot, daemonId, daemonToken } = await setupGitIssue();
+    const seenAuths: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start") || url.includes("/complete") || url.includes("/fail")) {
+        const auth = (init.headers as any)?.authorization;
+        if (typeof auth === "string") seenAuths.push(auth);
+        if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+        if (url.includes("/complete")) return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+        return okJson({ ok: true, task_id: pkg.task.id, status: "failed" });
+      }
+      return okJson({});
+    });
+    try {
+      await executeTask({ client, backend: commitBackend("reg"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      for (const a of seenAuths) {
+        expect(a).toBe(`Bearer ${daemonToken}`);
+      }
+      expect(seenAuths.length).toBeGreaterThan(0);
+    } finally { restore(); }
+  });
+
+  it("A04: Git 任务执行成功后,server 端 Task 行写入完整 v2 锚点(task_branch/target_branch/base_commit)", async () => {
+    // 走真 server,不 mock start,验证 server 落库端行为(R1-FIX2 已允许 start 携带 v2 锚点)
+    const { client, pkg, runnerRoot, daemonId } = await setupGitIssue();
+    await executeTask({ client, backend: commitBackend("anchor"), runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    const task = got.json().task;
+    expect(task.task_branch).toBe(`task/${pkg.task.id.slice(0, 8)}`);
+    expect(task.target_branch).toBe("main");
+    expect(task.base_commit).toMatch(/^[0-9a-f]{40}$/i);
   });
 });
