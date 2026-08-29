@@ -216,3 +216,62 @@ describe("executeTask with repo URL", () => {
     expect(remoteBranches).toContain(`task/${pkg.task.id.slice(0, 8)}`);
   });
 });
+
+// =============================================================================
+// A04-FIX2 · URL 仓库身份校验(防止 PATCH Issue 改 repo_path 后在错误 URL 缓存中执行)
+// =============================================================================
+
+describe("A04-FIX2 · URL 仓库身份校验", () => {
+  it("A04-FIX2: URL A 缓存 worktree + Issue 仍为 URL A → Resume 成功,不重新 fetch,baseCommit 不被远程推进覆盖", { timeout: 30000 }, async () => {
+    const { url, bareDir, seedDir } = makeRemote();
+    const runnerRoot = tmp("anvil-runner-");
+    const issue = { repo_path: url } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+    const savedBase = first.baseCommit!;
+    expect(savedBase).toMatch(/^[0-9a-f]{40}$/i);
+
+    // 远程推进 + 缓存 ff(模拟上游新提交)
+    fs.writeFileSync(path.join(seedDir, "c.txt"), "newer\n");
+    gitR(seedDir, ["add", "-A"]);
+    gitR(seedDir, ["commit", "-m", "advance-2"]);
+    gitR(seedDir, ["push", bareDir, "main"]);
+    gitR(repoCachePath(url, runnerRoot), ["fetch", "--all", "--prune"]);
+    gitR(repoCachePath(url, runnerRoot), ["merge", "--ff-only", "@{u}"]);
+    const advancedHead = gitR(repoCachePath(url, runnerRoot), ["rev-parse", "HEAD"]);
+    expect(advancedHead).not.toBe(savedBase);
+
+    // Resume:URL 没变,prior worktree 仍是 URL A 的 worktree
+    const second = await prepareWorkdir(
+      issue, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: savedBase },
+    );
+    expect(second.baseCommit).toBe(savedBase);
+    expect(second.baseCommit).not.toBe(advancedHead);
+    expect(second.resumed).toBe(true);
+  });
+
+  it("A04-FIX2: URL A 缓存 worktree + Issue 改成 URL B → 明确失败,不进入 URL A 执行,不 clone/fetch URL B 作为 fresh fallback", { timeout: 30000 }, async () => {
+    const urlA = makeRemote().url;
+    const urlB = makeRemote().url;
+    expect(urlA).not.toBe(urlB);
+    const runnerRoot = tmp("anvil-runner-");
+    const issueA = { repo_path: urlA } as Issue;
+    const first = await prepareWorkdir(issueA, "12345678-abcd", runnerRoot, null);
+    expect(first.taskBranch).toBe("task/12345678");
+
+    // prior 来自 URL A,但 issue 改成 URL B
+    const issueB = { repo_path: urlB } as Issue;
+    await expect(prepareWorkdir(
+      issueB, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    )).rejects.toThrow(/仓库|repo|repository|不一致|不匹配/i);
+
+    // 关键:URL B 的缓存目录不应被创建(没有静默 fresh fallback)
+    const cacheB = repoCachePath(urlB, runnerRoot);
+    expect(fs.existsSync(cacheB)).toBe(false);
+    // 也不应在 URL A 缓存里创建 task/87654321 分支
+    const cacheA = repoCachePath(urlA, runnerRoot);
+    const branchesA = gitR(cacheA, ["branch", "--list"]);
+    expect(branchesA).not.toContain("task/87654321");
+  });
+});

@@ -299,7 +299,12 @@ describe("A04-FIX1 · claimTasks anchor inheritance", () => {
     expect(pkg.task.base_commit).toBeNull();
   });
 
-  it("Git prior 与当前 Task 已有锚点不一致 → 不继承,prior_work_dir 也不下发(走 fresh,已有不一致字段不被覆盖)", async () => {
+  it("A04-FIX2 · Git prior 与当前 Task 已有锚点不一致 → Server 不覆盖冲突锚点,prior_work_dir 也不下发;Runner 后续必须因\"无 prior 但存在 saved anchors\"明确失败,不得宣称该状态可走 fresh", async () => {
+    // 真实语义(2026-08-29 A04-FIX2 修正):
+    // 旧版注释把这状态标为"走 fresh"是误导的 —— 当前 Task 仍保留 child 原值(可能部分非 null),
+    // Runner prepareWorkdir 现在把"无 prior 但存在任意 saved anchor"判定为非法矛盾状态 C3,
+    // 会明确抛错并由 executeTask 收敛为 fail,不会静默 fresh。
+    // 本测试只覆盖 Server 侧语义:不覆盖冲突字段 + 不下 prior_work_dir。
     await makeIssueWithRepoPath(null);
     const firstTaskRes = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
     const firstTaskData = firstTaskRes.json()[0];
@@ -320,12 +325,15 @@ describe("A04-FIX1 · claimTasks anchor inheritance", () => {
     // claim
     const claim = await app.inject({ method: "POST", url: "/api/daemon/claim", headers: { authorization: `Bearer ${token}` }, payload: { daemon_id: "d1" } });
     const pkg = claim.json().tasks[0];
-    // 关键:不一致时 prior_work_dir 也不下发
+    // 关键:不一致时 prior_work_dir 也不下发 —— Runner 看到 prior=null + saved anchor(target_branch=develop)
+    // 会进入 A04-FIX2 状态矩阵的 C3(priorWorkDir 为空但 Task 存在 saved Git 锚点)→ 明确失败,
+    // 而不是静默 fresh,不得在本测试里伪造 Runner 已成功的假象。
     expect(pkg.prior_work_dir).toBeNull();
     // 已有不一致字段(target_branch)不被覆盖,保留 child 原值
     expect(pkg.task.target_branch).toBe("develop");
     // 缺失字段保持 null(prior 不会强加,因整体不继承)
     expect(pkg.task.task_branch).toBeNull();
     expect(pkg.task.base_commit).toBeNull();
+    // 这种状态在 Runner 侧必须被 A04-FIX2 拒绝 —— 见 apps/runner/test/worktree.test.ts 的对应测试。
   });
 });

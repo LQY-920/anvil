@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isRepoUrl, type Issue } from "@anvil/core";
+import { isRepoUrl, repoCachePath, type Issue } from "@anvil/core";
 import { ensureRepoCache } from "./repocache.js";
 
 export function git(cwd: string, args: string[]): Promise<string> {
@@ -55,9 +55,124 @@ export async function ensureGitAvailable(): Promise<void> {
 //  4. Resume 必须使用 Task 已保存的锚点,不得用当前目标分支 HEAD 覆盖已保存 baseCommit。
 //  5. 无 repo_path 的普通目录任务:taskBranch/targetBranch/baseCommit 一律为 null,
 //     后续 Start 继续走当前无 anchors 兼容路径(daemon_id + work_dir),不伪造 Git 事实。
+//
+// A04-FIX2 · Resume 仓库身份校验 + 状态矩阵细化:
+//  6. Resume 前必须验证 priorWorkDir 与 issue.repo_path 指向同一 Git common directory,
+//     防止 PATCH Issue 改 repo_path 后 Runner 在错误仓库中执行。
+//  7. 状态矩阵:
+//     A. Initial/Fresh 合法:priorWorkDir == null 且 savedAnchors 三项全 null。
+//     B. Resume 合法:priorWorkDir 非空且目录存在,savedAnchors 三项齐全且合法,
+//        priorWorkDir 与 issue.repo_path 同仓库,worktree 分支 === saved taskBranch。
+//     C. 非法矛盾:上述条件任一不满足 → 任何 git worktree add / Start 之前明确失败。
+//  8. 无 repo_path 普通目录任务不得携带任何 saved Git anchor(防止忽略异常锚点)。
 // =============================================================================
 
 const SHA1_40 = /^[0-9a-f]{40}$/i;
+
+// -----------------------------------------------------------------------------
+// A04-FIX2 · 路径规范化与 Git common directory 读取
+// -----------------------------------------------------------------------------
+
+/**
+ * 把任意路径转成稳定可比较的规范形式:
+ *  - path.resolve 取得绝对路径
+ *  - fs.realpathSync 解析符号链接
+ *  - Windows 去掉 `\\?\` 长路径前缀并小写(NTFS 不区分大小写)
+ *  - POSIX 保持原样(区分大小写)
+ * 失败时(如路径不存在)回退到绝对路径,不抛错。
+ */
+export function canonicalizeFsPath(p: string): string {
+  let abs = path.resolve(p);
+  try {
+    abs = fs.realpathSync(abs);
+  } catch {
+    // 路径可能不存在/无权限访问,fall back 到绝对路径
+  }
+  if (process.platform === "win32") {
+    let s = abs;
+    if (s.startsWith("\\\\?\\")) s = s.slice(4);
+    return s.toLowerCase();
+  }
+  return abs;
+}
+
+/**
+ * 读 git common directory(对 worktree 就是主仓库的 .git,对普通仓库就是自身 .git),
+ * 同时返回该 .git 目录的文件标识(dev + ino),用于跨 Windows 8.3 短路径/长路径、
+ * 大小写差异、符号链接等场景的可靠比对。
+ *
+ * 失败抛错(由调用方收敛);不修改任何缓存/远程状态。
+ */
+export interface GitCommonDirId {
+  /** canonicalizeFsPath 之后的路径字符串,仅用于错误信息展示。 */
+  path: string;
+  /** volume serial(Windows) / dev(POSIX),统一为 bigint 便于比较。 */
+  dev: bigint;
+  /** file index(Windows) / inode(POSIX),统一为 bigint 便于比较。 */
+  ino: bigint;
+}
+
+export async function readGitCommonDir(repoDir: string): Promise<GitCommonDirId> {
+  const out = await git(repoDir, ["rev-parse", "--git-common-dir"]);
+  const resolved = canonicalizeFsPath(path.resolve(repoDir, out.trim()));
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved);
+  } catch (e: any) {
+    throw new Error(`无法 stat git common dir (${resolved}): ${e?.message ?? e}`);
+  }
+  return { path: resolved, dev: BigInt(stat.dev), ino: BigInt(stat.ino) };
+}
+
+/**
+ * 验证 priorWorkDir 所属 Git 仓库与 issue.repo_path 一致:
+ *  - 本地仓库:分别读两者的 git common directory 的 (dev,ino),相等才算同仓库。
+ *  - URL 仓库:推导 issue.repo_path 对应的本地缓存目录 <cache>/.git,与 priorWorkDir 的 common dir 比对。
+ * 不得执行 fetch / merge / 任何改变状态的操作,也不得修改 target/base。
+ * 不一致 → 抛错(由 executeTask 收敛为 fail)。
+ */
+export async function assertResumeRepository(
+  priorWorkDir: string,
+  issueRepoPath: string | null,
+  runnerRoot: string,
+): Promise<void> {
+  if (!issueRepoPath) {
+    throw new Error("Resume 身份校验失败:issue.repo_path 为空,无法与 priorWorkDir 比对");
+  }
+  let prior: GitCommonDirId;
+  try {
+    prior = await readGitCommonDir(priorWorkDir);
+  } catch (e: any) {
+    throw new Error(`Resume 身份校验失败:priorWorkDir 不是有效 Git 仓库(${priorWorkDir}): ${e?.message ?? e}`);
+  }
+  let expected: GitCommonDirId;
+  if (isRepoUrl(issueRepoPath)) {
+    const cacheDir = repoCachePath(issueRepoPath, runnerRoot);
+    const expectedPath = canonicalizeFsPath(path.join(cacheDir, ".git"));
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(expectedPath);
+    } catch (e: any) {
+      throw new Error(
+        `Resume 身份校验失败:URL ${issueRepoPath} 对应缓存 ${expectedPath} 不存在或不可访问: ${e?.message ?? e}`,
+      );
+    }
+    expected = { path: expectedPath, dev: BigInt(stat.dev), ino: BigInt(stat.ino) };
+  } else {
+    try {
+      expected = await readGitCommonDir(issueRepoPath);
+    } catch (e: any) {
+      throw new Error(`Resume 身份校验失败:issue.repo_path 不是有效 Git 仓库(${issueRepoPath}): ${e?.message ?? e}`);
+    }
+  }
+  // 跨 Windows 8.3 短路径/长路径、大小写、符号链接的可靠比对:用 (dev, ino) 文件标识。
+  if (prior.dev !== expected.dev || prior.ino !== expected.ino) {
+    throw new Error(
+      `Resume 仓库与 Issue repo_path 不一致:priorWorkDir=${priorWorkDir} 属于 ${prior.path} (dev=${prior.dev},ino=${prior.ino}),` +
+      `而 issue.repo_path=${issueRepoPath} 指向 ${expected.path} (dev=${expected.dev},ino=${expected.ino})`,
+    );
+  }
+}
 
 /** 读当前分支(简写)。detached HEAD 返回 "HEAD";调用方必须把 "HEAD" 视为失败。 */
 export async function readAbbrevBranch(repoDir: string): Promise<string> {
@@ -152,7 +267,23 @@ async function resolveUrlRepoAnchors(cacheDir: string): Promise<{ targetBranch: 
  *  普通目录任务三锚点全 null。detached HEAD、缺失锚点、非法 SHA 一律明确失败。
  *
  *  A04-FIX1 · A:无 repo_path + prior_work_dir 存在 → 直接复用目录,三锚点全 null,
- *  不要求 SavedAnchors,不伪造 Git 锚点,不因目录不是 Git 仓库而失败。 */
+ *  不要求 SavedAnchors,不伪造 Git 锚点,不因目录不是 Git 仓库而失败。
+ *
+ *  A04-FIX2 · 状态矩阵:
+ *   A. Initial/Fresh 合法:priorWorkDir==null 且 savedAnchors 三项全 null → 全新 worktree。
+ *   B. Resume 合法:priorWorkDir 非空 + 目录存在 + savedAnchors 三项齐全合法 +
+ *      仓库身份一致 + worktree 分支 === saved taskBranch → resumed=true。
+ *   C. 非法矛盾(任何一条不满足,执行任何 git worktree add / Start 之前明确抛错):
+ *      C1. priorWorkDir 非空但目录不存在;
+ *      C2. priorWorkDir 非空但 savedAnchors 缺任意一项;
+ *      C3. priorWorkDir 为空但 savedAnchors 任意一项非空;
+ *      C4. savedAnchors 部分非空(只传 1~2 项);
+ *      C5. priorWorkDir 所属仓库与 issue.repo_path 不一致;
+ *      C6. saved taskBranch 与实际 worktree 分支不一致;
+ *      C7. saved baseCommit 非完整 40 位 hex;
+ *      C8. saved taskBranch/targetBranch 为空或非字符串。
+ *   D. 无 repo_path 普通目录:priorWorkDir 复用 + 不要求 Git 锚点;
+ *      若 Task 携带任何 saved Git anchor → 明确失败(不得忽略异常锚点)。 */
 export async function prepareWorkdir(
   issue: Issue,
   taskId: string,
@@ -166,9 +297,19 @@ export async function prepareWorkdir(
   const base = path.join(runnerRoot, "worktrees");
   fs.mkdirSync(base, { recursive: true });
   const freshDir = path.join(base, short);
+  const freshTaskBranch = `task/${short}`;
 
-  // A04-FIX1 · A:无 repo_path 普通目录任务 —— 复用 prior 目录不要求 Git 锚点
+  // A04-FIX2 · D:无 repo_path 普通目录任务 —— 守卫:Task 不得携带任何 saved Git anchor
   if (!issue.repo_path) {
+    if (hasAnySavedAnchor(savedAnchors)) {
+      throw new Error(
+        "无 repo_path 普通目录任务不应携带 saved Git 锚点" +
+        ` (taskBranch=${savedAnchors?.taskBranch ?? "null"},` +
+        ` targetBranch=${savedAnchors?.targetBranch ?? "null"},` +
+        ` baseCommit=${savedAnchors?.baseCommit ?? "null"}),` +
+        "请检查 Issue 配置或清空 Task 上的异常 Git 锚点",
+      );
+    }
     if (priorWorkDir && fs.existsSync(priorWorkDir)) {
       return { workDir: priorWorkDir, taskBranch: null, targetBranch: null, baseCommit: null, resumed: true };
     }
@@ -177,33 +318,61 @@ export async function prepareWorkdir(
     return { workDir: freshDir, taskBranch: null, targetBranch: null, baseCommit: null, resumed: false };
   }
 
-  // Git 仓库任务 —— prior 存在则按锚点 resume,否则新建 worktree
-  if (priorWorkDir && fs.existsSync(priorWorkDir)) {
-    return await resumeWorkdir(priorWorkDir, savedAnchors);
+  // ====================================================================
+  // A04-FIX2 · Git 仓库任务状态矩阵
+  // ====================================================================
+  const allAnchorsPresent = areAllAnchorsPresent(savedAnchors);
+  const noAnchors = !hasAnySavedAnchor(savedAnchors);
+
+  // C3 / C4 · priorWorkDir 为空但存在 saved anchor(部分或全) → 非法
+  if (!priorWorkDir) {
+    if (!noAnchors) {
+      throw new Error(
+        "非法状态:priorWorkDir 为空但 Task 存在 saved Git 锚点" +
+        ` (taskBranch=${savedAnchors?.taskBranch ?? "null"},` +
+        ` targetBranch=${savedAnchors?.targetBranch ?? "null"},` +
+        ` baseCommit=${savedAnchors?.baseCommit ?? "null"}),` +
+        "不得静默创建新 task/<id> 分支覆盖已保存锚点",
+      );
+    }
+    // A · Initial/Fresh 合法状态
+    return await createFreshGitWorkdir(issue, freshTaskBranch, freshDir, runnerRoot);
   }
 
-  const taskBranch = `task/${short}`;
-  if (isRepoUrl(issue.repo_path)) {
-    const cacheDir = await ensureRepoCache(issue.repo_path, runnerRoot);
-    const { targetBranch, baseCommit } = await resolveUrlRepoAnchors(cacheDir);
-    // worktree 必须从已固化的 baseCommit 创建,不在多个命令之间重新读取浮动的 HEAD
-    await git(cacheDir, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
-    return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
+  // priorWorkDir 非空 —— 进入 Resume 校验路径
+  // C1 · priorWorkDir 非空但目录不存在 → 非法
+  if (!fs.existsSync(priorWorkDir)) {
+    throw new Error(
+      `Resume worktree 不存在:priorWorkDir=${priorWorkDir}(目录已删除或路径错误),` +
+      "不得静默创建新 worktree 覆盖已保存锚点",
+    );
   }
-  const { targetBranch, baseCommit } = await resolveLocalRepoAnchors(issue.repo_path);
-  await git(issue.repo_path, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
-  return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
-}
 
-async function resumeWorkdir(priorWorkDir: string, savedAnchors: SavedAnchors | null): Promise<PreparedWorkdir> {
-  // A04 · resume 必传 Task 已保存锚点,缺失则明确失败(不得猜测)
-  if (!savedAnchors
-      || !savedAnchors.targetBranch
-      || !savedAnchors.baseCommit) {
-    throw new Error("Resume 缺少 Task 已保存的 target_branch / base_commit 锚点,不得从最新目标分支重新计算");
+  // C2 / C4 · prior 非空但 savedAnchors 不齐全(部分或全缺) → 非法
+  if (!allAnchorsPresent) {
+    throw new Error(
+      "Resume 缺少完整的 saved Git 锚点" +
+      ` (taskBranch=${savedAnchors?.taskBranch ?? "null"},` +
+      ` targetBranch=${savedAnchors?.targetBranch ?? "null"},` +
+      ` baseCommit=${savedAnchors?.baseCommit ?? "null"}),` +
+      "不得从目标分支 HEAD 重新猜测 base",
+    );
   }
-  // 严格校验 Task 已存 SHA 是 40 位 hex,不是 "HEAD" / 短 SHA
-  assertFullSha1("saved baseCommit", savedAnchors.baseCommit);
+
+  // 此时 savedAnchors 三项均为非空字符串,做格式校验
+  // C8 · taskBranch/targetBranch 不得为空字符串
+  if (!savedAnchors!.taskBranch!.trim() || !savedAnchors!.targetBranch!.trim()) {
+    throw new Error(
+      "Resume saved Git 锚点含空字符串" +
+      ` (taskBranch=${JSON.stringify(savedAnchors!.taskBranch)},` +
+      ` targetBranch=${JSON.stringify(savedAnchors!.targetBranch)})`,
+    );
+  }
+  // C7 · baseCommit 必须为完整 40 位 hex
+  assertFullSha1("saved baseCommit", savedAnchors!.baseCommit!);
+
+  // C5 · 仓库身份校验:priorWorkDir 与 issue.repo_path 必须指向同一 Git common dir
+  await assertResumeRepository(priorWorkDir, issue.repo_path, runnerRoot);
 
   // 读 worktree 实际分支;detached HEAD 必须失败
   let actualBranch: string;
@@ -216,19 +385,53 @@ async function resumeWorkdir(priorWorkDir: string, savedAnchors: SavedAnchors | 
     throw new Error(`Resume worktree 处于 detached HEAD,无法继续(${priorWorkDir})`);
   }
 
-  // Task 已保存 task_branch:实际分支必须一致;不一致 → 明确失败。
-  if (savedAnchors.taskBranch && savedAnchors.taskBranch !== actualBranch) {
-    throw new Error(`Resume worktree 实际分支 ${actualBranch} 与 Task 已存 task_branch ${savedAnchors.taskBranch} 不一致`);
+  // C6 · saved taskBranch 与实际 worktree 分支必须一致
+  if (savedAnchors!.taskBranch !== actualBranch) {
+    throw new Error(
+      `Resume worktree 实际分支 ${actualBranch} 与 Task 已存 task_branch ${savedAnchors!.taskBranch} 不一致,` +
+      "不得用当前分支覆盖已保存锚点",
+    );
   }
 
-  // target/base 始终使用 Task 已存值(不得重新读取当前目标分支 HEAD)
+  // B · Resume 合法状态
   return {
     workDir: priorWorkDir,
     taskBranch: actualBranch,
-    targetBranch: savedAnchors.targetBranch,
-    baseCommit: savedAnchors.baseCommit,
+    targetBranch: savedAnchors!.targetBranch!,
+    baseCommit: savedAnchors!.baseCommit!.toLowerCase(),
     resumed: true,
   };
+}
+
+/** savedAnchors 任一项非 null 视为"有锚点"——用于 C3 / C4 / D 守卫。 */
+function hasAnySavedAnchor(a: SavedAnchors | null | undefined): boolean {
+  return !!(a && (a.taskBranch || a.targetBranch || a.baseCommit));
+}
+
+/** savedAnchors 三项全部非空字符串视为"齐全"——用于 B / C2 校验。 */
+function areAllAnchorsPresent(a: SavedAnchors | null | undefined): boolean {
+  return !!(a && a.taskBranch && a.targetBranch && a.baseCommit);
+}
+
+/** A · 全新 Git worktree:从当前 issue.repo_path 拉默认分支 + baseCommit,创建 task/<shortId>。 */
+async function createFreshGitWorkdir(
+  issue: Issue,
+  taskBranch: string,
+  freshDir: string,
+  runnerRoot: string,
+): Promise<PreparedWorkdir> {
+  // prepareWorkdir 入口已校验 issue.repo_path 非 null,这里一定有值
+  const repoPath = issue.repo_path!;
+  if (isRepoUrl(repoPath)) {
+    const cacheDir = await ensureRepoCache(repoPath, runnerRoot);
+    const { targetBranch, baseCommit } = await resolveUrlRepoAnchors(cacheDir);
+    // worktree 必须从已固化的 baseCommit 创建,不在多个命令之间重新读取浮动的 HEAD
+    await git(cacheDir, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
+    return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
+  }
+  const { targetBranch, baseCommit } = await resolveLocalRepoAnchors(repoPath);
+  await git(repoPath, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
+  return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
 }
 
 /** A04 · 固定 base..head diff 范围。

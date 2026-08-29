@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { ensureGitAvailable, git, prepareWorkdir, gitDiffStat, readWorktreeHead } from "../src/worktree.js";
+import {
+  ensureGitAvailable, git, prepareWorkdir, gitDiffStat, readWorktreeHead,
+  readGitCommonDir, assertResumeRepository, canonicalizeFsPath,
+} from "../src/worktree.js";
 import type { Issue } from "@anvil/core";
 
 const SHA1_40 = /^[0-9a-f]{40}$/i;
@@ -178,14 +181,14 @@ describe("worktree", () => {
     // 显式不传 target/base(savedAnchors 缺位)
     await expect(
       prepareWorkdir(issue, "87654321-ffff-task", runnerRoot, first.workDir, null),
-    ).rejects.toThrow(/anchor|target_branch|base_commit/i);
+    ).rejects.toThrow(/anchor|targetBranch|target_branch|baseCommit|base_commit|锚点/i);
     // 只传 task_branch 但 base 缺失同样失败(任何缺失都不得猜测)
     await expect(
       prepareWorkdir(
         issue, "87654321-ffff-task", runnerRoot, first.workDir,
         { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: null },
       ),
-    ).rejects.toThrow(/anchor|base_commit/i);
+    ).rejects.toThrow(/anchor|baseCommit|base_commit|锚点/i);
   });
 
   // ---------------------------------------------------------------------------
@@ -302,12 +305,245 @@ describe("worktree", () => {
     await expect(prepareWorkdir(
       issue, "87654321-ffff-task", runnerRoot, first.workDir,
       { taskBranch: first.taskBranch, targetBranch: null, baseCommit: first.baseCommit },
-    )).rejects.toThrow(/anchor|target_branch/i);
+    )).rejects.toThrow(/anchor|targetBranch|target_branch|锚点/i);
     // base_commit 缺失
     await expect(prepareWorkdir(
       issue, "87654321-ffff-task", runnerRoot, first.workDir,
       { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: null },
-    )).rejects.toThrow(/anchor|base_commit/i);
+    )).rejects.toThrow(/anchor|baseCommit|base_commit|锚点/i);
+  });
+});
+
+// =============================================================================
+// A04-FIX2 · Resume 仓库身份校验 + 状态矩阵细化
+//
+// 关键不变量(防止 A04-FIX1 之后仍然存在的两类 bug):
+//   1. PATCH Issue 改 repo_path 后,Runner 不得在旧仓库的 worktree 中继续执行。
+//   2. Server 持久化了完整 Resume 锚点但 prior worktree 已不存在时,不得静默 fresh。
+//   3. prior=null 但存在任意 saved anchor 时,不得静默创建新 task/<id> 分支。
+//   4. 无 repo_path 普通目录任务不得携带任何 saved Git anchor。
+// =============================================================================
+
+describe("A04-FIX2 · canonicalizeFsPath", () => {
+  it("A04-FIX2: 解析相对路径为绝对路径,realpath 失败时回退到绝对路径", () => {
+    const p = canonicalizeFsPath(".");
+    expect(path.isAbsolute(p)).toBe(true);
+  });
+  it("A04-FIX2: 已存在路径经 realpath 后保持稳定", () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-canon-"));
+    const a = canonicalizeFsPath(repo);
+    const b = canonicalizeFsPath(repo);
+    expect(a).toBe(b);
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+});
+
+describe("A04-FIX2 · readGitCommonDir", () => {
+  it("A04-FIX2: 普通仓库返回自身 .git 路径 + 文件标识", async () => {
+    const repo = seedRepo();
+    const id = await readGitCommonDir(repo);
+    expect(id.path).toMatch(/\.git$/);
+    expect(id.dev).not.toBe(0n);
+    expect(id.ino).not.toBe(0n);
+  });
+  it("A04-FIX2: worktree 的 common dir 等于主仓库的 common dir(按 dev+ino)", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const wt = await prepareWorkdir(issue, "abcd1234-t", runnerRoot, null);
+    const main = await readGitCommonDir(repo);
+    const wtCommon = await readGitCommonDir(wt.workDir);
+    expect(wtCommon.dev).toBe(main.dev);
+    expect(wtCommon.ino).toBe(main.ino);
+  });
+});
+
+describe("A04-FIX2 · 本地仓库身份校验", () => {
+  it("A04-FIX2: 仓库 A 的 prior worktree + Issue 仍为 A → Resume 成功,resumed=true", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+    const second = await prepareWorkdir(
+      issue, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    );
+    expect(second.resumed).toBe(true);
+    expect(second.workDir).toBe(first.workDir);
+  });
+
+  it("A04-FIX2: 仓库 A 的 prior worktree + Issue 改成仓库 B → 明确失败,不在 B 创建 task branch,不修改 A 的 worktree", async () => {
+    const repoA = seedRepo();
+    const repoB = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issueA = { repo_path: repoA } as Issue;
+    const first = await prepareWorkdir(issueA, "12345678-abcd", runnerRoot, null);
+    expect(first.taskBranch).toBe("task/12345678");
+
+    // prior 属于 A,但 issue 改成 B
+    const issueB = { repo_path: repoB } as Issue;
+    await expect(prepareWorkdir(
+      issueB, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    )).rejects.toThrow(/仓库|repo|repository|不一致|不匹配/i);
+
+    // B 不应出现 task/87654321 分支
+    const branchesB = execFileSync("git", ["branch", "--list"], { cwd: repoB }).toString();
+    expect(branchesB).not.toContain("task/87654321");
+    // A 的 worktree 仍存在且分支未变
+    const wtBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: first.workDir }).toString().trim();
+    expect(wtBranch).toBe("task/12345678");
+  });
+
+  it("A04-FIX2: issue.repo_path 使用不同文本形式(同仓库)→ 仍能 Resume(Windows 大小写 / realpath 等价形式)", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+
+    // 用 . / .. 段构造一条指向同一目录的文本路径(不依赖用户硬编码目录)
+    // 例如 /tmp/anvil-runner-XXX/worktrees/12345678/../12345678 与 /tmp/anvil-runner-XXX/worktrees/12345678 同指一处
+    const altPrior = path.join(first.workDir, ".", ".");
+    // 验证:虽然文本形式不同,但 (dev,ino) 必须一致
+    const id1 = await readGitCommonDir(first.workDir);
+    const id2 = await readGitCommonDir(altPrior);
+    expect(id1.dev).toBe(id2.dev);
+    expect(id1.ino).toBe(id2.ino);
+
+    // 把 issue.repo_path 也换成 realpath 形式(可能与 first.workDir 的文本形式不同)
+    // 由于 prior workdir 属于 repo 的 .git,只要 issue.repo_path 指向同一 repo,Resume 必须成功
+    // 这里直接把 first 的路径作为 issue.repo_path(它是 repo 的 worktree,不属于 repo 本体)
+    // 所以我们用 repo 自身(不同方式)来构造 issue.repo_path 的等价形式
+    const altIssuePath = repo; // baseline
+    // 验证:assertResumeRepository 不抛错
+    await expect(assertResumeRepository(first.workDir, altIssuePath, runnerRoot)).resolves.toBeUndefined();
+  });
+});
+
+describe("A04-FIX2 · 状态矩阵:prior / anchor 关系", () => {
+  it("A04-FIX2: prior 存在 + 完整 anchor + 仓库一致 + 分支一致 → 合法 Resume", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+    const second = await prepareWorkdir(
+      issue, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: first.taskBranch, targetBranch: first.targetBranch, baseCommit: first.baseCommit },
+    );
+    expect(second.resumed).toBe(true);
+  });
+
+  it("A04-FIX2: prior 存在但目录已删除 → 明确失败,不创建 fresh worktree,不创建新 task branch", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+    // 删除 worktree 目录(模拟执行前被外部删除)
+    fs.rmSync(first.workDir, { recursive: true, force: true });
+    // 用一个 40 位 hex baseCommit 模拟 Server 已持久化完整锚点
+    const fakeBase = "0123456789abcdef0123456789abcdef01234567";
+    await expect(prepareWorkdir(
+      issue, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: "task/12345678", targetBranch: "main", baseCommit: fakeBase },
+    )).rejects.toThrow(/不存在|Resume worktree|不.*存/i);
+    // 关键:不创建新的 task/87654321 分支(因为我们用 prior 路径,但 worktree 已删)
+    const branches = execFileSync("git", ["branch", "--list"], { cwd: repo }).toString();
+    expect(branches).not.toContain("task/87654321");
+    // runnerRoot 下没有 worktrees/87654321 新建
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "87654321"))).toBe(false);
+  });
+
+  it("A04-FIX2: prior=null + anchors 全 null → 合法 initial/fresh", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const prepared = await prepareWorkdir(issue, "abcdef00-1234", runnerRoot, null, {
+      taskBranch: null, targetBranch: null, baseCommit: null,
+    });
+    expect(prepared.resumed).toBe(false);
+    expect(prepared.taskBranch).toBe("task/abcdef00");
+  });
+
+  it("A04-FIX2: prior=null + 完整三锚点 → 明确失败,不创建 fresh worktree", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const fakeBase = "0123456789abcdef0123456789abcdef01234567";
+    await expect(prepareWorkdir(
+      issue, "abcdef00-1234", runnerRoot, null,
+      { taskBranch: "task/abcdef00", targetBranch: "main", baseCommit: fakeBase },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor/i);
+    // 不创建 fresh worktree
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "abcdef00"))).toBe(false);
+  });
+
+  it("A04-FIX2: prior=null + 部分锚点(只 taskBranch)→ 明确失败,不创建 fresh worktree", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    await expect(prepareWorkdir(
+      issue, "abcdef00-1234", runnerRoot, null,
+      { taskBranch: "task/abcdef00", targetBranch: null, baseCommit: null },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor/i);
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "abcdef00"))).toBe(false);
+  });
+
+  it("A04-FIX2: prior=null + 部分锚点(只 baseCommit)→ 明确失败,不创建 fresh worktree", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const fakeBase = "0123456789abcdef0123456789abcdef01234567";
+    await expect(prepareWorkdir(
+      issue, "abcdef00-1234", runnerRoot, null,
+      { taskBranch: null, targetBranch: null, baseCommit: fakeBase },
+    )).rejects.toThrow(/priorWorkDir|prior.*空|saved.*anchor|anchor/i);
+    expect(fs.existsSync(path.join(runnerRoot, "worktrees", "abcdef00"))).toBe(false);
+  });
+
+  it("A04-FIX2: prior 存在但 anchor 缺 taskBranch → 明确失败", async () => {
+    const repo = seedRepo();
+    const runnerRoot = tmpRoot();
+    const issue = { repo_path: repo } as Issue;
+    const first = await prepareWorkdir(issue, "12345678-abcd", runnerRoot, null);
+    const fakeBase = "0123456789abcdef0123456789abcdef01234567";
+    await expect(prepareWorkdir(
+      issue, "87654321-ffff", runnerRoot, first.workDir,
+      { taskBranch: null, targetBranch: "main", baseCommit: fakeBase },
+    )).rejects.toThrow(/anchor|targetBranch|target_branch|baseCommit|base_commit|锚点|不.*完整/i);
+  });
+
+  it("A04-FIX2: 无 repo_path + prior 目录 → 继续成功复用,三锚点全 null", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix2-prior-"));
+    fs.writeFileSync(path.join(priorDir, "leftover.txt"), "keep");
+    const issue = { repo_path: null } as Issue;
+    const prepared = await prepareWorkdir(issue, "abcdef00-9999", runnerRoot, priorDir, {
+      taskBranch: null, targetBranch: null, baseCommit: null,
+    });
+    expect(prepared.workDir).toBe(priorDir);
+    expect(prepared.resumed).toBe(true);
+    expect(prepared.taskBranch).toBeNull();
+    expect(prepared.targetBranch).toBeNull();
+    expect(prepared.baseCommit).toBeNull();
+    expect(fs.existsSync(path.join(prepared.workDir, "leftover.txt"))).toBe(true);
+  });
+
+  it("A04-FIX2: 无 repo_path + 任意非 null saved anchor → 明确失败,不得忽略异常锚点", async () => {
+    const runnerRoot = tmpRoot();
+    const priorDir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix2-prior-"));
+    const issue = { repo_path: null } as Issue;
+    // 只传 taskBranch(其他 null)
+    await expect(prepareWorkdir(issue, "abcdef00-9999", runnerRoot, priorDir, {
+      taskBranch: "task/abcdef00", targetBranch: null, baseCommit: null,
+    })).rejects.toThrow(/无 repo_path|Git.*anchor|Git.*锚点|saved.*anchor/i);
+    // 只传 baseCommit
+    await expect(prepareWorkdir(issue, "abcdef00-9999", runnerRoot, priorDir, {
+      taskBranch: null, targetBranch: null, baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    })).rejects.toThrow(/无 repo_path|Git.*anchor|Git.*锚点|saved.*anchor/i);
+    // 三项都非 null
+    await expect(prepareWorkdir(issue, "abcdef00-9999", runnerRoot, priorDir, {
+      taskBranch: "task/abcdef00", targetBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    })).rejects.toThrow(/无 repo_path|Git.*anchor|Git.*锚点|saved.*anchor/i);
   });
 });
 

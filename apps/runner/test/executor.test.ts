@@ -1106,3 +1106,177 @@ describe("ApiClient · A04-FIX1 start anchor validation", () => {
     } finally { spy.mockRestore(); }
   });
 });
+
+// =============================================================================
+// A04-FIX2 · executeTask 真实收敛:Resume worktree 不存在 / 仓库身份不一致
+//
+// 关键不变量(代替旧的"无脑 fresh"):
+//   - prepareWorkdir 抛错 → executeTask 必须 resolve(不外抛),poller 不受影响
+//   - start / complete 调用次数必须为 0(不得发出任何 Start)
+//   - fail 必须被调用(状态被收敛为失败)
+//   - runnerRoot 下不得新建 task/<id> worktree 或孤儿分支
+//   - 错误信息必须明确指向失败原因(Resume worktree 不存在 / 仓库身份不一致)
+// =============================================================================
+
+describe("executor · A04-FIX2 resume guard convergence", () => {
+  // 公共辅助:造一个本地 Git 仓库
+  function setupRepo(prefix: string): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    return repo;
+  }
+
+  it("A04-FIX2: Server 已持久化完整锚点但 prior worktree 在执行前被删除 → resolve,start=0,complete=0,fail>0,runnerRoot 不建新 worktree", async () => {
+    const repo = setupRepo("anvil-fix2-exec-");
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix2-runner-"));
+    app = await buildApp({ dbPath: ":memory:", logger: false });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const port = (app.server.address() as any).port;
+    const url = `http://127.0.0.1:${port}`;
+    const tk = (await app.inject({ method: "POST", url: "/api/daemon-tokens", payload: {} })).json();
+    const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: "bot", provider: "kimi" } })).json();
+    const i = (await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "fix2", assignee_type: "agent", assignee_id: a.id, repo_path: repo },
+    })).json();
+    const client = new ApiClient(url, tk.token);
+    await client.register("d1", [{ provider: "kimi", version: "1.0.0" }]);
+    const { tasks } = await client.claim("d1", 5);
+    const first = tasks.find((t: any) => t.issue.id === i.id)!;
+
+    // 把 Task 的锚点写满(模拟 Server 持久化的完整 Resume 锚点)
+    app.db.$client.prepare(
+      `UPDATE tasks SET task_branch=?, target_branch=?, base_commit=? WHERE id=?`,
+    ).run("task/12345678", "main", "0123456789abcdef0123456789abcdef01234567", first.task.id);
+
+    // 重新读 task + issue(锚点已落库)
+    const reloadedTask = app.db.$client.prepare(`SELECT * FROM tasks WHERE id=?`).get(first.task.id) as any;
+    const reloadedIssueResp = (await app.inject({ method: "GET", url: `/api/issues/${i.id}` })).json();
+    const reloadedIssue = reloadedIssueResp.issue;
+    expect(reloadedTask.task_branch).toBe("task/12345678");
+    expect(reloadedIssue.repo_path).toBe(repo);
+
+    // 关键:fakeWorkDir 不存在 —— 模拟 prior worktree 被删
+    const fakeWorkDir = path.join(runnerRoot, "worktrees", first.task.id.slice(0, 8));
+    expect(fs.existsSync(fakeWorkDir)).toBe(false);
+
+    let executeCalls = 0;
+    let startCalls = 0;
+    let completeCalls = 0;
+    let failCalls = 0;
+    const failBodies: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) { startCalls++; return okJson({ ok: true, task_id: first.task.id, status: "running" }); }
+      if (url.includes("/complete")) { completeCalls++; return okJson({ ok: true, task_id: first.task.id, status: "completed" }); }
+      if (url.includes("/fail")) { failCalls++; if (init?.body) failBodies.push(init.body as string); return okJson({ ok: true, task_id: first.task.id, status: "failed" }); }
+      return okJson({});
+    });
+    const noop: AgentBackend = {
+      provider: "kimi",
+      execute() { executeCalls++; return { messages: (async function* () {})(), result: Promise.resolve({ status: "completed" as const, exitCode: 0 }), kill: () => {} }; },
+    };
+
+    const pkg: any = {
+      task: reloadedTask,
+      issue: reloadedIssue,
+      prior_work_dir: fakeWorkDir,
+      task_token: first.task_token,
+      comments: [],
+    };
+
+    try {
+      await expect(executeTask({ client, backend: noop, runnerRoot, cancelPollMs: 50, daemonId: "d1" }, pkg))
+        .resolves.toBeUndefined();
+      expect(executeCalls).toBe(0);
+      expect(startCalls).toBe(0);
+      expect(completeCalls).toBe(0);
+      expect(failCalls).toBeGreaterThan(0);
+      const allErr = failBodies.join("\n");
+      expect(allErr).toMatch(/不存在|Resume worktree/i);
+      expect(fs.existsSync(path.join(runnerRoot, "worktrees", first.task.id.slice(0, 8)))).toBe(false);
+    } finally { restore(); }
+  });
+
+  it("A04-FIX2: prior worktree 属于仓库 A 但 pkg.issue.repo_path 是仓库 B → backend.execute=0,start=0,complete=0,fail>0,错误指向仓库不一致", async () => {
+    const repoA = setupRepo("anvil-fix2a-");
+    const repoB = setupRepo("anvil-fix2b-");
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-fix2-runner-"));
+
+    app = await buildApp({ dbPath: ":memory:", logger: false });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const port = (app.server.address() as any).port;
+    const url = `http://127.0.0.1:${port}`;
+    const tk = (await app.inject({ method: "POST", url: "/api/daemon-tokens", payload: {} })).json();
+    const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: "bot", provider: "kimi" } })).json();
+    const i = (await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "fix2 mismatch", assignee_type: "agent", assignee_id: a.id, repo_path: repoA },
+    })).json();
+    const client = new ApiClient(url, tk.token);
+    await client.register("d1", [{ provider: "kimi", version: "1.0.0" }]);
+    const { tasks } = await client.claim("d1", 5);
+    const first = tasks.find((t: any) => t.issue.id === i.id)!;
+
+    // 先准备一个属于 repoA 的 worktree(模拟 prior)
+    const wt = path.join(runnerRoot, "worktrees", first.task.id.slice(0, 8));
+    execFileSync("git", ["-C", repoA, "worktree", "add", "-b", "task/12345678", wt, "HEAD"]);
+    expect(fs.existsSync(wt)).toBe(true);
+
+    // 把 Task 的锚点写满(模拟 Server 持久化的完整 Resume 锚点)
+    app.db.$client.prepare(
+      `UPDATE tasks SET task_branch=?, target_branch=?, base_commit=? WHERE id=?`,
+    ).run("task/12345678", "main", "0123456789abcdef0123456789abcdef01234567", first.task.id);
+
+    // 关键:把 issue.repo_path 改为 repoB(模拟 PATCH Issue 改 repo_path)
+    app.db.$client.prepare(`UPDATE issues SET repo_path=? WHERE id=?`).run(repoB, i.id);
+
+    // 重新读 task + issue
+    const reloadedTask = app.db.$client.prepare(`SELECT * FROM tasks WHERE id=?`).get(first.task.id) as any;
+    const reloadedIssueResp = (await app.inject({ method: "GET", url: `/api/issues/${i.id}` })).json();
+    const reloadedIssue = reloadedIssueResp.issue;
+    expect(reloadedTask.task_branch).toBe("task/12345678");
+    expect(reloadedIssue.repo_path).toBe(repoB);
+
+    let executeCalls = 0;
+    let startCalls = 0;
+    let completeCalls = 0;
+    let failCalls = 0;
+    const failBodies: string[] = [];
+    const { restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/start")) { startCalls++; return okJson({ ok: true, task_id: first.task.id, status: "running" }); }
+      if (url.includes("/complete")) { completeCalls++; return okJson({ ok: true, task_id: first.task.id, status: "completed" }); }
+      if (url.includes("/fail")) { failCalls++; if (init?.body) failBodies.push(init.body as string); return okJson({ ok: true, task_id: first.task.id, status: "failed" }); }
+      return okJson({});
+    });
+    const noop: AgentBackend = {
+      provider: "kimi",
+      execute() { executeCalls++; return { messages: (async function* () {})(), result: Promise.resolve({ status: "completed" as const, exitCode: 0 }), kill: () => {} }; },
+    };
+
+    const pkg: any = {
+      task: reloadedTask,
+      issue: reloadedIssue,
+      prior_work_dir: wt,
+      task_token: first.task_token,
+      comments: [],
+    };
+
+    try {
+      await expect(executeTask({ client, backend: noop, runnerRoot, cancelPollMs: 50, daemonId: "d1" }, pkg))
+        .resolves.toBeUndefined();
+      expect(executeCalls).toBe(0);
+      expect(startCalls).toBe(0);
+      expect(completeCalls).toBe(0);
+      expect(failCalls).toBeGreaterThan(0);
+      const allErr = failBodies.join("\n");
+      expect(allErr).toMatch(/仓库|repo|repository|不一致|不匹配/i);
+      const branchesB = execFileSync("git", ["branch", "--list"], { cwd: repoB }).toString();
+      expect(branchesB).not.toContain("task/12345678");
+    } finally { restore(); }
+  });
+});
