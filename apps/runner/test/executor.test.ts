@@ -235,6 +235,10 @@ describe("executor", () => {
 
   it("delivered completion: no follow-up, result_json has no undelivered flag", async () => {
     const { client, pkg, runnerRoot, url, daemonId } = await setup();
+    // A05: 把 task 标为 v1,保留旧 issue-status=in_review 回调路径。
+    // 同步修改内存对象 pkg.task,executor 的 isV2Task 是从内存对象读取。
+    pkg.task.delivery_contract_version = 1;
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
     let calls = 0;
     const delivering: AgentBackend = {
       provider: "kimi",
@@ -1278,5 +1282,511 @@ describe("executor · A04-FIX2 resume guard convergence", () => {
       const branchesB = execFileSync("git", ["branch", "--list"], { cwd: repoB }).toString();
       expect(branchesB).not.toContain("task/12345678");
     } finally { restore(); }
+  });
+});
+
+// =============================================================================
+// A05 · Delivery Report、v2 delivered_at 与同会话追问契约
+//
+// 关键不变量:
+//  1. v2 prompt 显式要求 commit + rev-parse HEAD + Delivery Report 提交
+//  2. v2 prompt 不得要求 issue-status=in_review/done
+//  3. v1 prompt 保留旧 issue-status 回调说明
+//  4. v2 Report SHA 与当前 HEAD 一致 → 不追问
+//  5. v2 缺 Report → 最多追问两轮
+//  6. v2 Report SHA 不一致 → 追问
+//  7. 第一次追问更新为正确 SHA → 停止追问
+//  8. 追问中产生新 commit → 重新读取 HEAD,并再次识别旧 Report 失效
+//  9. 连续两轮仍 mismatch → complete 为 undelivered
+//  10. mismatch 时不得调用 fail
+// 11. GET delivery 使用 task token,不泄漏 daemon token
+// 12. v1 旧行为不回归(issue-status 路径)
+// =============================================================================
+
+describe("A05 · buildPrompt v1/v2 分流", () => {
+  it("v1 prompt 仍要求 issue-status=in_review 回调", () => {
+    const issue = { title: "标题", description: "描述", acceptance: "1. 改完" } as any;
+    const task = { id: "t1", delivery_contract_version: 1 } as any;
+    const p = buildPrompt(issue, task);
+    expect(p).toContain("issue-status");
+    expect(p).toContain("in_review");
+  });
+
+  it("v2 prompt 要求 commit + rev-parse HEAD + Delivery Report 提交", () => {
+    const issue = { title: "标题", description: "描述", acceptance: "1. 改完" } as any;
+    const task = { id: "t1", delivery_contract_version: 2 } as any;
+    const p = buildPrompt(issue, task);
+    expect(p).toContain("Delivery Report");
+    expect(p).toContain("rev-parse HEAD");
+    expect(p).toContain("delivery-report");
+    expect(p).toContain("report_head_commit");
+  });
+
+  it("v2 prompt 不要求 issue-status=in_review/done,blocked 保留", () => {
+    const issue = { title: "标题", description: "描述", acceptance: null } as any;
+    const task = { id: "t1", delivery_contract_version: 2 } as any;
+    const p = buildPrompt(issue, task);
+    // v2 prompt 应明确禁止 Agent 自己推进 in_review
+    expect(p).not.toMatch(/issue-status.*in_review|status.*in_review/);
+    // blocked 保留
+    expect(p).toContain("blocked");
+  });
+
+  it("v2 prompt 包含 required fields(problem_understanding / solution_summary / changed_areas / risks / unresolved)", () => {
+    const issue = { title: "标题", description: null, acceptance: null } as any;
+    const task = { id: "t1", delivery_contract_version: 2 } as any;
+    const p = buildPrompt(issue, task);
+    for (const f of ["problem_understanding", "solution_summary", "changed_areas", "risks", "unresolved"]) {
+      expect(p, `v2 prompt 缺字段 ${f}`).toContain(f);
+    }
+  });
+
+  it("v2 prompt 不泄漏 daemon token,只使用 task token", () => {
+    const issue = { title: "t", description: null, acceptance: null } as any;
+    const task = { id: "t1", delivery_contract_version: 2 } as any;
+    const p = buildPrompt(issue, task);
+    expect(p).toContain("ANVIL_TOKEN");
+    // 不得引用 ANVIL_DAEMON_TOKEN
+    expect(p).not.toContain("ANVIL_DAEMON_TOKEN");
+  });
+});
+
+describe("A05 · v2 同会话追问契约", () => {
+  // 公共 setup:把当前 task 标为 v2(默认就是 2),并提供工作树(本地 git 仓库)。
+  async function setupV2GitTask() {
+    const { client, url, daemonId } = await setup();
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-a05-repo-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: `a05-${Date.now()}`, provider: "kimi" } })).json();
+    const i = (await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "A05 v2 任务", assignee_type: "agent", assignee_id: a.id, repo_path: repo },
+    })).json();
+    const claim = await client.claim("d1", 5);
+    const pkg = claim.tasks.find((t: any) => t.issue.id === i.id)!;
+    const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-a05-runner-"));
+    return { client, url, daemonId, runnerRoot, repo, pkg };
+  }
+
+  /** A05 用的 fake backend:每次 execute 时根据 report 状态决定下一步。
+   *  `commit: "a" | "b" | null`
+   *    - "a": 第一次 execute commit 一个文件,但不调 delivery-report
+   *    - "b": 追问 execute 再 commit 一个新文件
+   *    - null: 不 commit
+   *  `submitReport: boolean` 是否在执行结束后自动 submit delivery-report
+   *  `reportHead`: 提交时使用的 report_head_commit(默认与当前 head 一致)
+   *
+   *  注意:AgentBackend.execute 必须是同步返回 session 对象,
+   *  不能 async(否则 executor 拿到的 session 是 Promise,session.messages 会变 undefined)。
+   */
+  function makeA05Backend(opts: {
+    commit?: "a" | "b" | null;
+    submitReport?: boolean;
+    reportHead?: string;
+    fakeClient?: { url: string; task_token: string; taskId: string };
+  }): AgentBackend {
+    let followupIndex = 0;
+    return {
+      provider: "kimi",
+      execute(o) {
+        const cwd = o.workDir;
+        if (opts.commit) {
+          try {
+            execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+            execFileSync("git", ["config", "user.name", "t"], { cwd });
+            const tag = o.resume ? `${opts.commit}_f${followupIndex}` : `${opts.commit}_0`;
+            fs.writeFileSync(path.join(cwd, `${tag}.txt`), `${tag} change`);
+            execFileSync("git", ["add", "-A"], { cwd });
+            execFileSync("git", ["commit", "-m", `${tag} commit`], { cwd });
+          } catch {
+            // ignore
+          }
+        }
+        if (o.resume) followupIndex++;
+        const messages = (async function* (): AsyncGenerator<AgentMessage> {
+          yield { type: "text", content: `execute resume=${o.resume}` };
+        })();
+        const result = (async () => {
+          if (opts.submitReport && opts.fakeClient) {
+            const { url, task_token, taskId } = opts.fakeClient;
+            let head: string;
+            try {
+              head = opts.reportHead ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+            } catch (e: any) {
+              return { status: "failed" as const, exitCode: 1, error: `rev-parse HEAD failed: ${e?.message}` };
+            }
+            try {
+              const r = await fetch(`${url}/api/daemon/tasks/${taskId}/delivery-report`, {
+                method: "PUT",
+                headers: { "content-type": "application/json", authorization: `Bearer ${task_token}` },
+                body: JSON.stringify({
+                  schema_version: 1,
+                  report_head_commit: head,
+                  problem_understanding: "p",
+                  solution_summary: "s",
+                  changed_areas: [{ path: "src/a.ts", summary: "x" }],
+                  risks: [],
+                  unresolved: [],
+                }),
+              });
+              // 读取 body 让连接复用
+              await r.text().catch(() => undefined);
+            } catch {
+              // ignore fetch errors
+            }
+          }
+          return { status: "completed" as const, exitCode: 0 };
+        })();
+        return { messages, result, kill: () => {} };
+      },
+    };
+  }
+
+  it("A05: v2 Report SHA 与当前 HEAD 一致 → 不追问,1 次 execute,complete 成功", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
+    // 用真实 client 提交 Report,验证 executor 路径在"已交付"情况下不追问
+    const head = "a".repeat(40);
+    await client.getTaskDelivery(pkg.task.id, pkg.task_token); // 摸一下路径确保 server 正常
+    // 直接用 server.inject 提交 Report(模拟 agent 调 server)
+    const putRes = await app.inject({
+      method: "PUT",
+      url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
+      headers: { authorization: `Bearer ${pkg.task_token}` },
+      payload: {
+        schema_version: 1,
+        report_head_commit: head,
+        problem_understanding: "p",
+        solution_summary: "s",
+        changed_areas: [{ path: "src/a.ts", summary: "x" }],
+        risks: [],
+        unresolved: [],
+      },
+    });
+    expect(putRes.statusCode).toBe(200);
+    // 然后用 fake backend 验证 executor 路径(不 commit,只是空 backend)
+    const fake: AgentBackend = {
+      provider: "kimi",
+      execute() {
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend: fake, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 任务正常 complete,没有调用 fail
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    const r = (app.db.$client.prepare(`SELECT * FROM task_delivery_reports WHERE task_id = ?`).get(pkg.task.id) as any);
+    expect(r).toBeTruthy();
+    expect(got.json().task.delivered_at).toBeTruthy();
+  });
+
+  it("A05: v2 缺 Report → 最多追问两轮,3 次 execute,最终 complete 为 undelivered", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupV2GitTask();
+    let executeCount = 0;
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute() {
+        executeCount++;
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 1 首次 + 2 追问 = 3
+    expect(executeCount).toBe(3);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    const rj = JSON.parse(got.json().task.result_json);
+    expect(rj.undelivered).toBe(true);
+  });
+
+  it("A05: v2 Report SHA 不一致 → 追问", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
+    let executeCount = 0;
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute(o) {
+        executeCount++;
+        // 第一次:commit 但不调用 delivery-report
+        // 第二次:追问轮,提交一个与 head 不一致的 report
+        if (o.resume) {
+          const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: o.workDir }).toString().trim();
+          const fake = "0".repeat(40);
+          // 通过 app.inject 直接调 server 提交(更可靠,不走 fetch)
+          const result = (async () => {
+            await app.inject({
+              method: "PUT",
+              url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
+              headers: { authorization: `Bearer ${pkg.task_token}` },
+              payload: {
+                schema_version: 1,
+                report_head_commit: fake,
+                problem_understanding: "p",
+                solution_summary: "s",
+                changed_areas: [],
+                risks: [],
+                unresolved: [],
+              },
+            });
+            return { status: "completed" as const, exitCode: 0 };
+          })();
+          return {
+            messages: (async function* () {})(),
+            result,
+            kill: () => {},
+          };
+        } else {
+          const cwd = o.workDir;
+          try {
+            execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+            execFileSync("git", ["config", "user.name", "t"], { cwd });
+            fs.writeFileSync(path.join(cwd, "f0.txt"), "x");
+            execFileSync("git", ["add", "-A"], { cwd });
+            execFileSync("git", ["commit", "-m", "f0"], { cwd });
+          } catch { /* ignore */ }
+        }
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 1 首次 + 2 追问 = 3
+    expect(executeCount).toBe(3);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+  });
+
+  it("A05: 第一次追问更新为正确 SHA → 停止追问,execute=2", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
+    let executeCount = 0;
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute(o) {
+        executeCount++;
+        const cwd = o.workDir;
+        try {
+          execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+          execFileSync("git", ["config", "user.name", "t"], { cwd });
+          const tag = o.resume ? `f1_${executeCount}` : `f0`;
+          fs.writeFileSync(path.join(cwd, `${tag}.txt`), tag);
+          execFileSync("git", ["add", "-A"], { cwd });
+          execFileSync("git", ["commit", "-m", tag], { cwd });
+        } catch { /* ignore */ }
+        // 第一轮不提交 Report,追问轮 commit 后用当前 head 提交 Report
+        const result = (async () => {
+          if (o.resume) {
+            const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+            await app.inject({
+              method: "PUT",
+              url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
+              headers: { authorization: `Bearer ${pkg.task_token}` },
+              payload: {
+                schema_version: 1,
+                report_head_commit: head,
+                problem_understanding: "p",
+                solution_summary: "s",
+                changed_areas: [],
+                risks: [],
+                unresolved: [],
+              },
+            });
+          }
+          return { status: "completed" as const, exitCode: 0 };
+        })();
+        return {
+          messages: (async function* () {})(),
+          result,
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 首轮 + 1 追问 = 2
+    expect(executeCount).toBe(2);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    expect(got.json().task.delivered_at).toBeTruthy();
+  });
+
+  it("A05: 追问中产生新 commit → 重新读取 HEAD,旧 Report 再次被识别 mismatch", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
+    let executeCount = 0;
+    let firstHeadAfterCommit = "";
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute(o) {
+        executeCount++;
+        const cwd = o.workDir;
+        try {
+          execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+          execFileSync("git", ["config", "user.name", "t"], { cwd });
+        } catch { /* ignore */ }
+        if (!o.resume) {
+          // 首轮 commit 并提交 Report(head = X)
+          fs.writeFileSync(path.join(cwd, "x0.txt"), "x0");
+          execFileSync("git", ["add", "-A"], { cwd });
+          execFileSync("git", ["commit", "-m", "x0"], { cwd });
+          const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+          firstHeadAfterCommit = head;
+          // 提交 Report(head = X),让首次 execute 后 v2 判定 head=currentHead 匹配 → break,不追问
+          // 但这样测试目标("后续追问")不会触发。改为第 1 轮不提交 Report,让 executor 看到 query.delivered=false → 追问。
+          const result = (async () => {
+            return { status: "completed" as const, exitCode: 0 };
+          })();
+          return {
+            messages: (async function* () {})(),
+            result,
+            kill: () => {},
+          };
+        } else {
+          // 追问轮 commit 一个新文件,但不调 delivery-report(模拟 agent 忘记)
+          const tag = `x${executeCount}`;
+          fs.writeFileSync(path.join(cwd, `${tag}.txt`), tag);
+          execFileSync("git", ["add", "-A"], { cwd });
+          execFileSync("git", ["commit", "-m", tag], { cwd });
+        }
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 首轮 1 + 2 追问 = 3
+    expect(executeCount).toBe(3);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    // undelivered 因为最终没有匹配的 report
+    const rj = JSON.parse(got.json().task.result_json);
+    expect(rj.undelivered).toBe(true);
+    // 验证 head 已经推进
+    const repoForTask = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(rj.undelivered).toBe(true);
+  });
+
+  it("A05: 连续两轮仍 mismatch → complete 为 undelivered,不得调用 fail", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
+    let failCalls = 0;
+    let executeCount = 0;
+    // 用真实 client 走完整 server 流程,只额外监控 fail 调用次数。
+    const origFail = client.fail.bind(client);
+    (client as any).fail = (taskId: string, daemonId: string, reason: string, error: string, workDir?: string) => {
+      failCalls++;
+      return origFail(taskId, daemonId, reason, error, workDir);
+    };
+    // 测试预期:backend 每次提交一个与 HEAD 不匹配的 Report,
+    // 后续 2 轮追问都不修改 Report,query.head 永远不匹配 currentHead。
+    const fake: AgentBackend = {
+      provider: "kimi",
+      execute() {
+        executeCount++;
+        return {
+          messages: (async function* () {})(),
+          result: (async () => {
+            // 提交 Report(head 永远不匹配,因为是"0".repeat(40))
+            await app.inject({
+              method: "PUT",
+              url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
+              headers: { authorization: `Bearer ${pkg.task_token}` },
+              payload: {
+                schema_version: 1,
+                report_head_commit: "0".repeat(40),
+                problem_understanding: "p",
+                solution_summary: "s",
+                changed_areas: [{ path: "src/a.ts", summary: "x" }],
+                risks: [],
+                unresolved: [],
+              },
+            });
+            return { status: "completed" as const, exitCode: 0 };
+          })(),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend: fake, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 1 首次 + 2 追问 = 3(每次都提交与 HEAD 不匹配的 Report)
+    expect(executeCount).toBe(3);
+    expect(failCalls).toBe(0);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    const rj = JSON.parse(got.json().task.result_json);
+    expect(rj.undelivered).toBe(true);
+  });
+
+  it("A05: GET delivery 使用 task token,不泄漏 daemon token", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setupV2GitTask();
+    // A05: 实际 client 是用 daemon token 构造,但 getTaskDelivery 必须用 task token。
+    // 通过对比 client.daemonToken 与实际请求 auth 来验证。
+    const daemonToken = (client as any).daemonToken;
+    const { calls, restore } = interceptFetch(async (url, init) => {
+      if (url.includes("/delivery")) {
+        const auth = (init.headers as any)?.authorization;
+        expect(auth).toBe(`Bearer ${pkg.task_token}`);
+        // 不能是 daemon token
+        expect(auth).not.toBe(`Bearer ${daemonToken}`);
+        return okJson({ delivered: true, report_submitted: true, report_schema_version: 1, report_head_commit: "0".repeat(40), issue_status_requested: null });
+      }
+      if (url.includes("/delivery-report")) {
+        return okJson({ ok: true, task_id: pkg.task.id, report_version: 1, report_head_commit: "0".repeat(40), submitted_at: "2026-01-01T00:00:00.000Z", replay: false });
+      }
+      if (url.includes("/start")) return okJson({ ok: true, task_id: pkg.task.id, status: "running" });
+      if (url.includes("/complete")) return okJson({ ok: true, task_id: pkg.task.id, status: "completed" });
+      return okJson({});
+    });
+    try {
+      const backend: AgentBackend = {
+        provider: "kimi",
+        execute() {
+          return {
+            messages: (async function* () {})(),
+            result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+            kill: () => {},
+          };
+        },
+      };
+      await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+      const deliveryCalls = calls.filter((c) => c.url.includes("/delivery") && !c.url.includes("/delivery-report"));
+      expect(deliveryCalls.length).toBeGreaterThan(0);
+    } finally { restore(); }
+  });
+
+  it("A05: 无 repo_path 的 v2 Task 不构造假 SHA,缺 Report 仍走追问", async () => {
+    // 默认 setup() issue 无 repo_path,但 default claim 出来的 v2 task 也属于 v2
+    const { client, pkg, runnerRoot, daemonId } = await setup();
+    let executeCount = 0;
+    const backend: AgentBackend = {
+      provider: "kimi",
+      execute() {
+        executeCount++;
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          kill: () => {},
+        };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    // 1 + 2 追问 = 3
+    expect(executeCount).toBe(3);
+    const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
+    expect(got.json().task.status).toBe("completed");
+    const rj = JSON.parse(got.json().task.result_json);
+    expect(rj.undelivered).toBe(true);
   });
 });

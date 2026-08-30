@@ -14,6 +14,7 @@ import {
 import { getIssue } from "../services/issues.js";
 import { registerRuntimes, heartbeat } from "../services/runtimes.js";
 import { appendTaskMessages } from "../services/messages.js";
+import { submitDeliveryReport, getDeliveryQuery, type DeliveryError } from "../services/delivery.js";
 import { FAILURE_REASONS, type ClaimRequest, type DaemonHeartbeatRequest, type DaemonRegisterRequest } from "@anvil/core";
 
 // ----------------------------------------------------------------------------
@@ -117,7 +118,9 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const { id } = req.params as { id: string };
     const task = getTask(db, id);
     if (!task) return reply.code(404).send({ error: "not found" });
-    return { delivered: task.delivered_at != null };
+    // A05:返回完整 DeliveryQueryResponse,而不是只返回 delivered boolean。
+    // v1/v2 同时兼容;v1 通过 issue_status_requested 字段反映,无 Report 时 report_submitted=false。
+    return getDeliveryQuery(db, id);
   });
 
   app.post("/api/daemon/tasks/:id/messages", { preHandler: taskAuth }, async (req, reply) => {
@@ -126,6 +129,28 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const result = appendTaskMessages(db, hub, id, messages ?? []);
     if (!result.ok) return reply.code(409).send({ last_seq: result.last_seq });
     return result;
+  });
+
+  // A05 · Agent plane:Delivery Report 提交(task token,active v2 Task)
+  app.put("/api/daemon/tasks/:id/delivery-report", { preHandler: taskAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try {
+      const result = submitDeliveryReport(db, id, req.body ?? null);
+      // 广播 task.updated,让 web 看板在 Report 落地时刷新;
+      // replay 不广播,避免无变化的噪音。
+      if (!result.replay) {
+        const task = getTask(db, id);
+        if (task) hub.broadcast({ type: "task.updated", data: task });
+      }
+      return result.response;
+    } catch (e: any) {
+      if (e && typeof e.code === "string" && typeof e.http === "number") {
+        const body: Record<string, unknown> = { code: e.code, message: e.message };
+        if (e.details) body.details = e.details;
+        return reply.code(e.http).send(body);
+      }
+      throw e;
+    }
   });
 
   // ---------- A03 · daemon plane:start / complete / fail 改用 daemon token + body.daemon_id ----------
@@ -372,7 +397,13 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     const { id } = req.params as { id: string };
     const body = req.body as { status: string; note?: string };
     const r = setIssueStatusFromAgent(db, id, body.status, body.note);
-    if (!r.ok) return reply.code(400).send({ error: r.error });
+    if (!r.ok) {
+      // A05: v2 in_review/done 拒绝时由 setIssueStatusFromAgent 返回 code + http
+      if (r.http && r.code) {
+        return reply.code(r.http).send({ code: r.code, message: r.error });
+      }
+      return reply.code(400).send({ error: r.error });
+    }
     const task = getTask(db, id)!;
     hub.broadcast({ type: "issue.updated", data: getIssue(db, task.issue_id) });
     return { ok: true };

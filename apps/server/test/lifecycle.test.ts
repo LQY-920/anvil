@@ -111,6 +111,9 @@ describe("task lifecycle", () => {
     const pkg = await claimOne();
     // A03: start 改用 daemon token;issue-status 仍用 task token
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    // A05: v2 issue-status=in_review 已被 Delivery Report 路径替代,
+    // 验证 v1 行为保持兼容,必须把 task 标回 v1。
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
     const res = await tpost(`/api/daemon/tasks/${pkg.task.id}/issue-status`, { status: "in_review", note: "做完了，请 review" }, pkg.task_token);
     expect(res.statusCode).toBe(200);
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issueId}` });
@@ -123,6 +126,8 @@ describe("task lifecycle", () => {
   it("delivery endpoint: false before issue-status callback, true after", async () => {
     const pkg = await claimOne();
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    // A05: v1 issue-status=in_review 路径仍写 delivered_at
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
     const tget = (url: string, token: string) =>
       app.inject({ method: "GET", url, headers: { authorization: `Bearer ${token}` } });
     const before = await tget(`/api/daemon/tasks/${pkg.task.id}/delivery`, pkg.task_token);
@@ -157,5 +162,145 @@ describe("task lifecycle", () => {
     expect(res.statusCode).toBe(400);
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issueId}` });
     expect(detail.json().issue.status).not.toBe("done");
+  });
+});
+
+// =============================================================================
+// A05 · v2 issue-status 分流
+//
+// v2 Task:
+//  - in_review → 409 runner_evidence_required(零副作用,delivered_at 不写)
+//  - done      → 409 human_decision_required(零副作用)
+//  - blocked   → 200(允许逃生路径,delivered_at 仍为 null)
+//
+// v1 Task:保持现有行为(所有三个都允许,in_review/done 都写 delivered_at)。
+// =============================================================================
+
+describe("A05 · v2 issue-status 分流", () => {
+  /** 把当前 task 的 contract_version 设为 2(已 claim 后默认就是 2,这里是显式保护)。 */
+  async function claimV2() {
+    return await claimOne();
+  }
+
+  it("v2 in_review → 409 runner_evidence_required,零副作用", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+
+    const issueBefore = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    const commentsBefore = issueBefore.comments.length;
+    const taskBefore = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    const statusBefore = taskBefore.task.status;
+    const deliveredBefore = taskBefore.task.delivered_at;
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "in_review", note: "做完了请 review" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("runner_evidence_required");
+
+    // 零副作用
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe(issueBefore.issue.status);
+    expect(issueAfter.comments.length).toBe(commentsBefore);
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(taskAfter.task.status).toBe(statusBefore);
+    expect(taskAfter.task.delivered_at).toBe(deliveredBefore);
+  });
+
+  it("v2 done → 409 human_decision_required,零副作用", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+
+    const issueBefore = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    const commentsBefore = issueBefore.comments.length;
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "done", note: "完成" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("human_decision_required");
+
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe(issueBefore.issue.status);
+    expect(issueAfter.comments.length).toBe(commentsBefore);
+
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(taskAfter.task.delivered_at).toBeNull();
+  });
+
+  it("v2 blocked → 200,delivered_at 仍为 null(逃生路径保留)", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "blocked", note: "需要用户澄清" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(200);
+
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    // v2 blocked 不写 delivered_at
+    expect(taskAfter.task.delivered_at).toBeNull();
+
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe("blocked");
+  });
+
+  it("v1 in_review 行为不变 → 200,delivered_at 写入,issue 进入 in_review", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    // 把 task 改回 v1
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "in_review" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(200);
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(taskAfter.task.delivered_at).toBeTruthy();
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe("in_review");
+  });
+
+  it("v1 done 行为不变 → 200,delivered_at 写入,issue 进入 done", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "done" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(200);
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(taskAfter.task.delivered_at).toBeTruthy();
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe("done");
+  });
+
+  it("v1 blocked 行为不变 → 200,issue 进入 blocked,delivered_at 写入", async () => {
+    const pkg = await claimV2();
+    await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
+    app.db.$client.prepare(`UPDATE tasks SET delivery_contract_version = 1 WHERE id = ?`).run(pkg.task.id);
+
+    const res = await tpost(
+      `/api/daemon/tasks/${pkg.task.id}/issue-status`,
+      { status: "blocked", note: "v1 blocked" },
+      pkg.task_token,
+    );
+    expect(res.statusCode).toBe(200);
+    const taskAfter = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    // v1 行为保留:旧实现是写 delivered_at 的
+    expect(taskAfter.task.delivered_at).toBeTruthy();
+    const issueAfter = (await app.inject({ method: "GET", url: `/api/issues/${issueId}` })).json();
+    expect(issueAfter.issue.status).toBe("blocked");
   });
 });

@@ -1,4 +1,4 @@
-import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
+import type { DeliveryQueryResponse, Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
 import { isRepoUrl } from "@anvil/core";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,9 +24,36 @@ export function killAllActiveSessions() {
   for (const s of activeSessions) s.kill();
 }
 
-/** 追问 prompt：进程结束但 issue 未推进（未交付）时，用同一会话让 Agent 对照完成标准补课。 */
+/** v1 追问 prompt:进程结束但未通过 issue-status 回调推进时,让 Agent 补做。
+ *  v1 路径继续保留这一语义,行为不回归。 */
 export const FOLLOWUP_PROMPT =
   "任务进程已结束，但你还没有提交验收（issue 仍在原状态）。请检查完成标准中还有哪条未达成，继续完成并提交 in_review 回调。";
+
+/** A05 · v2 追问 prompt:每轮结束后 Runner 会重新读取 HEAD 并查询 Delivery Report。
+ *  旧 Report SHA 不一致、Report 缺失、schema 错或 head 不匹配时,让 Agent 重新 commit
+ *  并用新 HEAD 提交 Report。注意不得伪造 SHA,也不得调用 issue-status=in_review/done。 */
+export const V2_FOLLOWUP_PROMPT =
+  "你的代码修改可能还没绑定到当前 HEAD。\n" +
+  "1. 如果有未提交的改动,执行 git commit(保持当前任务分支)。\n" +
+  "2. 执行 git rev-parse HEAD 读取完整 40 位 HEAD SHA。\n" +
+  "3. 使用 ANVIL_TOKEN 重新提交 Delivery Report:\n" +
+  `   curl -X PUT "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/delivery-report" \\\n` +
+  `        -H "Authorization: Bearer $ANVIL_TOKEN" \\\n` +
+  `        -H "content-type: application/json" \\\n` +
+  `        -d "$(cat <<'JSON'\n` +
+  `{\n` +
+  `  "schema_version": 1,\n` +
+  `  "report_head_commit": "<上一步读到的 40 位 HEAD>",\n` +
+  `  "problem_understanding": "本次任务的问题理解",\n` +
+  `  "solution_summary": "本次任务的方案摘要",\n` +
+  `  "changed_areas": [{ "path": "<文件路径>", "summary": "<改动说明>" }],\n` +
+  `  "risks": [],\n` +
+  `  "unresolved": []\n` +
+  `}\n` +
+  `JSON\n` +
+  `)"\n` +
+  "4. 不要伪造 HEAD SHA,不要省略 schema_version=1,不得调用 issue-status=in_review/done。\n" +
+  "5. 确实无法继续时,可调用 issue-status=blocked 走逃生路径。";
 
 const GUIDANCE_LIMIT = 8 * 1024;
 
@@ -41,8 +68,26 @@ export function readRepoGuidance(workDir: string): string | null {
   }
 }
 
+function isV2Task(task: Task): boolean {
+  return (task as { delivery_contract_version?: number }).delivery_contract_version === 2;
+}
+
+/** 比较两个 SHA 字符串(忽略大小写、去除前后空白)。允许 hex 大小写归一但不允许短 SHA。 */
+function sameSha(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (!/^[0-9a-f]{40}$/i.test(a.trim()) || !/^[0-9a-f]{40}$/i.test(b.trim())) return false;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = []): string {
-  const lines = [
+  const v2 = isV2Task(task);
+  // v1 旧契约:完成标准段后必须追加"3. 调用平台回调把 issue 移到 in_review(见下)",
+  // 即使 issue.acceptance 已存在,这一行作为 v1 callback 指令始终出现。
+  // v2 不追加这一行(由下方"v2 平台回调"段替代)。
+  const v1CallbackLine = v2
+    ? null
+    : "3. 调用平台回调把 issue 移到 in_review（见下）";
+  const lines: (string | null)[] = [
     "你是 Anvil 平台上的编码 Agent，正在无人值守地执行任务。",
     "",
     "# 目标",
@@ -50,14 +95,58 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
     issue.description ? `\n${issue.description.slice(0, 8000)}` : null,
     "",
     "# 完成标准（全部满足才算交付）",
-    issue.acceptance ? issue.acceptance : "1. 完成任务目标中的工作\n2. 改动已 git commit（保持当前分支）",
-    "3. 调用平台回调把 issue 移到 in_review（见下）",
+    issue.acceptance
+      ? issue.acceptance
+      : v2
+        ? "1. 完成任务目标中的工作\n2. 改动已 git commit（保持当前分支）\n3. 按下方\"v2 平台回调\"提交结构化 Delivery Report"
+        : "1. 完成任务目标中的工作\n2. 改动已 git commit（保持当前分支）",
+    v1CallbackLine,
     "",
-    "# 平台回调",
-    "完成全部工作后执行：",
-    `curl -X POST "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/issue-status" -H "Authorization: Bearer $ANVIL_TOKEN" -H "content-type: application/json" -d "{\\"status\\":\\"in_review\\"}"`,
-    "遇到无法继续的阻塞，上报 status=blocked 并附原因。",
-    "",
+  ];
+  if (v2) {
+    lines.push(
+      "# v2 平台回调：结构化 Delivery Report",
+      "完成全部工作并 commit 后,执行下列流程:",
+      `1. 执行 git rev-parse HEAD,读取完整 40 位 SHA(示例:0123456789abcdef0123456789abcdef01234567)。`,
+      `2. 使用当前任务的 task token(ANVIL_TOKEN)调用:`,
+      `   curl -X PUT "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/delivery-report" \\`,
+      `        -H "Authorization: Bearer $ANVIL_TOKEN" \\`,
+      `        -H "content-type: application/json" \\`,
+      `        -d "$(cat <<'JSON'`,
+      `{`,
+      `  "schema_version": 1,`,
+      `  "report_head_commit": "<上一步读到的 40 位 HEAD>",`,
+      `  "problem_understanding": "本次任务的问题理解",`,
+      `  "solution_summary": "本次任务的方案摘要",`,
+      `  "changed_areas": [{ "path": "<文件路径>", "summary": "<改动说明>" }],`,
+      `  "risks": [{ "level": "low|medium|high", "summary": "<风险描述>", "mitigation": "<缓解>" }],`,
+      `  "unresolved": [{ "description": "<未解决项>" }]`,
+      `}`,
+      `JSON`,
+      `)"`,
+      `3. report_head_commit 必须等于刚读到的 HEAD;不得伪造短 SHA 也不得提交旧 commit。`,
+      `4. 如果追问过程中产生了新 commit,必须重新读取 HEAD 并重新提交 Report(只改 report_head_commit 即可,Runner 会按规范化内容判定)。`,
+      `5. v2 严格禁止:`,
+      `   - 不得把 issue 直接推进 \u2192 in_review;v2 必须通过 Delivery Report 表达交付`,
+      `   - 不得把 issue 直接推进 \u2192 done;Issue.done 只由人类批准合入产生`,
+      `   - 不得伪造 HEAD SHA、不得提交未 commit 的状态、不得要求 Runner 帮你合入`,
+      `6. 确实无法继续时,可调用下方 blocked 走逃生路径。`,
+      `   curl -X POST "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/issue-status" \\`,
+      `        -H "Authorization: Bearer $ANVIL_TOKEN" \\`,
+      `        -H "content-type: application/json" \\`,
+      `        -d '{"status":"blocked","note":"<原因>"}'`,
+      "",
+    );
+  } else {
+    lines.push(
+      "# 平台回调",
+      "完成全部工作后执行:",
+      `curl -X POST "$ANVIL_SERVER_URL/api/daemon/tasks/$ANVIL_TASK_ID/issue-status" -H "Authorization: Bearer $ANVIL_TOKEN" -H "content-type: application/json" -d "{\\"status\\":\\"in_review\\"}"`,
+      "遇到无法继续的阻塞，上报 status=blocked 并附原因。",
+      "",
+    );
+  }
+  lines.push(
     "# 边界与停止规则",
     "- 只在当前工作目录内操作",
     "- 不要推进超出目标范围的改动",
@@ -70,7 +159,7 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
           ...comments.map((c) => `- [${c.author_type}] ${c.body.replace(/\s+/g, " ").slice(0, 500)}`),
         ]
       : []),
-  ];
+  );
   // 只剔除"无描述"占位，保留段落空行
   return lines.filter((l) => l !== null).join("\n");
 }
@@ -145,23 +234,64 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         console.error("[anvil-executor] uploader.close failed, continuing with result report:", e?.message ?? e);
       }
       if (result.status === "completed") {
-        // 进程结束 ≠ 交付：Agent 必须回调 issue-status 推进 issue。未交付则同会话追问，最多 2 轮。
-        let delivered = await client.taskDelivered(task.id, task_token);
+        // A05 · 进程结束 ≠ 交付。
+        //  v1 路径:沿用旧 FOLLOWUP_PROMPT 追问最多 2 轮,直到 issue-status 回调。
+        //  v2 路径:每轮结束重新读 HEAD + 查 Delivery Report;
+        //         缺失 / schema 错 / report_head_commit 与当前 HEAD 不一致时
+        //         用 V2_FOLLOWUP_PROMPT 追问,最多 2 轮;两轮仍 mismatch 则保持 undelivered。
+        //  任何情况下,mismatch 都不得转 fail(complete transport error 同样不得 fail)。
+        const v2 = isV2Task(task);
+        let delivered = false;
         let followups = 0;
-        while (!delivered && followups < 2) {
+        // 真实分支状态:v2 路径下,delivered 表示"report_head_commit == current HEAD 且已提交"
+        // v1 路径下,delivered 表示 tasks.delivered_at != null
+        const taskBranch = prepared.taskBranch;
+        while (followups < 2) {
+          // 每轮开始:重新读取真实工作区状态(Git HEAD 可能在追问中推进)
+          let currentHead: string | null = null;
+          if (v2 && workDir && taskBranch) {
+            try {
+              currentHead = await readWorktreeHead(workDir, taskBranch);
+            } catch (e: any) {
+              // 工作树被切换 / detached HEAD:readWorktreeHead 已抛错,落到 fail
+              throw e;
+            }
+          }
+          const query = await client.getTaskDelivery(task.id, task_token);
+          if (v2) {
+            // v2 判定:query.delivered && query.report_submitted &&
+            //   query.report_schema_version === 1 && SHA 与 currentHead 完全一致
+            if (query && query.delivered && query.report_submitted && query.report_schema_version === 1) {
+              if (currentHead && sameSha(query.report_head_commit, currentHead)) {
+                delivered = true;
+                break;
+              }
+            }
+          } else {
+            // v1 判定:沿用旧语义,只要 delivered=true
+            if (query && query.delivered) {
+              delivered = true;
+              break;
+            }
+          }
+          // 不满足 → 追问
           followups++;
-          console.error(`[anvil-executor] task ${task.id} ended without delivery, follow-up ${followups}/2`);
-          session = backend.execute({ ...execOpts, prompt: FOLLOWUP_PROMPT, resume: true });
+          const followPrompt = v2 ? V2_FOLLOWUP_PROMPT : FOLLOWUP_PROMPT;
+          console.error(`[anvil-executor] task ${task.id} ended without delivery, follow-up ${followups}/2 (v2=${v2})`);
+          session = backend.execute({ ...execOpts, prompt: followPrompt, resume: true });
           activeSessions.add(session);
           try {
             for await (const m of session.messages) uploader.push(m);
             const fr = await session.result;
             // 追问轮本身被取消/失败就不再追（如用户看板取消），落到 complete 由 server 裁决
-            if (fr.status !== "completed") break;
+            if (fr.status !== "completed") {
+              delivered = false;
+              break;
+            }
           } finally {
             activeSessions.delete(session);
           }
-          delivered = await client.taskDelivered(task.id, task_token);
+          // 继续循环:下一轮会重新读 HEAD + 查 Report
         }
         if (followups > 0) {
           try {

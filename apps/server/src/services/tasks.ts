@@ -718,12 +718,50 @@ export function cancelTask(db: Db, taskId: string): boolean {
   return res.changes === 1;
 }
 
-/** Agent 回调推进 issue 状态(spec §6:平台不替 Agent 做决定,只提供端点)。 */
-export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, note?: string): { ok: boolean; error?: string } {
+/** Agent 回调推进 issue 状态(spec §6:平台不替 Agent 做决定,只提供端点)。
+ *  A05 · v2 issue-status 分流:
+ *   - v2 in_review → 409 runner_evidence_required(零副作用,delivered_at 不写,评论不增)
+ *   - v2 done      → 409 human_decision_required(零副作用)
+ *   - v2 blocked   → 200,issue 进入 blocked,delivered_at 保持 null
+ *   - v1 行为保持:三个 status 都允许,都写 delivered_at
+ *  本函数仍然返回 `{ok, error?}` 旧契约;v2 拒绝时通过 `code` 字段返回稳定机器码,
+ *  由 daemon 路由映射 HTTP 状态码。 */
+export function setIssueStatusFromAgent(db: Db, taskId: string, status: string, note?: string): { ok: boolean; error?: string; code?: string; http?: number } {
   if (!["in_review", "done", "blocked"].includes(status)) return { ok: false, error: "status must be in_review | done | blocked" };
   const task = getTask(db, taskId);
   if (!task) return { ok: false, error: "task not found" };
   if (task.status !== "dispatched" && task.status !== "running") return { ok: false, error: "task not active" };
+  // A05 · v2 issue-status 分流:active v2 Task 拒绝 in_review / done,blocked 保留逃生路径。
+  if (task.delivery_contract_version === 2) {
+    if (status === "in_review") {
+      return {
+        ok: false,
+        error: "v2 Task 必须先通过 Delivery Report 路径表达交付,不能直接 issue-status=in_review",
+        code: "runner_evidence_required",
+        http: 409,
+      };
+    }
+    if (status === "done") {
+      return {
+        ok: false,
+        error: "Issue.done 只由人类批准合入产生,v2 Agent 不能直接把 Issue 标为 done",
+        code: "human_decision_required",
+        http: 409,
+      };
+    }
+    // blocked 保留:允许 v2 走逃生路径,但绝不写 delivered_at
+    const issue = getIssue(db, task.issue_id);
+    if (!issue) return { ok: false, error: "issue not found" };
+    const now = new Date().toISOString();
+    db.$client.prepare(`UPDATE issues SET status=?, updated_at=? WHERE id=?`).run(status, now, issue.id);
+    // 故意不 UPDATE tasks.delivered_at:v2 blocked 不代表交付
+    addComment(db, issue.id, {
+      author_type: "agent", author_id: task.agent_id, type: "status_change",
+      body: note ? `${issue.status} → ${status}：${note}` : `${issue.status} → ${status}`,
+    });
+    return { ok: true };
+  }
+  // v1 行为保持(三条都允许,都写 delivered_at)
   const issue = getIssue(db, task.issue_id);
   if (!issue) return { ok: false, error: "issue not found" };
   const now = new Date().toISOString();

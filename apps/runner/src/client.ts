@@ -1,4 +1,4 @@
-import type { ClaimResponse, TaskPackage } from "@anvil/core";
+import type { ClaimResponse, DeliveryQueryResponse, TaskPackage } from "@anvil/core";
 
 /** A03 · daemon plane:start / complete / fail 使用构造时保存的 daemon token,body 显式带 daemon_id;
  *  Agent plane:messages / status / delivery 继续使用 task token。 */
@@ -146,14 +146,34 @@ export class ApiClient {
   appendMessages(taskId: string, token: string, messages: unknown[]) {
     return this.req("POST", `/api/daemon/tasks/${taskId}/messages`, { messages }, token);
   }
-  async taskDelivered(taskId: string, token: string): Promise<boolean> {
+  /**
+   * A05 · GET /api/daemon/tasks/:id/delivery(完整 DeliveryQueryResponse)。
+   * v1/v2 共用:v1 路径下,delivered=true 来自 issue-status 回调写 delivered_at,
+   * report_submitted=false,issue_status_requested 反映 in_review/done/blocked。
+   * v2 路径下:report_submitted=true 表示 Delivery Report 落地,report_head_commit
+   * 必须与当前 HEAD 严格相等才算本轮交付成功(SHA 允许 hex 大小写归一)。
+   */
+  async getTaskDelivery(taskId: string, token: string): Promise<DeliveryQueryResponse | null> {
     try {
-      const r = await this.req("GET", `/api/daemon/tasks/${taskId}/delivery`, undefined, token);
-      return r.delivered === true;
+      const r = (await this.req(
+        "GET",
+        `/api/daemon/tasks/${taskId}/delivery`,
+        undefined,
+        token,
+      )) as DeliveryQueryResponse;
+      return r;
     } catch (e: any) {
-      if (e.status === 401 || e.status === 404) return false; // token 失效/任务消失 → 视为未交付
+      if (e.status === 401 || e.status === 404) return null; // token 失效/任务消失 → 视为不可查询
       throw e;
     }
+  }
+  /**
+   * 旧 v1 兼容:仅返回 delivered boolean。v2 路径已不再使用,保留是为了不破坏
+   * 旧 runner 兼容测试。v2 应该用 getTaskDelivery 拿完整 DeliveryQueryResponse。
+   */
+  async taskDelivered(taskId: string, token: string): Promise<boolean> {
+    const r = await this.getTaskDelivery(taskId, token);
+    return r?.delivered === true;
   }
   async taskStatus(taskId: string, token: string): Promise<string | null> {
     try {

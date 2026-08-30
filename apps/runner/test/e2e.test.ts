@@ -29,6 +29,11 @@ it("create issue → daemon claims → completes end to end", async () => {
     method: "POST", url: "/api/issues",
     payload: { title: "E2E 任务", assignee_type: "agent", assignee_id: a.json().id },
   });
+  // A05: e2e happy path 走 v1 路径(issue-status=in_review 回调),保留旧契约。
+  // 在 daemon claim 前,直接 UPDATE 任务为 v1,executor 走 v1 路径不追问 Delivery Report。
+  app.db.$client.prepare(
+    `UPDATE tasks SET delivery_contract_version = 1 WHERE issue_id = ? AND status = 'queued'`,
+  ).run(issue.json().id);
 
   const fakeBackend: AgentBackend = {
     provider: "kimi",
