@@ -795,14 +795,11 @@ describe("fail.error server-side token redaction (FIX4)", () => {
       // fail_payload_hash / fail_response_json 已落库
       expect(row.fail_payload_hash).toBeTruthy();
       expect(row.fail_response_json).toBeTruthy();
-      // HTTP 响应体也不能含任何子串
-      const responseText = JSON.stringify(r.json());
-      for (const sub of c.mustNotContain) {
-        expect(responseText, `response 不应包含 ${sub}`).not.toContain(sub);
-      }
+      // 响应只允许固定回执字段；随机 UUID 可能合法包含 abc 等短片段，不能全串扫描。
+      expect(r.json()).toEqual({ ok: true, task_id: pkg.task.id, status: "failed" });
+      expect(JSON.parse(row.fail_response_json)).toEqual(r.json());
       // 不能产生 [REDACTED][REDACTED] 重复
       expect(row.error).not.toContain("[REDACTED][REDACTED]");
-      expect(responseText).not.toContain("[REDACTED][REDACTED]");
     });
   }
 
