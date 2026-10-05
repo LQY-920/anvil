@@ -51,7 +51,7 @@ describe("agent status reflects real work", () => {
     const [pkg] = await claim();
     expect(pkg).toBeTruthy();
     expect(await agentStatus()).toBe("working");
-    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1", branch: "b" }, daemonToken);
+    const c = await tpost(`/api/daemon/tasks/${pkg.task.id}/complete`, { daemon_id: "d1" }, daemonToken);
     expect(c.statusCode).toBe(200);
     expect(await agentStatus()).toBe("idle");
   });

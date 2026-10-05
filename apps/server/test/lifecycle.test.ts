@@ -29,6 +29,8 @@ const tpost = (url: string, payload: unknown, token: string) =>
 describe("task lifecycle", () => {
   it("start → running; complete → completed with result", async () => {
     const pkg = await claimOne();
+    // 保留旧 Runner 的 branch-only 完成契约；v2 使用完整证据另测。
+    app.db.$client.prepare("UPDATE tasks SET delivery_contract_version=1 WHERE id=?").run(pkg.task.id);
     // A03: start / complete 改用 daemon token,body 必须带 daemon_id
     const s = await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/tmp/w1" }, daemonToken);
     expect(s.statusCode).toBe(200);

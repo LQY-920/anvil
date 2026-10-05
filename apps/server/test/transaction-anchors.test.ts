@@ -43,6 +43,9 @@ beforeEach(async () => {
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
+// 这些历史 complete 样本早于 v2 终检，显式归入 v1；start 锚点组继续使用 v2。
+const legacyCompletion = () => { app.db.$client.prepare("UPDATE tasks SET delivery_contract_version=1 WHERE issue_id=?").run(issueId); };
+
 describe("start anchor validation (compatibility + full v2)", () => {
   it("兼容模式:不传任何锚点 → 200,Task 状态 running,锚点字段保持 null", async () => {
     const pkg = await claimOne();
@@ -233,6 +236,7 @@ describe("start anchor validation (compatibility + full v2)", () => {
 // ----------------------------------------------------------------------------
 
 describe("result_json envelope strip", () => {
+  beforeEach(legacyCompletion);
   it("complete 后 result_json 中没有 daemon_id 字段", async () => {
     const pkg = await claimOne();
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
@@ -271,6 +275,7 @@ describe("result_json envelope strip", () => {
 // ----------------------------------------------------------------------------
 
 describe("terminal state integrity", () => {
+  beforeEach(legacyCompletion);
   it("complete 成功后再次 fail → 409 invalid_transition,Task 保持 completed", async () => {
     const pkg = await claimOne();
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);
@@ -351,6 +356,7 @@ describe("terminal state integrity", () => {
 // ----------------------------------------------------------------------------
 
 describe("transaction atomicity (SQL-triggered rollback)", () => {
+  beforeEach(legacyCompletion);
   function installStartAbortTrigger() {
     app.db.$client.exec(`
       CREATE TRIGGER abort_start_receipt
@@ -478,6 +484,7 @@ describe("transaction atomicity (SQL-triggered rollback)", () => {
 // ============================================================================
 
 describe("complete hash/result_json field consistency (FIX4)", () => {
+  beforeEach(legacyCompletion);
   it("完整合法 complete payload → 200,所有持久化字段进入 result_json", async () => {
     const pkg = await claimOne();
     await tpost(`/api/daemon/tasks/${pkg.task.id}/start`, { daemon_id: "d1", work_dir: "/w1" }, daemonToken);

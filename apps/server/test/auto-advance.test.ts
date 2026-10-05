@@ -31,10 +31,12 @@ beforeEach(async () => {
   agentId = a.json().id;
   const i = await app.inject({ method: "POST", url: "/api/issues", payload: { title: "demo", assignee_type: "agent", assignee_id: agentId } });
   issueId = i.json().id;
+  // 本组锁定历史 v1 自动流转；v2 的 Report/证据门槛由 verification-complete 覆盖。
+  app.db.$client.prepare("UPDATE tasks SET delivery_contract_version=1 WHERE issue_id=?").run(issueId);
   await app.inject({ method: "POST", url: "/api/daemon/register", headers: { authorization: `Bearer ${daemonToken}` }, payload: { daemon_id: "d1", runtimes: [{ provider: "kimi", version: "1" }] } });
 });
 
-describe("issue status auto-advance", () => {
+describe("v1 issue status auto-advance", () => {
   it("start: todo → in_progress，写 system 评论并广播 issue.updated", async () => {
     const pkg = await claimOne();
     const spy = vi.spyOn(app.hub, "broadcast");

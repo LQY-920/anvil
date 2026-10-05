@@ -68,7 +68,10 @@
 - 2026-10-05：本地 `delivery-evidence-loop-v0` 分支已实现 A05，本次修复末次追问遗漏交付核对；35 文件 / 712 用例、构建和四包 tsc 通过。
 - A05 代码与契约自审完成；A06 Runner 独立终检已实现并完成自审：从基线读取策略、真实串行检查、超时/取消终止进程树、输出脱敏与大小限制、验证前后及 complete 前核对 HEAD/clean。
 - 2026-10-05 A06 最终验证：36 文件 / 738 用例通过，`pnpm build` 和四包 `tsc --noEmit` 通过；测试记录见 `docs/tests/2026-10-05-runner-verification-testcases.md`。修复了旧脱敏测试对随机 UUID 的误判；Runner 测试并发限制为 2，保留全部断言与默认超时。
-- 下一步 A07：服务端证据专表原子落库、内部一致性校验与 v2 状态派生。当前 evidence 仅随 complete 写入兼容 result_json；A08、R2 真实 dogfood 和可信合入 Gate 仍未完成。
+- 2026-10-05 A07 已实现并完成契约/代码自审：complete 在同一事务写入最终 Git facts、Verification Run/Checks、版本化 result_json、终态和幂等回执。服务端复核字段/大小/退出码/总状态；基线、分支或目录与 start 不符则拒绝。重复回执不重复写入或广播，五处 SQL 故障注入验证全部回滚。
+- v2 只有 Report/delivered_at、完整 Git 锚点和终检记录齐全才推进 in_review；failed/not_configured 等真实证据仍可人工审查，缺报告为 incomplete，旧报告或 dirty/stale 为 integrity_blocked。完成快照不替代 B01 的实时 Git 核验与人类 Decision。
+- A07 最终验证：37 文件 / 794 用例通过（新增 54 条服务端、2 条 Fake CLI E2E），`pnpm build` 和四包 `tsc --noEmit` 通过。旧 branch-only 测试显式设为 v1；Server 测试并发限制为 2，三条真实 URL Git 测试的超时调整为 15 秒，保留全部业务断言。测试记录：`docs/tests/2026-10-05-verification-complete-testcases.md`。
+- 下一步 A08：旧 UI 前瞻验收计时。A08 后须完成 R2 代码审查、3 个真实 v2 dogfood 和 10 个真实旧 UI 前瞻基线，再进入 B01；自动化 Fake CLI 不计入真实样本。可信合入 Gate 与多 CLI 接入尚未完成。
 - 尚未合并 main 或推送；本段仅记录本地进度，不代表里程碑已发布。
 
 ## Backlog（各轮审查接受的债务，按优先级）

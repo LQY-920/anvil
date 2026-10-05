@@ -38,12 +38,14 @@ interface Env {
   hubBroadcasts: { type: string; data: any }[];
 }
 
-async function setupTwoDaemons(): Promise<Env> {
+async function setupTwoDaemons(version = 1): Promise<Env> {
   const localApp = await buildApp({ dbPath: ":memory:", logger: false });
   const tk1 = (await localApp.inject({ method: "POST", url: "/api/daemon-tokens", payload: {} })).json().token;
   const tk2 = (await localApp.inject({ method: "POST", url: "/api/daemon-tokens", payload: {} })).json().token;
   const a = (await localApp.inject({ method: "POST", url: "/api/agents", payload: { name: "bot", provider: "kimi" } })).json();
   const i = (await localApp.inject({ method: "POST", url: "/api/issues", payload: { title: "T", assignee_type: "agent", assignee_id: a.id } })).json();
+  // 旧完成载荷用于回归 daemon 权限和幂等；完整 v2 证据另有专项矩阵。
+  localApp.db.$client.prepare("UPDATE tasks SET delivery_contract_version=? WHERE issue_id=?").run(version, i.id);
   // 两个 daemon,两个 runtime,同 workspace,都注册 kimi
   await localApp.inject({ method: "POST", url: "/api/daemon/register", headers: { authorization: `Bearer ${tk1}` }, payload: { daemon_id: "d1", runtimes: [{ provider: "kimi", version: "1" }] } });
   await localApp.inject({ method: "POST", url: "/api/daemon/register", headers: { authorization: `Bearer ${tk2}` }, payload: { daemon_id: "d2", runtimes: [{ provider: "kimi", version: "1" }] } });
@@ -839,7 +841,7 @@ describe("R1-FIX2: Start 请求必须拒绝 head_commit", () => {
 
   it("完整合法 v2 Start 仍返回 200 并正确落库", async () => {
     // R1-FIX2 不得破坏完整 v2 锚点路径:四项齐全的合法 Start 仍返回 200。
-    const env = await setupTwoDaemons();
+    const env = await setupTwoDaemons(2);
     const pkg = await env.claimTask();
     const SHA = "0123456789abcdef0123456789abcdef01234567";
     const r = await env.app.inject({

@@ -249,7 +249,7 @@ describe("URL 仓库（缓存路径解析）", () => {
       expect(res.json().base).toBe("main");
       expect(res.json().diff_text).toContain("+line2");
     });
-  });
+  }, 15000); // 真实 clone/push/Git 进程在 Windows 上不以默认 5s 作为性能门槛。
 
   it("diff：缓存不存在 → 404 repo cache not found", async () => {
     const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
@@ -287,7 +287,7 @@ describe("URL 仓库（缓存路径解析）", () => {
       const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
       expect(detail.json().issue.status).toBe("done");
     });
-  });
+  }, 15000);
 
   it("merge：推送失败 → 409 且 issue 仍置 done（本地已合入）", async () => {
     const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
@@ -307,5 +307,5 @@ describe("URL 仓库（缓存路径解析）", () => {
       const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
       expect(detail.json().issue.status).toBe("done");
     });
-  });
+  }, 15000);
 });

@@ -299,7 +299,7 @@ export function registerDaemonRoutes(app: FastifyInstance, db: Db, hub: Hub) {
       }
     }
 
-    // (7) verification 存在时至少必须是普通对象(A07 深层业务校验不在本任务)
+    // (7) 先检查形状；v2 深层校验及落库由 complete 事务统一处理。
     if (raw.verification !== undefined && raw.verification !== null) {
       if (!isPlainObject(raw.verification)) {
         return sendInvalidSchema(reply, "verification must be a JSON object when present", { field: "verification" });

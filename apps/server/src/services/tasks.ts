@@ -7,7 +7,8 @@ import {
   AnvilErrorCode,
   canonicalJsonHash,
 } from "@anvil/core";
-import type { Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
+import type { Issue, Task, TaskComment, TaskPackage, ReviewPacketStatus, V2CompleteResponse } from "@anvil/core";
+import { validateCompleteEvidence, redactVerification, persistVerification, getDeliveryReport, deriveCompletedPacketStatus } from "./delivery.js";
 
 /** SQLite 没有原生 boolean;raw SQL 读出的 worktree_clean 是 0/1/null。
  *  把它归一化为 Task 协议规定的 `boolean | null`:null 保持 null,0/1 转 boolean。 */
@@ -396,7 +397,7 @@ export function normalizeOpPayload(op: "start" | "complete" | "fail", body: unkn
     return out;
   }
   if (op === "complete") {
-    // A03-FIX4 · 完整规范化对象 = 持久化对象。daemon_id 参与 hash,但被剥离于 result_json。
+    // 客户端业务字段与持久化快照一致；daemon_id 仅参与 hash，服务端派生字段另行追加。
     // 字段白名单:daemon_id / branch / diff_stat / work_dir / session_id / pushed / undelivered /
     // base_commit / head_commit / worktree_clean / verification。
     // 未知字段(顶层)由 route 在调用 service 之前用 rejectUnknownCompleteFields 拒绝。
@@ -411,7 +412,7 @@ export function normalizeOpPayload(op: "start" | "complete" | "fail", body: unkn
     if (b.base_commit !== undefined) out.base_commit = b.base_commit;
     if (b.head_commit !== undefined) out.head_commit = b.head_commit;
     if (b.worktree_clean !== undefined) out.worktree_clean = b.worktree_clean;
-    if (b.verification !== undefined) out.verification = b.verification;
+    if (b.verification !== undefined) out.verification = redactVerification(b.verification);
     return out;
   }
   // fail: error 在 hash 之前走 redactTokens;原始 token 不参与 hash,也不进 tasks.error。
@@ -427,9 +428,9 @@ export function normalizeOpPayload(op: "start" | "complete" | "fail", body: unkn
 }
 
 /**
- * A03-FIX4 · complete 业务字段剥离 daemon_id 后,直接作为 result_json 持久化。
- * 关键:该对象必须与 normalizeOpPayload("complete") 派生的 hash 对象字段完全一致
- * (只是少了 daemon_id)。任何对 hash 字段的修改必须同时落库,以保证幂等一致性。
+ * complete 的客户端业务快照，与 hash 输入保持相同的字段和值（剥离 daemon_id）。
+ * v2 在事务内另加 schema_version、verification_run_id 与 review_packet_status；
+ * 这些服务端派生值不参与请求 hash，重放直接返回首次持久化的回执。
  */
 export function buildCompleteResultJson(payload: Record<string, unknown>): Record<string, unknown> {
   // 与 normalizeOpPayload("complete") 同字段集合,只剥 daemon_id
@@ -437,7 +438,7 @@ export function buildCompleteResultJson(payload: Record<string, unknown>): Recor
   const keys = ["branch", "diff_stat", "work_dir", "session_id", "pushed", "undelivered",
                 "base_commit", "head_commit", "worktree_clean", "verification"];
   for (const k of keys) {
-    if (payload[k] !== undefined) out[k] = payload[k];
+    if (payload[k] !== undefined) out[k] = k === "verification" ? redactVerification(payload[k]) : payload[k];
   }
   return out;
 }
@@ -650,9 +651,10 @@ export function completeTask(db: Db, taskId: string, result: { branch?: string; 
 
 /**
  * 状态自动流转(在 startTask/completeTask 成功后调用):
- * start 且 issue 为 todo → in_progress;complete 且产出非空 branch 且 issue 为 todo/in_progress → in_review。
+ * start 且 issue 为 todo → in_progress；complete 且有 branch 时，v1 可推进 in_review，
+ * v2 还要求 Report/delivered_at、完整 Git 锚点和终检记录。验证失败仍可进入人工审查。
  * blocked/done 等状态不动(blocked 是人工挂起,不抢)。返回迁移后的 issue,未迁移返回 null(供路由层广播)。
- * 不影响 agent 回调链路:delivered_at 仍只由 setIssueStatusFromAgent 写入。
+ * 不写 delivered_at：v1 由 issue-status 回调写入，v2 由 Delivery Report 写入。
  */
 export function autoAdvanceIssue(db: Db, task: Task, event: "start" | "complete"): Issue | null {
   const issue = getIssue(db, task.issue_id);
@@ -663,7 +665,10 @@ export function autoAdvanceIssue(db: Db, task: Task, event: "start" | "complete"
   } else if (event === "complete" && (issue.status === "todo" || issue.status === "in_progress")) {
     let branch: unknown;
     try { branch = JSON.parse(task.result_json ?? "{}")?.branch; } catch { branch = null; }
-    if (typeof branch === "string" && branch.trim()) next = "in_review";
+    const delivered = task.delivery_contract_version !== 2 || Boolean(
+      task.delivered_at && task.task_branch && task.target_branch && task.base_commit && task.head_commit && task.verification_run_id && getDeliveryReport(db, task.id),
+    );
+    if (delivered && typeof branch === "string" && branch.trim()) next = "in_review";
   }
   if (!next) return null;
   const now = new Date().toISOString();
@@ -927,12 +932,15 @@ export function runStartInTransaction(
   return outcome;
 }
 
+// 复用 Core 回执；v1 兼容路径不返回 Packet 状态。
+type CompleteOpResponse = Omit<V2CompleteResponse, "review_packet_status"> & Partial<Pick<V2CompleteResponse, "review_packet_status">>;
+
 /** A03-FIX · complete 包装:状态守卫 + 事务 + 幂等 + 副作用(syncAgentIdle,Issue 状态与评论)。
  *  replay 命中则不重复任何副作用;不同 hash 抛 idempotency_conflict。 */
 export function completeTaskForDaemon(
   db: Db, taskId: string, workspaceId: string, daemonId: string,
   payload: Record<string, unknown>,
-): DaemonOpResult<{ ok: true; task_id: string; status: "completed" }> {
+): DaemonOpResult<CompleteOpResponse> {
   const initial = getTask(db, taskId);
   if (!initial) throw makeOpError(404, "task_not_active", "Task 不存在", { task_id: taskId });
   assertRuntimeOwnership(db, initial, workspaceId, daemonId);
@@ -960,19 +968,17 @@ export function completeTaskForDaemon(
 /** R1-FIX1 · complete 事务体(可独立测试)。 */
 export function runCompleteInTransaction(
   db: Db, taskId: string, hash: string, payload: Record<string, unknown>,
-): DaemonOpTxResult<{ ok: true; task_id: string; status: "completed" }> {
+): DaemonOpTxResult<CompleteOpResponse> {
   const outcome: {
-    response: { ok: true; task_id: string; status: "completed" };
+    response: CompleteOpResponse;
     replayed: boolean;
     advancedIssue: Issue | null;
   } = { response: { ok: true, task_id: taskId, status: "completed" }, replayed: false, advancedIssue: null };
   const now = new Date().toISOString();
-  // A03-FIX4 · result_json 业务对象:只包含业务字段(daemon_id 已被剥离)
-  // 该对象与 hash 输入的字段集合一一对应,任何"持久化但未参与 hash"或反向的不一致
-  // 都是 bug,会导致第二/三次请求命中错误的 replay。
+  // 先构造与 hash 一致的客户端业务快照；事务内追加的服务端派生字段不参与请求 hash。
   const businessResult = buildCompleteResultJson(payload);
   const body = businessResult as { branch?: string; diff_stat?: string; work_dir?: string; session_id?: string; head_commit?: string; base_commit?: string; worktree_clean?: boolean; verification?: unknown; pushed?: boolean; undelivered?: boolean };
-  // 同一 transaction:recheck → 状态守卫 → 终态更新 → Agent 同步 → Issue 推进 → 系统评论 → 幂等写入。
+  // 同一 transaction:recheck → 状态守卫 → 证据校验/写入 → 终态 → Agent/Issue/评论 → 幂等回执。
   // 任一异常触发 ROLLBACK,不留半完成证据。
   db.$client.transaction(() => {
     // 事务内重新读幂等记录(防 TOCTOU 与并发竞争)
@@ -991,19 +997,33 @@ export function runCompleteInTransaction(
     if (cur.status !== "dispatched" && cur.status !== "running") {
       throw makeOpError(409, "invalid_transition", "Task 不在 active 状态,无法 complete", { task_id: taskId, status: cur.status });
     }
+    // 先校验原始字节上限，再校验脱敏后的存储对象；不能截断后静默接受结构化载荷。
+    validateCompleteEvidence(cur, payload);
+    const verification = validateCompleteEvidence(cur, businessResult);
+    let runId: string | null = null;
+    if (cur.delivery_contract_version === 2) {
+      if (verification) runId = persistVerification(db, cur, verification, now);
+      businessResult.schema_version = 2;
+      businessResult.verification_run_id = runId;
+      businessResult.review_packet_status = deriveCompletedPacketStatus({ ...cur, head_commit: body.head_commit ?? null, worktree_clean: body.worktree_clean ?? null }, getDeliveryReport(db, taskId)?.report_head_commit ?? null, verification);
+    }
+    const evidenceSet = cur.delivery_contract_version === 2 ? ", head_commit=?, worktree_clean=?, verification_status=?, verification_run_id=?" : "";
+    const params: unknown[] = [JSON.stringify(businessResult), now, body.work_dir ?? null, body.session_id ?? null];
+    if (cur.delivery_contract_version === 2) params.push(body.head_commit ?? null, typeof body.worktree_clean === "boolean" ? Number(body.worktree_clean) : null, verification?.status ?? null, runId);
+    params.push(taskId);
     const res = db.$client
       .prepare(`UPDATE tasks SET status='completed', result_json=?, completed_at=?,
                 work_dir=COALESCE(?, work_dir), session_id=COALESCE(?, session_id),
-                task_token_hash=NULL, lease_expires_at=NULL
+                task_token_hash=NULL, lease_expires_at=NULL${evidenceSet}
                 WHERE id=? AND status IN ('dispatched','running')`)
-      .run(JSON.stringify(businessResult), now, body.work_dir ?? null, body.session_id ?? null, taskId);
+      .run(...params);
     if (res.changes !== 1) {
       throw makeOpError(409, "invalid_transition", "Task 状态被并发改动,无法 complete", { task_id: taskId });
     }
     syncAgentIdle(db, cur.agent_id);
     // Issue 自动流转 + 系统评论(同 transaction)
     const advanced = autoAdvanceIssue(db, getTask(db, taskId)!, "complete");
-    const response: { ok: true; task_id: string; status: "completed" } = { ok: true, task_id: taskId, status: "completed" };
+    const response: CompleteOpResponse = { ok: true, task_id: taskId, status: "completed", ...(cur.delivery_contract_version === 2 ? { review_packet_status: businessResult.review_packet_status as ReviewPacketStatus } : {}) };
     writeOpIdempotency(db, taskId, "complete", hash, JSON.stringify(response));
     outcome.response = response;
     outcome.advancedIssue = advanced;
