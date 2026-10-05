@@ -246,7 +246,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         // 真实分支状态:v2 路径下,delivered 表示"report_head_commit == current HEAD 且已提交"
         // v1 路径下,delivered 表示 tasks.delivered_at != null
         const taskBranch = prepared.taskBranch;
-        while (followups < 2) {
+        while (true) {
           // 每轮开始:重新读取真实工作区状态(Git HEAD 可能在追问中推进)
           let currentHead: string | null = null;
           if (v2 && workDir && taskBranch) {
@@ -274,6 +274,8 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
               break;
             }
           }
+          // 上限只限制再次执行，最后一轮结束后仍须核对 HEAD 与交付报告。
+          if (followups >= 2) break;
           // 不满足 → 追问
           followups++;
           const followPrompt = v2 ? V2_FOLLOWUP_PROMPT : FOLLOWUP_PROMPT;

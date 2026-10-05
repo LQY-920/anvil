@@ -233,7 +233,7 @@ describe("executor", () => {
     expect(JSON.parse(got.json().task.result_json).undelivered).toBe(true);
   });
 
-  it("delivered completion: no follow-up, result_json has no undelivered flag", async () => {
+  it.each([1, 3])("v1 第 %i 轮回调成功后不标记未交付", async (deliveryRound) => {
     const { client, pkg, runnerRoot, url, daemonId } = await setup();
     // A05: 把 task 标为 v1,保留旧 issue-status=in_review 回调路径。
     // 同步修改内存对象 pkg.task,executor 的 isV2Task 是从内存对象读取。
@@ -245,6 +245,7 @@ describe("executor", () => {
       execute() {
         calls++;
         const result = (async () => {
+          if (calls !== deliveryRound) return { status: "completed" as const, exitCode: 0 };
           const res = await fetch(`${url}/api/daemon/tasks/${pkg.task.id}/issue-status`, {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${pkg.task_token}` },
@@ -257,7 +258,7 @@ describe("executor", () => {
       },
     };
     await executeTask({ client, backend: delivering, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
-    expect(calls).toBe(1);
+    expect(calls).toBe(deliveryRound);
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("completed");
     expect(JSON.parse(got.json().task.result_json).undelivered).toBeUndefined();
@@ -1447,45 +1448,56 @@ describe("A05 · v2 同会话追问契约", () => {
     };
   }
 
-  it("A05: v2 Report SHA 与当前 HEAD 一致 → 不追问,1 次 execute,complete 成功", async () => {
-    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask();
-    // 用真实 client 提交 Report,验证 executor 路径在"已交付"情况下不追问
-    const head = "a".repeat(40);
-    await client.getTaskDelivery(pkg.task.id, pkg.task_token); // 摸一下路径确保 server 正常
-    // 直接用 server.inject 提交 Report(模拟 agent 调 server)
-    const putRes = await app.inject({
-      method: "PUT",
-      url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
-      headers: { authorization: `Bearer ${pkg.task_token}` },
-      payload: {
-        schema_version: 1,
-        report_head_commit: head,
-        problem_understanding: "p",
-        solution_summary: "s",
-        changed_areas: [{ path: "src/a.ts", summary: "x" }],
-        risks: [],
-        unresolved: [],
-      },
-    });
-    expect(putRes.statusCode).toBe(200);
-    // 然后用 fake backend 验证 executor 路径(不 commit,只是空 backend)
-    const fake: AgentBackend = {
+  it.each([1, 2, 3])("A05: 第 %i 轮绑定最终 HEAD 的 Report 被确认，停止追问且不标记未交付", async (deliveryRound) => {
+    const { client, pkg, runnerRoot, daemonId } = await setupV2GitTask();
+    const query = vi.spyOn(client, "getTaskDelivery");
+    const fail = vi.spyOn(client, "fail");
+    const resumes: boolean[] = [];
+    let finalHead = "";
+    const backend: AgentBackend = {
       provider: "kimi",
-      execute() {
+      execute(opts) {
+        resumes.push(opts.resume);
+        const round = resumes.length;
+        const result = (async () => {
+          // 每轮推进 HEAD，确保最后一次追问读取的是最终版本。
+          fs.writeFileSync(path.join(opts.workDir, "交付.txt"), `第 ${round} 轮`);
+          execFileSync("git", ["add", "交付.txt"], { cwd: opts.workDir });
+          execFileSync("git", ["commit", "-m", `第 ${round} 轮交付`], { cwd: opts.workDir });
+          finalHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: opts.workDir }).toString().trim();
+          const res = await app.inject({
+            method: "PUT",
+            url: `/api/daemon/tasks/${pkg.task.id}/delivery-report`,
+            headers: { authorization: `Bearer ${pkg.task_token}` },
+            payload: {
+              schema_version: 1,
+              report_head_commit: round === deliveryRound ? finalHead : pkg.task.base_commit ?? "0".repeat(40),
+              problem_understanding: "核对交付版本",
+              solution_summary: `第 ${round} 轮结果`,
+              changed_areas: [{ path: "交付.txt", summary: "更新结果" }],
+              risks: [], unresolved: [],
+            },
+          });
+          expect(res.statusCode).toBe(200);
+          return { status: "completed" as const, exitCode: 0 };
+        })();
         return {
           messages: (async function* () {})(),
-          result: Promise.resolve({ status: "completed" as const, exitCode: 0 }),
+          result,
           kill: () => {},
         };
       },
     };
-    await executeTask({ client, backend: fake, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
-    // 任务正常 complete,没有调用 fail
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
     const got = await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` });
     expect(got.json().task.status).toBe("completed");
-    const r = (app.db.$client.prepare(`SELECT * FROM task_delivery_reports WHERE task_id = ?`).get(pkg.task.id) as any);
-    expect(r).toBeTruthy();
     expect(got.json().task.delivered_at).toBeTruthy();
+    expect(JSON.parse(got.json().task.result_json).undelivered).toBeUndefined();
+    expect(resumes).toEqual(Array.from({ length: deliveryRound }, (_, i) => i > 0));
+    expect(query).toHaveBeenCalledTimes(deliveryRound);
+    expect(fail).not.toHaveBeenCalled();
+    const report = app.db.$client.prepare("SELECT report_head_commit FROM task_delivery_reports WHERE task_id = ?").get(pkg.task.id) as { report_head_commit: string };
+    expect(report.report_head_commit).toBe(finalHead);
   });
 
   it("A05: v2 缺 Report → 最多追问两轮,3 次 execute,最终 complete 为 undelivered", async () => {
