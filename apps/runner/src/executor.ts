@@ -6,6 +6,7 @@ import type { ApiClient } from "./client.js";
 import type { AgentBackend, AgentResult } from "./agents/backend.js";
 import { prepareWorkdir, gitDiffStat, readWorktreeHead, git } from "./worktree.js";
 import { MessageUploader } from "./uploader.js";
+import { loadVerificationPolicy, runVerification, type VerificationResult } from "./verification.js";
 
 export interface ExecutorDeps {
   client: ApiClient;
@@ -199,6 +200,9 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     const secrets = [task_token, process.env.ANVIL_DAEMON_TOKEN ?? ""].filter(Boolean);
     const uploader = new MessageUploader(client, task.id, task_token, secrets, 500);
     const guidance = readRepoGuidance(workDir);
+    // 在 Agent 启动前固化可信策略；任务分支上的 ANVIL.verify.json 不参与本次终检。
+    const verificationPolicy = isV2Task(task) && prepared.baseCommit
+      ? await loadVerificationPolicy(workDir, prepared.baseCommit) : undefined;
     const execOpts = {
       workDir,
       env,
@@ -208,24 +212,28 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     };
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
     let session = backend.execute(execOpts);
+    let agentActive = true;
+    const terminal = new AbortController();
+    // Agent 已退出后不能再按旧 PID 杀进程；验证阶段只取消验证进程。
+    const control = { kill: () => { terminal.abort(); if (agentActive) session.kill(); } };
+    activeSessions.add(control);
 
     // 取消轮询：server 端终态 → 杀进程组(task plane 继续用 task token)
     const cancelTimer = setInterval(async () => {
       try {
         const st = await client.taskStatus(task.id, task_token);
-        if (st === null || st === "cancelled" || st === "completed" || st === "failed") session.kill();
+        if (st === null || st === "cancelled" || st === "completed" || st === "failed") control.kill();
       } catch { /* 网络抖动下轮再说 */ }
     }, deps.cancelPollMs ?? 5000);
 
     try {
-      // 每轮会话的 add/delete 在同一 try/finally 里配对，追问轮换 session 后首轮注册不泄漏
+      // 整个任务注册一个 control，追问和终检共享取消信号。
       let result: AgentResult;
-      activeSessions.add(session);
       try {
         for await (const m of session.messages) uploader.push(m);
         result = await session.result;
       } finally {
-        activeSessions.delete(session);
+        agentActive = false;
       }
       try {
         await uploader.close();
@@ -247,6 +255,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         // v1 路径下,delivered 表示 tasks.delivered_at != null
         const taskBranch = prepared.taskBranch;
         while (true) {
+          if (terminal.signal.aborted) return;
           // 每轮开始:重新读取真实工作区状态(Git HEAD 可能在追问中推进)
           let currentHead: string | null = null;
           if (v2 && workDir && taskBranch) {
@@ -281,7 +290,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
           const followPrompt = v2 ? V2_FOLLOWUP_PROMPT : FOLLOWUP_PROMPT;
           console.error(`[anvil-executor] task ${task.id} ended without delivery, follow-up ${followups}/2 (v2=${v2})`);
           session = backend.execute({ ...execOpts, prompt: followPrompt, resume: true });
-          activeSessions.add(session);
+          agentActive = true;
           try {
             for await (const m of session.messages) uploader.push(m);
             const fr = await session.result;
@@ -291,7 +300,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
               break;
             }
           } finally {
-            activeSessions.delete(session);
+            agentActive = false;
           }
           // 继续循环:下一轮会重新读 HEAD + 查 Report
         }
@@ -310,11 +319,15 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         // 3) 失败时整个 executeTask 由 catch 块负责 fail 上报,不外抛;
         // 4) Agent 已 commit 后 git diff HEAD 通常为空,所以 diff 必须用 base..head。
         // 无 repo_path 任务 diff_stat 为空。
-        let diffStat = "";
-        if (prepared.baseCommit != null) {
-          const headCommit = await readWorktreeHead(workDir, prepared.taskBranch);
-          diffStat = await gitDiffStat(workDir, prepared.baseCommit, headCommit);
+        if (terminal.signal.aborted) return;
+        let evidence: VerificationResult | undefined;
+        if (v2 && prepared.baseCommit && taskBranch) {
+          evidence = await runVerification({
+            workDir, baseCommit: prepared.baseCommit, taskBranch,
+            policy: verificationPolicy, env, secrets, signal: terminal.signal,
+          });
         }
+        if (terminal.signal.aborted) return;
         // URL 仓库:把任务分支推回远程,server 验收合并时用。推送失败不阻断 complete(分支仍在本地缓存)。
         let pushed: boolean | undefined;
         if (prepared.taskBranch && issue.repo_path && isRepoUrl(issue.repo_path)) {
@@ -326,15 +339,36 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
             pushed = false;
           }
         }
+        if (terminal.signal.aborted) return;
+        let diffStat = "";
+        if (prepared.baseCommit != null) {
+          const headCommit = await readWorktreeHead(workDir, prepared.taskBranch);
+          if (evidence) {
+            evidence.headCommit = headCommit;
+            evidence.worktreeClean = !(await git(workDir, ["status", "--porcelain", "--untracked-files=all"])).trim();
+            // push hook 或外部修改可能发生在终检之后；只能降低证据状态，不能重新宣称通过。
+            if (evidence.verification.status === "passed" || evidence.verification.status === "partial") {
+              if (!evidence.worktreeClean) evidence.verification.status = "dirty";
+              else if (headCommit !== evidence.verification.verification_sha) evidence.verification.status = "stale";
+            }
+          }
+          diffStat = await gitDiffStat(workDir, prepared.baseCommit, headCommit);
+        }
+        if (terminal.signal.aborted) return;
         // A03-FIX · complete 失败(transport 耗尽 / 4xx)不构造新 fail,记录脱敏日志并结束:
         // "终态回执不确定"——可能是 server 已写入但响应丢失,重复 fail 反而会污染状态。
-        // A04 · complete payload 沿用当前兼容结构(branch / diff_stat / work_dir / pushed / undelivered),
-        // 头/工作树/verification 等更完整字段由 A07 引入。
+        // 证据先随 complete 一并上报；A07 在 server 事务中固化并重新校验。
         try {
           await client.complete(task.id, daemonId, {
             branch: prepared.taskBranch ?? undefined,
             diff_stat: diffStat || undefined,
             work_dir: workDir,
+            ...(evidence ? {
+              base_commit: prepared.baseCommit,
+              head_commit: evidence.headCommit,
+              worktree_clean: evidence.worktreeClean,
+              verification: evidence.verification,
+            } : {}),
             ...(pushed === undefined ? {} : { pushed }),
             ...(delivered ? {} : { undelivered: true }),
           });
@@ -370,6 +404,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       }
     } finally {
       clearInterval(cancelTimer);
+      activeSessions.delete(control);
     }
   } catch (e: any) {
     // A03-FIX · 任何 catch 都不外抛:executeTask 必须收敛,poller 不应被影响

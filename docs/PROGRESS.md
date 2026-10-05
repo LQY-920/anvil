@@ -66,7 +66,9 @@
 ### 🔄 进行中：交付证据与反馈闭环 v0
 
 - 2026-10-05：本地 `delivery-evidence-loop-v0` 分支已实现 A05，本次修复末次追问遗漏交付核对；35 文件 / 712 用例、构建和四包 tsc 通过。
-- A05 代码与契约自审完成，下一步 A06 Runner 独立终检；后续仍遵守阶段审查与真实 dogfood 门槛。
+- A05 代码与契约自审完成；A06 Runner 独立终检已实现并完成自审：从基线读取策略、真实串行检查、超时/取消终止进程树、输出脱敏与大小限制、验证前后及 complete 前核对 HEAD/clean。
+- 2026-10-05 A06 最终验证：36 文件 / 738 用例通过，`pnpm build` 和四包 `tsc --noEmit` 通过；测试记录见 `docs/tests/2026-10-05-runner-verification-testcases.md`。修复了旧脱敏测试对随机 UUID 的误判；Runner 测试并发限制为 2，保留全部断言与默认超时。
+- 下一步 A07：服务端证据专表原子落库、内部一致性校验与 v2 状态派生。当前 evidence 仅随 complete 写入兼容 result_json；A08、R2 真实 dogfood 和可信合入 Gate 仍未完成。
 - 尚未合并 main 或推送；本段仅记录本地进度，不代表里程碑已发布。
 
 ## Backlog（各轮审查接受的债务，按优先级）

@@ -1,4 +1,4 @@
-import { spawn, exec } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import path from "node:path";
 import type { AgentMessage } from "@anvil/core";
 import type { AgentResult } from "./backend.js";
@@ -19,13 +19,14 @@ export interface RunningProcess {
 }
 
 /** 杀整个进程组/进程树（spec §6：防止孤儿化 CLI 拉起的子进程）。 */
-export function killProcessTree(pid: number) {
+export function killProcessTree(pid: number, force = false) {
   if (process.platform === "win32") {
     // 用 SystemRoot 解析绝对路径：某些机器 PATH 缺 C:\Windows\System32，裸 taskkill 会找不到
     const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-    exec(`"${taskkill}" /PID ${pid} /T /F`, { windowsHide: true }, () => {});
+    execFile(taskkill, ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
   } else {
-    try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }
+    const signal = force ? "SIGKILL" : "SIGTERM";
+    try { process.kill(-pid, signal); } catch { try { process.kill(pid, signal); } catch { /* gone */ } }
   }
 }
 

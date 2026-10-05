@@ -8,6 +8,7 @@ import { buildApp } from "@anvil/server";
 import type { FastifyInstance } from "fastify";
 import { ApiClient } from "../src/client.js";
 import { executeTask, buildPrompt } from "../src/executor.js";
+import * as verificationModule from "../src/verification.js";
 import type { AgentBackend } from "../src/agents/backend.js";
 import type { AgentMessage } from "@anvil/core";
 import fs from "node:fs";
@@ -1354,13 +1355,16 @@ describe("A05 · buildPrompt v1/v2 分流", () => {
 
 describe("A05 · v2 同会话追问契约", () => {
   // 公共 setup:把当前 task 标为 v2(默认就是 2),并提供工作树(本地 git 仓库)。
-  async function setupV2GitTask() {
+  async function setupV2GitTask(verificationCode?: string) {
     const { client, url, daemonId } = await setup();
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-a05-repo-"));
     execFileSync("git", ["init", "-b", "main"], { cwd: repo });
     execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
     execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
     fs.writeFileSync(path.join(repo, "a.txt"), "hi");
+    if (verificationCode) fs.writeFileSync(path.join(repo, "ANVIL.verify.json"), JSON.stringify({ version: 1, commands: [
+      { id: "test", label: "真实终检", command: `"${process.execPath}" -e "${verificationCode}"`, required: true, timeout_ms: 10000 },
+    ] }));
     execFileSync("git", ["add", "-A"], { cwd: repo });
     execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
     const a = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: `a05-${Date.now()}`, provider: "kimi" } })).json();
@@ -1499,6 +1503,73 @@ describe("A05 · v2 同会话追问契约", () => {
     const report = app.db.$client.prepare("SELECT report_head_commit FROM task_delivery_reports WHERE task_id = ?").get(pkg.task.id) as { report_head_commit: string };
     expect(report.report_head_commit).toBe(finalHead);
   });
+
+  it("A06: Agent 已提交 Report，真实终检失败仍记录证据且不自动追加修复会话", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask("console.log('真实失败');process.exit(7)");
+    const backend = makeA05Backend({ commit: "a", submitReport: true, fakeClient: { url, task_token: pkg.task_token, taskId: pkg.task.id } });
+    const executions = vi.spyOn(backend, "execute");
+    const complete = vi.spyOn(client, "complete");
+    const fail = vi.spyOn(client, "fail");
+    await executeTask({ client, backend, runnerRoot, daemonId, cancelPollMs: 50 }, pkg);
+    expect(executions).toHaveBeenCalledTimes(1);
+    expect(fail).not.toHaveBeenCalled();
+    const payload = complete.mock.calls[0][2] as any;
+    expect(payload.verification).toMatchObject({ status: "failed", verification_sha: payload.head_commit, checks: [{ exit_code: 7, status: "failed" }] });
+    expect(payload.verification.checks[0].output_excerpt).toContain("真实失败");
+    expect(payload.head_commit).not.toBe(payload.base_commit);
+    expect(payload.worktree_clean).toBe(true);
+    expect(payload.undelivered).toBeUndefined();
+    const got = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(got.task.status).toBe("completed");
+    expect(JSON.parse(got.task.result_json).verification.status).toBe("failed");
+  }, 15000);
+
+  it("A06: 终检中取消会杀验证进程，不发送 complete 或 fail", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask("require('fs').writeFileSync('验证开始.txt','x');setInterval(()=>{},100)");
+    const backend = makeA05Backend({ commit: "a", submitReport: true, fakeClient: { url, task_token: pkg.task_token, taskId: pkg.task.id } });
+    const agentKill = vi.fn();
+    const execute = backend.execute.bind(backend);
+    vi.spyOn(backend, "execute").mockImplementation(opts => ({ ...execute(opts), kill: agentKill }));
+    const complete = vi.spyOn(client, "complete");
+    const fail = vi.spyOn(client, "fail");
+    let cancelSent = false;
+    const taskStatus = client.taskStatus.bind(client);
+    vi.spyOn(client, "taskStatus").mockImplementation(async (id, token) => {
+      const marker = path.join(runnerRoot, "worktrees", pkg.task.id.slice(0, 8), "验证开始.txt");
+      if (!cancelSent && fs.existsSync(marker)) {
+        cancelSent = true;
+        await app.inject({ method: "POST", url: `/api/tasks/${id}/cancel` });
+      }
+      return taskStatus(id, token);
+    });
+    await executeTask({ client, backend, runnerRoot, daemonId, cancelPollMs: 50 }, pkg);
+    expect(cancelSent).toBe(true);
+    expect(complete).not.toHaveBeenCalled();
+    expect(fail).not.toHaveBeenCalled();
+    expect(agentKill).not.toHaveBeenCalled();
+    const got = (await app.inject({ method: "GET", url: `/api/tasks/${pkg.task.id}` })).json();
+    expect(got.task.status).toBe("cancelled");
+  }, 15000);
+
+  it("A06: 终检后 HEAD 又推进，最终上报降为 stale 且 diff 绑定新 HEAD", async () => {
+    const { client, pkg, runnerRoot, daemonId, url } = await setupV2GitTask("process.exit(0)");
+    const backend = makeA05Backend({ commit: "a", submitReport: true, fakeClient: { url, task_token: pkg.task_token, taskId: pkg.task.id } });
+    const complete = vi.spyOn(client, "complete");
+    const verify = verificationModule.runVerification;
+    vi.spyOn(verificationModule, "runVerification").mockImplementation(async opts => {
+      const result = await verify(opts);
+      expect(result.verification.status).toBe("passed");
+      fs.writeFileSync(path.join(opts.workDir, "late.txt"), "终检之后的修改");
+      execFileSync("git", ["add", "late.txt"], { cwd: opts.workDir });
+      execFileSync("git", ["commit", "-m", "终检之后推进"], { cwd: opts.workDir });
+      return result;
+    });
+    await executeTask({ client, backend, runnerRoot, daemonId, cancelPollMs: 50 }, pkg);
+    const payload = complete.mock.calls[0][2] as any;
+    expect(payload.verification.status).toBe("stale");
+    expect(payload.head_commit).not.toBe(payload.verification.verification_sha);
+    expect(payload.diff_stat).toContain("late.txt");
+  }, 15000);
 
   it("A05: v2 缺 Report → 最多追问两轮,3 次 execute,最终 complete 为 undelivered", async () => {
     const { client, pkg, runnerRoot, daemonId } = await setupV2GitTask();

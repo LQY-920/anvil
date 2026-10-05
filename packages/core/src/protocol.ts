@@ -134,6 +134,8 @@ export interface VerificationRun {
   started_at: string | null;
   completed_at: string;
   checks: VerificationCheck[];
+  /** 策略非法或终检基础设施异常；没有执行检查也不能误报未配置。 */
+  error_code?: "invalid_policy" | "verification_error";
 }
 
 /** v2 Complete:Runner 原子提交 Task 终态、Git 事实与验证证据(FR-001 AC 13,FR-002)。
