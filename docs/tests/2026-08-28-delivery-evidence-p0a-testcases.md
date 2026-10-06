@@ -29,6 +29,8 @@
 
 最终执行：40 文件 / 840 用例通过（core 161、server 390、runner 210、web 79），构建、四包 noEmit 和 diff 检查通过。最终日志 `tmp/codex-a08-tests-isolated.log`；较早一轮与构建重叠出现两个既有 Git 超时，已记录在 A08 文档，未改超时掩盖。
 
+2026-10-06 R2 准备补充：只读盘点工具新增 21 条专项回归；全量 **41 文件 / 861 用例**通过（core 161、server 411、runner 210、web 79）。测试、构建、四包 noEmit 串行执行并通过；日志 `tmp/codex-r2-tests.log`、`tmp/codex-r2-build.log`。Vite 的 Core Node 模块 externalized 警告与 A08 相同。锁定 PRD hash 未变。新增工具的契约与代码自审：不迁移/补写旧库、不读取业务正文/凭据、明确选 Task 才导出技术明细；前瞻筛选不混入历史任务且不自动给出 R2 通过结论。
+
 ## 证据链与代码自审
 
 - daemon/task token 边界、runtime ownership、幂等回执路径保留；measurement 属于现有单机单用户的人工 API，不新增认证模型。
@@ -40,6 +42,8 @@
 - 同一工作树继续既有主题分支，没有合并、推送或发布。以上为 Codex 自审，不能称为独立 reviewer 的复审。
 
 ## 真实 v2 dogfood 待执行
+
+2026-10-06 已准备独立持久库、三个未指派的实际待办草稿和只读盘点命令，见 [R2 采集手册](2026-10-06-r2-runbook.md)。现有 `apps/server/anvil.db` 只有旧 schema（16 条 Task），本轮未迁移。独立库初始真实 Task/测量均为 0；草稿不计入样本。
 
 选择三个确实需要完成的工作任务，通过 Anvil 的真实已安装 Agent 完成，不用 Fake CLI 替代。逐项记录：
 

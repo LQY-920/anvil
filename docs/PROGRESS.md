@@ -75,6 +75,7 @@
 - 计时失败保留原裁决、显示警告并排除样本；响应丢失由原裁决请求携带失败标记。测量表拒写时以 `result_json.review_measurement_excluded=true` 保存独立失效事实，后续基线查询同时排除该标记与 null 时间；不改原 Git/验证事实。补充 comments 路由接线与 Core DTO，无新迁移或依赖。
 - A08 最终验证：40 文件 / 840 用例通过（新增 46 条），构建与四包 noEmit 通过；真实浏览器验证刷新、合入及计时 503 后的合入/打回。修复首帧点击先于计时初始化的竞态；一次测试/构建重叠导致既有 Git 超时，独立全量通过，未放宽超时或断言。记录见 `docs/tests/2026-10-06-review-timer-testcases.md`。
 - 当前停在 R2：自动化与本次自审已完成，仍须收集/核对 3 个真实 v2 dogfood 和 10 个真实旧 UI 前瞻基线；清单见 `docs/tests/2026-08-28-delivery-evidence-p0a-testcases.md`。临时库浏览器测试与 Fake CLI 均不计入真实样本。R2 未放行，B01、可信合入 Gate 与多 CLI 接入尚未完成。
+- 2026-10-06 R2 采集准备：增加 `pnpm --filter @anvil/server r2:inventory` 只读命令，限定采集起点和显式 Task，输出技术事实与候选计数；过滤失效/异常计时、禁止旧任务回填，始终保留人工门。21 条新增专项，全量 41 文件 / 861 用例、构建和四包 noEmit 通过。旧本地库仍为 16 条旧任务，未迁移；独立 `.anvil/r2/anvil.db` 已准备三个未指派草稿，真实 Task/测量均为 0。运行与采集说明见 `docs/tests/2026-10-06-r2-runbook.md`。R2 仍未放行。
 - 尚未合并 main 或推送；本段仅记录本地进度，不代表里程碑已发布。
 
 ## Backlog（各轮审查接受的债务，按优先级）
