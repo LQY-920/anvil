@@ -6,7 +6,7 @@
 
 ## 证据摘要
 
-> 2026-10-05 本地实施更新：当前主题为「交付证据与反馈闭环 v0」，按锁定 PRD 和 `docs/superpowers/plans/2026-08-28-delivery-evidence-feedback-loop-v0.md` 推进。A05 已修复末次追问核对，A06 Runner 基线终检与 A07 服务端原子证据落库已实现；后续为 A08 前瞻验收计时和 R2 真实 dogfood。尚未合并或发布，多 CLI 接入排在可信交付 P0 之后。本页以下保留原路线图背景，最新实绩见 `docs/PROGRESS.md`。
+> 2026-10-06 本地实施更新：当前主题为「交付证据与反馈闭环 v0」，按锁定 PRD 和 `docs/superpowers/plans/2026-08-28-delivery-evidence-feedback-loop-v0.md` 推进。A05 末次追问修复、A06 基线终检、A07 原子证据落库与 A08 前瞻验收计时均已实现；当前停在 R2，等待 3 个真实 v2 dogfood 与 10 个真实旧 UI 基线。尚未合并或发布，多 CLI 接入排在可信交付 P0 之后。本页以下保留原路线图背景，最新实绩见 `docs/PROGRESS.md`。
 
 **源 1 · 项目现状与用户卡点**（按发生时间）：
 - 新建 issue 后"似乎没有反应"——创建/入队无任何即时反馈（2026-08-05 实测）

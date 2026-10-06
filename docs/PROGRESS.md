@@ -71,7 +71,10 @@
 - 2026-10-05 A07 已实现并完成契约/代码自审：complete 在同一事务写入最终 Git facts、Verification Run/Checks、版本化 result_json、终态和幂等回执。服务端复核字段/大小/退出码/总状态；基线、分支或目录与 start 不符则拒绝。重复回执不重复写入或广播，五处 SQL 故障注入验证全部回滚。
 - v2 只有 Report/delivered_at、完整 Git 锚点和终检记录齐全才推进 in_review；failed/not_configured 等真实证据仍可人工审查，缺报告为 incomplete，旧报告或 dirty/stale 为 integrity_blocked。完成快照不替代 B01 的实时 Git 核验与人类 Decision。
 - A07 最终验证：37 文件 / 794 用例通过（新增 54 条服务端、2 条 Fake CLI E2E），`pnpm build` 和四包 `tsc --noEmit` 通过。旧 branch-only 测试显式设为 v1；Server 测试并发限制为 2，三条真实 URL Git 测试的超时调整为 15 秒，保留全部业务断言。测试记录：`docs/tests/2026-10-05-verification-complete-testcases.md`。
-- 下一步 A08：旧 UI 前瞻验收计时。A08 后须完成 R2 代码审查、3 个真实 v2 dogfood 和 10 个真实旧 UI 前瞻基线，再进入 B01；自动化 Fake CLI 不计入真实样本。可信合入 Gate 与多 CLI 接入尚未完成。
+- 2026-10-06 A08 已实现并完成契约/代码自审：旧 UI 使用 Review Timer，隐藏/失焦/60 秒空闲暂停，刷新续计，提交等待暂停；合入/打回前保存累计测量。API 按 Task 幂等更新、拒绝未来时间/负数/非法字段；legacy UI 与 Task 版本分组正交。
+- 计时失败保留原裁决、显示警告并排除样本；响应丢失由原裁决请求携带失败标记。测量表拒写时以 `result_json.review_measurement_excluded=true` 保存独立失效事实，后续基线查询同时排除该标记与 null 时间；不改原 Git/验证事实。补充 comments 路由接线与 Core DTO，无新迁移或依赖。
+- A08 最终验证：40 文件 / 840 用例通过（新增 46 条），构建与四包 noEmit 通过；真实浏览器验证刷新、合入及计时 503 后的合入/打回。修复首帧点击先于计时初始化的竞态；一次测试/构建重叠导致既有 Git 超时，独立全量通过，未放宽超时或断言。记录见 `docs/tests/2026-10-06-review-timer-testcases.md`。
+- 当前停在 R2：自动化与本次自审已完成，仍须收集/核对 3 个真实 v2 dogfood 和 10 个真实旧 UI 前瞻基线；清单见 `docs/tests/2026-08-28-delivery-evidence-p0a-testcases.md`。临时库浏览器测试与 Fake CLI 均不计入真实样本。R2 未放行，B01、可信合入 Gate 与多 CLI 接入尚未完成。
 - 尚未合并 main 或推送；本段仅记录本地进度，不代表里程碑已发布。
 
 ## Backlog（各轮审查接受的债务，按优先级）

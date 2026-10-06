@@ -250,3 +250,21 @@ export interface AnvilErrorResponse {
   message: string;
   details?: Record<string, unknown>;
 }
+
+/** A08：旧 UI 的最终验收测量。null 成对表示该 Task 的样本已失效，后续不能恢复为有效样本。 */
+export interface ReviewMeasurementRequest {
+  ui_version: "legacy";
+  review_started_at: string | null;
+  active_review_ms: number | null;
+  opened_transcript: boolean;
+  opened_full_diff: boolean;
+}
+export interface ReviewMeasurement extends ReviewMeasurementRequest {
+  task_id: string;
+  recorded_at: string;
+}
+/** 计时保存结果不确定时，随原裁决动作同步排除对应 Task，防止响应丢失的样本被误用。
+ * Server 在 result_json.review_measurement_excluded 保存独立标记；基线查询必须排除该标记。 */
+export interface ReviewMeasurementFailure {
+  review_measurement_failed_for: string;
+}
