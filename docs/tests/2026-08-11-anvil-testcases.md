@@ -1,6 +1,6 @@
 # Anvil 一期（编码任务调度）测试用例文档
 
-> 来源需求: docs/superpowers/specs/2026-08-04-anvil-design.md（主），PRODUCT.md、DESIGN.md、docs/PROGRESS.md（验收链路/目标契约/远程仓库等里程碑，补充）
+> 来源需求: docs/history/specs/2026-08-04-anvil-design.md（主），PRODUCT.md、DESIGN.md、docs/PROGRESS.md（验收链路/目标契约/远程仓库等里程碑，补充）
 > 生成日期: 2026-08-11 | 产品形态: 网站 | 用例数: 71
 > 来源章节基线: main 分支（2026-08-11）
 

@@ -1,0 +1,5 @@
+# Markdown 的两个行尾空格表示显式换行；统一 LF 避免文档 SHA 随平台漂移。
+*.md text eol=lf whitespace=-blank-at-eol
+
+# 历史锁定原文按原始字节存储，不做行尾归一化。
+"prd_outputs/Anvil Delivery Loop v0/anvil_delivery_loop_v0_PRD.md" -text whitespace=-blank-at-eol

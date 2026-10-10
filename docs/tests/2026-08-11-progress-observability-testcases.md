@@ -1,6 +1,6 @@
 # 任务进展可解释性 测试用例文档
 
-> 来源需求: docs/superpowers/specs/2026-08-11-progress-observability.md
+> 来源需求: docs/history/specs/2026-08-11-progress-observability.md
 > 生成日期: 2026-08-11 | 产品形态: 网站 | 用例数: 10
 > 来源章节基线: 分支 progress-observability（T1/T2/T3 实现完成后）
 
