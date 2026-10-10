@@ -6,7 +6,19 @@
 
 先读 [总任务清单](docs/TASKS.md)、选中的 [独立 PRD](docs/prds/)、[公共边界](docs/prds/COMMON.md)和 [交接说明](docs/handoffs/README.md)。已有实现看 [PROGRESS](docs/PROGRESS.md)，启动看 [README](README.md)，代码规则看 [AGENTS](AGENTS.md)与 [ANVIL](ANVIL.md)。
 
-本轮文档整理前的代码基线为 delivery-evidence-loop-v0@ff12dea4d57639ae1dbd189872d2b27ea56074a7，当时比本地 main 多 21 个提交；随后文档提交另计，当前 HEAD 以 Git 为准。远端最后核对为 2026-10-08，本轮未更新远端状态；材料仍在本地。共享前由所有者确认代码和文档进入同一可获取 SHA，再从该 SHA 开分支，不能让协作者只拿旧 main。
+共同开发基线使用远端 `main`，包含 A01–A08 基础代码、旧任务兼容修复及六项任务的完整协作材料。基线整理记录和验证见 [PROGRESS](docs/PROGRESS.md)；认领时记录实际 SHA，不沿用旧分支名或只写“main”。此次合入不代表 T01–T06、J01 或旧 R2 已验收。
+
+首次参与可克隆仓库；已有本地仓库时，先确认 `git status` 干净，再同步并建立认领分支。例如认领 T02：
+
+```bash
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+git rev-parse HEAD
+git switch -c codex/claim-t02
+```
+
+将上一步 SHA 填入交接记录，修改 `docs/handoffs/T02.md` 和 TASKS，提交认领 PR。所有者合入后，再从最新 main 建立 T02 实施分支，并更新实际实施起点 SHA；如果已有未提交工作或本地分叉，先保留并协调，不能强制覆盖。每位贡献者使用自己的 checkout/worktree。
 
 不要批量 git add .。逐项检查必要代码、六份 PRD、COMMON、清单、交接、用例及入口文档；不提交运行库、token、.env、CLI 登录材料、个人日志和无关临时产物。PDF 是生成副本，不是协作编辑源。
 
@@ -43,7 +55,7 @@ Core、executor、迁移和公共 UI 类型先写契约补丁，双方在交接�
 
 产品代码按门槛串行运行 pnpm test、pnpm build、四包 pnpm exec tsc --noEmit -p tsconfig.json；先跑相关专项。各 PRD 真实验收另行执行：CLI help、fake CLI、自动点击和截图不等于真实 Agent/人工判断。
 
-文档修改检查本地链接、状态/版本/hash 和 diff；本轮未重跑历史 861 条产品测试。A01–A08 可复用，旧 R2 未追认通过。H01 旧/新 UI 对照单独跟踪，不阻碍 T01/T02 基础正确性完成；计时证据/排除语义仍保留。
+文档修改检查本地链接、状态/版本/hash 和 diff；基线回归与新任务验收分别记录，不能将基线通过结果移作 T01–T06 的测试结果。A01–A08 可复用，旧 R2 未追认通过。H01 旧/新 UI 对照单独跟踪，不阻碍 T01/T02 基础正确性完成；计时证据/排除语义仍保留。
 
 开发完成、测试通过、独立审查通过、产品验收通过、已推送、已合并、已发布分别记录。未完成项列接手动作与解除阻塞条件；换负责人时双方确认，不清除前任历史。
 

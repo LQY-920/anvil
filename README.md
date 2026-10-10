@@ -4,7 +4,7 @@
 
 新协作者从[总任务清单](docs/TASKS.md)选择独立 PRD，在[交接记录](docs/handoffs/README.md)认领并更新进度；开发方式见[贡献指南](CONTRIBUTING.md)，资料索引见[文档地图](docs/README.md)。
 
-2026-10-10：移除总 PRD v0.2，改为六项任务各自一份 PRD、测试用例和交接记录。Git/GitHub 与 Codex 可分别认领、并行开发，联合验收后再接 Factory；后续为内部频道线程、手机、pi/dsh。全部待正式认领。当前代码仍只有 Kimi adapter，旧 R2 未通过；本轮只整理文档，未实现或发布这些功能。
+2026-10-10：main 统一纳入交付证据基础代码、六项独立 PRD、测试用例和交接记录，总 PRD v0.2 已移除。Git/GitHub 与 Codex 可分别认领、并行开发，联合验收后再接 Factory；后续为内部频道线程、手机、pi/dsh。全部待正式认领。当前代码仍只有 Kimi adapter，旧 R2 未通过；共同基线不代表这些新功能已经实现或验收。
 
 ## 快速开始
 
