@@ -22,6 +22,13 @@
       "when": 1785912091874,
       "tag": "0002_fair_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787904488197,
+      "tag": "0003_luxuriant_sinister_six",
+      "breakpoints": true
     }
   ]
 }

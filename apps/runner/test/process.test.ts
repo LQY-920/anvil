@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { runCliProcess, killProcessTree } from "../src/agents/process.js";
 import { parseAgentLine, type AgentMessage } from "@anvil/core";
 
@@ -24,6 +25,27 @@ async function drain(messages: AsyncIterable<AgentMessage>) {
 }
 
 describe("runCliProcess", () => {
+  it("强制终止会结束真实子孙进程，不能留下验证工作进程", async () => {
+    const script = "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},100)'],{stdio:'ignore'});console.log(c.pid);setInterval(()=>{},100)";
+    const child = spawn(process.execPath, ["-e", script], { detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let descendant: number | undefined;
+    try {
+      descendant = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("子进程未就绪")), 3000);
+        child.stdout.once("data", data => { clearTimeout(timer); resolve(Number(data.toString().trim())); });
+        child.once("error", error => { clearTimeout(timer); reject(error); });
+      });
+      expect(Number.isInteger(descendant)).toBe(true);
+      killProcessTree(child.pid!, true);
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (let i = 0; i < 60 && (alive(child.pid!) || alive(descendant)); i++) await new Promise(r => setTimeout(r, 50));
+      expect(alive(child.pid!)).toBe(false);
+      expect(alive(descendant)).toBe(false);
+    } finally {
+      if (child.pid) killProcessTree(child.pid, true);
+      if (descendant) killProcessTree(descendant, true);
+    }
+  }, 15000);
   it("streams parsed messages then completes with exit code", async () => {
     const lines = JSON.stringify([
       { delay_ms: 10, line: JSON.stringify({ role: "assistant", content: [{ type: "text", text: "hi" }] }) },

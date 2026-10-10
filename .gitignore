@@ -8,3 +8,10 @@ dist/
 research/
 kimi-export-session_*.md
 .env*
+
+# 本机协作记忆与运行产物（保留在磁盘，不进入协作提交）
+/.codex/
+/tmp/
+
+# 手动验证生成的浏览器快照与 fixture；自动化测试位于各包 test/
+/test/

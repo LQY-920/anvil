@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "commands": [
+    { "id": "tests", "label": "全量测试", "command": "pnpm test", "required": true, "timeout_ms": 600000 },
+    { "id": "core-types", "label": "Core 类型检查", "command": "pnpm --dir packages/core exec tsc --noEmit -p tsconfig.json", "required": true, "timeout_ms": 120000 },
+    { "id": "server-types", "label": "Server 类型检查", "command": "pnpm --dir apps/server exec tsc --noEmit -p tsconfig.json", "required": true, "timeout_ms": 120000 },
+    { "id": "runner-types", "label": "Runner 类型检查", "command": "pnpm --dir apps/runner exec tsc --noEmit -p tsconfig.json", "required": true, "timeout_ms": 120000 },
+    { "id": "web-types", "label": "Web 类型检查", "command": "pnpm --dir apps/web exec tsc --noEmit -p tsconfig.json", "required": true, "timeout_ms": 120000 }
+  ]
+}

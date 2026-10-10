@@ -4,6 +4,7 @@ import type { Hub } from "../ws/hub.js";
 import { addComment, createIssueRow, enqueueForComment, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
 import { seed } from "../db/client.js";
 import { ISSUE_STATUSES, PRIORITIES, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
+import { excludeReviewMeasurement } from "../services/review-measurements.js";
 
 export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
   app.get("/api/issues", async (req) => {
@@ -89,6 +90,11 @@ export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     if (!issue) return reply.code(404).send({ error: "not found" });
     const { body } = req.body as { body: string };
     if (!body) return reply.code(400).send({ error: "body required" });
+    try { excludeReviewMeasurement(db, (req.body as any)?.review_measurement_failed_for, { issueId: id }); }
+    catch (e: any) {
+      if (e.http) return reply.code(e.http).send({ error: e.message });
+      throw e;
+    }
     const cid = addComment(db, id, { author_type: "member", author_id: seed(db).user.id, type: "comment", body });
     // member 评论即指令：满足守卫则入队新任务（trigger=comment），判别结果随响应回传
     const trigger = enqueueForComment(db, issue);

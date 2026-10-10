@@ -1,0 +1,56 @@
+[
+  {
+    "id": "T01",
+    "source": "../../docs/prds/T01-git-github.md",
+    "source_sha256": "B6A29223757A3F09BF901102CE0E1ED8D8F0A1E642479F7B562C7B62BB21C819",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T01-git-github.pdf",
+    "pages": 5
+  },
+  {
+    "id": "T02",
+    "source": "../../docs/prds/T02-codex-adapter.md",
+    "source_sha256": "5B52E1D811E3C67CCFF2A00D407C875FC0DADAD7BA4B509FD227F4EBB79F16CF",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T02-codex-adapter.pdf",
+    "pages": 5
+  },
+  {
+    "id": "T03",
+    "source": "../../docs/prds/T03-factory-workflow.md",
+    "source_sha256": "90CAA656AA4C91C8BD370D0AFBB155FC1F354466498390A080EDA407BD805645",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T03-factory-workflow.pdf",
+    "pages": 5
+  },
+  {
+    "id": "T04",
+    "source": "../../docs/prds/T04-channels-threads.md",
+    "source_sha256": "4C5857DD65E2C54CC61ABC18CEC95A5C0C6B08A3A9F04A2328C5C174D8E672AD",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T04-channels-threads.pdf",
+    "pages": 5
+  },
+  {
+    "id": "T05",
+    "source": "../../docs/prds/T05-mobile-access.md",
+    "source_sha256": "94D5A85E45A8FB970E578260160BD83E6D970B59D9FA0BDEF110CA241759B292",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T05-mobile-access.pdf",
+    "pages": 5
+  },
+  {
+    "id": "T06",
+    "source": "../../docs/prds/T06-agent-providers.md",
+    "source_sha256": "CC1F193C00870F06E6A5D1DF70057CBB93911276E6CB8445AC217F296F59A023",
+    "version": "1.0",
+    "generated_at": "2026-10-10",
+    "pdf": "T06-agent-providers.pdf",
+    "pages": 5
+  }
+]

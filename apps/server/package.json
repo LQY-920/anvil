@@ -10,7 +10,8 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
+    "r2:inventory": "tsx src/ops/r2-inventory-cli.ts",
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate"
   },

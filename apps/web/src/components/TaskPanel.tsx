@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Comment, Issue, Task, TaskDiffResponse } from "@anvil/core";
+import type { Comment, Issue, Task, TaskDiffResponse, ReviewMeasurementFailure } from "@anvil/core";
 import {
   AlertCircle,
   Ban,
@@ -20,6 +20,7 @@ import {
 import * as api from "../api.js";
 import type { CommentTrigger } from "../api.js";
 import { useServerEvents } from "../ws.js";
+import { useReviewTimer } from "../hooks/useReviewTimer.js";
 import { TASK_STATUS_LABELS } from "../labels.js";
 import { cn } from "@/lib/utils";
 import { messageToEntry, summarizeProgress } from "@/lib/trace-presenter";
@@ -148,6 +149,8 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const [sending, setSending] = useState(false);
   const [merging, setMerging] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  // 打回可能立即切到接续任务；警告保留到用户关闭，避免随切换瞬间消失。
+  const [measurementWarning, setMeasurementWarning] = useState("");
   // 同步在途守卫：state 经 React 批量刷新有间隙，同帧双击会穿透 state 判断（state 仍保留用于 disabled 渲染）
   const sendingRef = useRef(false);
   const mergingRef = useRef(false);
@@ -221,6 +224,8 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     return () => { cancelled = true; };
   }, [taskId, taskStatus, issueStatus]);
 
+  const reviewTimer = useReviewTimer(taskId, task?.id === taskId && taskStatus === "completed" && Boolean(issueStatus) && issueStatus !== "done" && diff !== null && merged === null);
+
   if (!task || !issue) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
@@ -234,17 +239,33 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const StatusIcon = statusMeta?.icon;
   const progress = summarizeProgress(messages);
 
+  const saveMeasurement = async (): Promise<ReviewMeasurementFailure | undefined> => {
+    reviewTimer.pause();
+    try {
+      const measurement = reviewTimer.snapshot();
+      const saved = await api.saveReviewMeasurement(task.id, measurement);
+      if (measurement.active_review_ms !== null && saved.active_review_ms !== null) return;
+    } catch { /* 计时失败不能吞掉原有裁决；随裁决请求持久化失效标记。 */ }
+    reviewTimer.invalidate();
+    setMeasurementWarning(`“${issue.title}”的计时未能完整保存，本任务不计入验收耗时样本。合入或打回操作继续执行。`);
+    return { review_measurement_failed_for: task.id };
+  };
+
   const doMerge = async () => {
-    if (mergingRef.current) return;
+    if (mergingRef.current || rejectingRef.current) return;
     mergingRef.current = true;
     setMergeError("");
     setMerging(true);
+    const gen = genRef.current;
     try {
-      const res = await api.mergeTask(task.id);
-      setMerged(res.merged_branch);
+      const failure = await saveMeasurement();
+      const res = failure ? await api.mergeTask(task.id, failure) : await api.mergeTask(task.id);
+      reviewTimer.finish();
+      if (gen === genRef.current) setMerged(res.merged_branch);
       props.onChanged?.();
     } catch (e) {
-      setMergeError(e instanceof Error ? e.message : String(e));
+      reviewTimer.resume();
+      if (gen === genRef.current) setMergeError(e instanceof Error ? e.message : String(e));
     } finally {
       mergingRef.current = false;
       setMerging(false);
@@ -252,22 +273,25 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   };
 
   const rejectAndRerun = async () => {
-    if (!feedback.trim() || rejectingRef.current) return;
+    if (!feedback.trim() || rejectingRef.current || mergingRef.current) return;
     rejectingRef.current = true;
     setRejecting(true);
+    setMergeError("");
+    const gen = genRef.current;
     try {
-      const res = await api.addComment(issue.id, feedback);
-      setFeedback("");
+      const failure = await saveMeasurement();
+      const res = failure ? await api.addComment(issue.id, feedback, failure) : await api.addComment(issue.id, feedback);
+      let nextTaskId: string | undefined;
+      // 评论已入队或合并进 pending 时直接接续，避免重复 rerun。
+      if (res.trigger?.enqueued && res.trigger.task_id) nextTaskId = res.trigger.task_id;
+      else if (res.trigger?.reason !== "merged_into_pending") nextTaskId = (await api.rerunIssue(issue.id))?.id;
+      reviewTimer.finish();
+      if (gen === genRef.current) setFeedback("");
       props.onChanged?.();
-      // 评论路由已按守卫自动入队（trigger=comment）时直接接续，避免 rerun 撞 pending 唯一索引导致 409
-      if (res.trigger?.enqueued && res.trigger.task_id) {
-        props.onSelectTask?.(res.trigger.task_id);
-        return;
-      }
-      // 已有 pending 任务：打回意见会随其 claim 进入 prompt，视同已接续，不再 rerun（否则必撞 409）
-      if (res.trigger?.reason === "merged_into_pending") return;
-      const t = await api.rerunIssue(issue.id);
-      if (t?.id) props.onSelectTask?.(t.id);
+      if (nextTaskId && gen === genRef.current) props.onSelectTask?.(nextTaskId);
+    } catch (e) {
+      reviewTimer.resume();
+      if (gen === genRef.current) setMergeError(e instanceof Error ? e.message : String(e));
     } finally {
       rejectingRef.current = false;
       setRejecting(false);
@@ -321,6 +345,12 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
         )}
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
+        {measurementWarning && (
+          <div role="alert" className="rounded-md border border-destructive/30 bg-muted px-3 py-2 text-sm">
+            <p>{measurementWarning}</p>
+            <Button variant="ghost" size="sm" onClick={() => setMeasurementWarning("")}>知道了</Button>
+          </div>
+        )}
         {task.error && (
           <div className="whitespace-pre-wrap rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600 dark:text-rose-400">
             [{task.failure_reason}] {task.error}
@@ -341,7 +371,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                   </div>
                   <DiffStat stat={diff.diff_stat} />
                   {!showDiff && (
-                    <Button variant="outline" size="sm" onClick={() => setShowDiff(true)}>查看 diff</Button>
+                    <Button variant="outline" size="sm" onClick={() => { reviewTimer.markFullDiff(); setShowDiff(true); }}>查看 diff</Button>
                   )}
                   {showDiff && (
                     <>
@@ -378,7 +408,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                     </>
                   )}
                   <div className="flex items-center gap-2 pt-1">
-                    <Button size="sm" onClick={doMerge} disabled={merging}>合入 {diff.base}</Button>
+                    <Button size="sm" onClick={doMerge} disabled={merging || rejecting}>合入 {diff.base}</Button>
                   </div>
                   {mergeError && <div className="whitespace-pre-wrap text-sm text-rose-600 dark:text-rose-400">{mergeError}</div>}
                   <div className="flex flex-col gap-2 pt-1">
@@ -388,7 +418,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                       size="sm"
                       className="self-end border-rose-500/30 text-rose-600 hover:bg-rose-500/10 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
                       onClick={rejectAndRerun}
-                      disabled={rejecting}
+                      disabled={rejecting || merging}
                     >
                       提交意见并重跑
                     </Button>

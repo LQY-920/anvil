@@ -1,6 +1,6 @@
 # 评论即指令 测试用例文档
 
-> 来源需求: docs/superpowers/specs/2026-08-11-comment-driven-tasks.md
+> 来源需求: docs/history/specs/2026-08-11-comment-driven-tasks.md
 > 生成日期: 2026-08-11 | 产品形态: 网站 | 用例数: 8
 > 来源章节基线: 分支 comment-driven-tasks（T1/T2 实现完成后）
 
