@@ -96,6 +96,54 @@ it("create issue → daemon claims → completes end to end", async () => {
   expect(runtimes[0].status).toBe("online");
 }, 10000);
 
+it("升级前排队的 v1 Git 任务保持旧协议并完成交付", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-evidence-e2e-")); evidenceRoots.push(root);
+  const repo = path.join(root, "repo"); fs.mkdirSync(repo);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+  git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "测试");
+  git(repo, "commit", "--allow-empty", "-m", "旧任务基线");
+  const base = git(repo, "rev-parse", "HEAD");
+  app = await buildApp({ dbPath: ":memory:", logger: false }); await app.listen({ host: "127.0.0.1", port: 0 });
+  const url = `http://127.0.0.1:${(app.server.address() as any).port}`;
+  const token = (await app.inject({ method: "POST", url: "/api/daemon-tokens", payload: {} })).json().token;
+  const agent = (await app.inject({ method: "POST", url: "/api/agents", payload: { name: "旧任务测试", provider: "kimi" } })).json();
+  const issue = (await app.inject({ method: "POST", url: "/api/issues", payload: { title: "迁移前排队任务", repo_path: repo, assignee_type: "agent", assignee_id: agent.id } })).json();
+  // 模拟迁移保留的 v1 排队任务；只允许一次尝试，不能靠重试掩盖启动失败。
+  app.db.$client.prepare("UPDATE tasks SET delivery_contract_version=1, max_attempts=1 WHERE issue_id=?").run(issue.id);
+  const client = new ApiClient(url, token);
+  await client.register("legacy-git-daemon", [{ provider: "kimi", version: "test" }]);
+  const { tasks } = await client.claim("legacy-git-daemon"); expect(tasks).toHaveLength(1);
+  let executions = 0;
+  const backend: AgentBackend = {
+    provider: "kimi",
+    execute(opts) {
+      executions++;
+      return {
+        messages: (async function* (): AsyncGenerator<AgentMessage> {})(),
+        result: (async () => {
+          fs.writeFileSync(path.join(opts.workDir, "legacy.txt"), "旧任务产物");
+          git(opts.workDir, "add", "legacy.txt"); git(opts.workDir, "commit", "-m", "完成旧任务");
+          const response = await fetch(`${url}/api/daemon/tasks/${opts.env.ANVIL_TASK_ID}/issue-status`, {
+            method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${opts.env.ANVIL_TOKEN}` },
+            body: JSON.stringify({ status: "in_review" }),
+          });
+          expect(response.status).toBe(200);
+          return { status: "completed" as const, exitCode: 0 };
+        })(),
+        kill: () => {},
+      };
+    },
+  };
+  await executeTask({ client, backend, runnerRoot: path.join(root, "runner"), daemonId: "legacy-git-daemon" }, tasks[0]);
+  const task = (await app.inject({ method: "GET", url: `/api/tasks/${tasks[0].task.id}` })).json().task;
+  expect(executions).toBe(1); expect(task.status).toBe("completed"); expect(task.delivery_contract_version).toBe(1);
+  expect(task.delivered_at).not.toBeNull(); expect(task.base_commit).toBeNull(); expect(task.verification_run_id).toBeNull();
+  const result = JSON.parse(task.result_json);
+  expect(result.branch).toBe(`task/${task.id.slice(0, 8)}`); expect(result.diff_stat).toContain("legacy.txt"); expect(result.undelivered).toBeUndefined();
+  expect((await app.inject({ method: "GET", url: `/api/issues/${issue.id}` })).json().issue.status).toBe("in_review");
+  expect(git(repo, "rev-parse", "HEAD")).toBe(base);
+}, 15000);
+
 it.each([0, 7])("v2 真实 Fake CLI 提交 Report，独立终检退出 %i 原子落库", async exitCode => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-evidence-e2e-")); evidenceRoots.push(root);
   const repo = path.join(root, "repo"); fs.mkdirSync(repo);

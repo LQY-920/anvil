@@ -178,12 +178,12 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     });
     workDir = prepared.workDir;
     // A03 · start / complete / fail 使用 daemon token + body.daemon_id,不再传 task_token
-    // A04 · Git 仓库任务附带 v2 锚点(daemon_id + work_dir + task_branch + target_branch + base_commit + delivery_contract_version=2)
-    await client.startTask(task.id, daemonId, workDir, {
+    // 仅 v2 任务上报 Git 锚点；迁移保留的 v1 任务仍走旧协议，不能在启动时改写版本。
+    await client.startTask(task.id, daemonId, workDir, isV2Task(task) ? {
       taskBranch: prepared.taskBranch,
       targetBranch: prepared.targetBranch,
       baseCommit: prepared.baseCommit,
-    });
+    } : undefined);
 
     // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
     const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
