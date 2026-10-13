@@ -39,7 +39,7 @@ function readById(db: Db, id: string): IntegrationAttempt {
 }
 
 /** 只保存有限且脱敏的诊断，不改写 daemon 的完成回执或原始交付证据。 */
-function safeError(error: string): string {
+export function integrationDiagnostic(error: string): string {
   const redacted = redactTokens(error)
     .replace(/(https?:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "[REDACTED]")
@@ -101,7 +101,7 @@ export function setIntegrationLocalMerged(db: Db, id: string, sha: string): Inte
 }
 
 export function requireIntegrationRecovery(db: Db, id: string, error: string): IntegrationAttempt {
-  const message = safeError(error);
+  const message = integrationDiagnostic(error);
   return db.$client.transaction(() => {
     const attempt = readById(db, id);
     if (attempt.status === "completed") invalidState("已完成的合入操作不能改为待恢复");

@@ -8,11 +8,7 @@ export class ApiError extends Error {
 }
 
 /** 兼容未返回固定版本字段的历史服务端。 */
-export type ReviewDiffResponse = TaskDiffResponse & {
-  delivery_contract_version?: 1 | 2;
-  base_commit?: string | null;
-  head_commit?: string | null;
-};
+export type ReviewDiffResponse = TaskDiffResponse;
 
 async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, {

@@ -18,7 +18,7 @@ export function registerReviewRoutes(app: FastifyInstance, db: Db, hub: Hub) {
   app.get("/api/tasks/:id/diff", async (req, reply) => {
     const { id } = req.params as { id: string };
     const r = await getTaskDiff(db, id);
-    if (!r.ok) return reply.code(404).send({ error: r.error });
+    if (!r.ok) return reply.code(r.http ?? 404).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
     return r.data;
   });
 
@@ -30,9 +30,9 @@ export function registerReviewRoutes(app: FastifyInstance, db: Db, hub: Hub) {
       throw e;
     }
     const r = await mergeTaskBranch(db, id);
-    if (!r.ok) return reply.code(409).send({ error: r.error });
+    if (!r.ok) return reply.code(r.http ?? 409).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
     const task = getTask(db, id)!;
-    hub.broadcast({ type: "issue.updated", data: getIssue(db, task.issue_id) });
+    if (!r.replayed) hub.broadcast({ type: "issue.updated", data: getIssue(db, task.issue_id) });
     return r.data;
   });
 }
