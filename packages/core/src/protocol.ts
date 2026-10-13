@@ -50,10 +50,12 @@ export interface ServerEvent { type: ServerEventType; data: unknown; }
 export interface CreateIssueRequest {
   title: string; description?: string; acceptance?: string; priority?: Priority;
   assignee_type?: "member" | "agent"; assignee_id?: string; repo_path?: string;
+  repository_id?: string;
 }
 export interface UpdateIssueRequest {
   title?: string; description?: string; acceptance?: string; status?: IssueStatus; priority?: Priority;
   assignee_type?: "member" | "agent" | null; assignee_id?: string | null; repo_path?: string | null;
+  repository_id?: string | null;
 }
 
 // ----------------------------------------------------------------------------
