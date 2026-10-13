@@ -2,7 +2,7 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
-协作者入门先读 `docs/TASKS.md`、`docs/prds/COMMON.md`、`CONTRIBUTING.md`。2026-10-10 按用户要求移除总 PRD v0.2，改为六项独立 PRD、测试用例和交接记录；认领与细节进度在 `docs/handoffs/`。T01 Git/GitHub 与 T02 Codex 可并行独立验收，J01 联合验收后再进入 T03 Factory；后续方向看总清单，不按旧 M1/M2 排序。当前全部待正式认领。旧 Delivery Loop 的证据/权限语义保留，旧 R2 未通过；H01 计时研究单独跟踪。自审与独立审查分开记录，历史实绩在 `docs/PROGRESS.md`。
+协作者入门先读 `docs/TASKS.md`、`docs/prds/COMMON.md`、`CONTRIBUTING.md`。2026-10-10 按用户要求移除总 PRD v0.2，改为六项独立 PRD、测试用例和交接记录；认领与细节进度在 `docs/handoffs/`。T01 Git/GitHub 与 T02 Codex 可并行独立验收，J01 联合验收后再进入 T03 Factory；后续方向看总清单，不按旧 M1/M2 排序。2026-10-13 T01 已由 LQY-920 通过 PR #2 认领，S1 草稿 PR #3 验证通过但未合并，完整 T01 尚未完成；T02–T06 待认领。旧 Delivery Loop 的证据/权限语义保留，旧 R2 未通过；H01 计时研究单独跟踪。自审与独立审查分开记录，历史实绩在 `docs/PROGRESS.md`。
 
 ## 项目性质
 
