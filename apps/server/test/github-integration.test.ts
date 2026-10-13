@@ -13,6 +13,7 @@ import { getIssueSource, getRepository } from "../src/services/repositories.js";
 import { registerRepositoryRoutes } from "../src/routes/repositories.js";
 import { Hub } from "../src/ws/hub.js";
 
+// 本文件每条场景都会创建真实 Git/SQLite 现场；PR 恢复还包含多次 fetch/push。为 Windows 进程 IO 留出独立预算，断言与全局测试超时保持不变。
 const gitR = (cwd: string, args: string[]) => execFileSync("git", ["--no-replace-objects", ...args], { cwd, encoding: "utf8", windowsHide: true }).trim();
 class FakeGitHub implements GitHubClient {
   fullName = "owner/repo"; repoId = 42; push = true; requests: Array<{ method: string; endpoint: string; body: any }> = [];
@@ -112,7 +113,7 @@ describe("仓库与 Issue 来源", () => {
     expect(second.id).toBe(first.id); expect(second.version).toBe(first.version); expect(service.listRepositories()).toHaveLength(1);
     github.push = false;
     const readonly = await bind(); expect(readonly.can_push).toBe(false); expect(readonly.connection_status).toBe("permission_denied");
-  });
+  }, 20_000);
   it("远端重命名需显式确认；同地址稳定 ID 被替换不能借用旧绑定", async () => {
     const first = await bind(); github.fullName = "owner/renamed";
     await expect(service.bindRepository({ mode: "github_pr", repo: "https://github.com/owner/renamed", checkout_path: checkout })).rejects.toMatchObject({ code: "repository_renamed" });
@@ -120,7 +121,7 @@ describe("仓库与 Issue 来源", () => {
     expect(renamed.id).toBe(first.id); expect(renamed.version).toBe(first.version + 1);
     github.repoId = 999;
     await expect(service.importIssue(first.id, { issue_number: 1 })).rejects.toMatchObject({ code: "repository_mismatch" });
-  });
+  }, 20_000);
   it("导入幂等且不派工；刷新只改 latest，接受来源不改已有 Task 输入", async () => {
     const repository = await bind();
     const imported = await service.importIssue(repository.id, { issue_number: 1 });
@@ -137,13 +138,13 @@ describe("仓库与 Issue 来源", () => {
     const saved = db.prepare("SELECT repository_snapshot_json FROM tasks WHERE id=?").get(task.taskId) as any;
     expect(JSON.parse(saved.repository_snapshot_json).input.title).toBe("来源标题");
     expect((db.prepare("SELECT count(*) AS n FROM tasks").get() as any).n).toBe(1);
-  });
+  }, 20_000);
   it("PR 不得作为 Issue 导入，来源版本变化返回冲突", async () => {
     const repository = await bind(); github.source.pull_request = {};
     await expect(service.importIssue(repository.id, { issue_number: 1 })).rejects.toMatchObject({ code: "not_an_issue" });
     delete github.source.pull_request;
     await expect(service.importIssue(repository.id, { issue_number: 1, source_updated_at: "old" })).rejects.toMatchObject({ code: "source_changed" });
-  });
+  }, 20_000);
   it("同步按 Retry-After 退避，手动请求不能绕过；轮询不改变仓库 version", async () => {
     const repository = await bind(); github.failReads = new GitHubError("限流", 429, "github_rate_limited", true, 180_000);
     const result = await service.refreshRepository(repository.id);
@@ -153,12 +154,12 @@ describe("仓库与 Issue 来源", () => {
     expect(github.requests).toHaveLength(count);
     github.failReads = null; clock += 180_000;
     const recovered = await service.refreshRepository(repository.id); expect(recovered.connection_status).toBe("connected"); expect(recovered.version).toBe(repository.version);
-  });
+  }, 20_000);
   it("实时事实刷新失败持久连接阻断，避免 Gate 消费旧缓存", async () => {
     const repository = await bind(); github.failReads = new GitHubError("连接不可用", 503, "github_unavailable", true);
     await expect(service.refreshGitFacts(repository.id)).rejects.toMatchObject({ code: "github_unavailable" });
     expect(service.getRepository(repository.id)).toMatchObject({ connection_status: "unavailable", error: "连接不可用" });
-  });
+  }, 20_000);
   it("冻结路由导入/来源/接受/同步契约可独立注册", async () => {
     const repository = await bind(), app = Fastify(); registerRepositoryRoutes(app, db, hub, service);
     try {
@@ -169,7 +170,7 @@ describe("仓库与 Issue 来源", () => {
       const synced = await app.inject({ method: "POST", url: `/api/repositories/${repository.id}/sync` }); expect(synced.statusCode).toBe(200);
       const duplicate = await app.inject({ method: "POST", url: `/api/repositories/${repository.id}/sync` }); expect(duplicate.statusCode).toBe(429); expect(duplicate.headers["retry-after"]).toBeDefined();
     } finally { await app.close(); }
-  });
+  }, 20_000);
 });
 
 describe("固定版本 PR 操作与恢复", () => {
@@ -186,7 +187,7 @@ describe("固定版本 PR 操作与恢复", () => {
     expect(result.error).toContain("证据或 HEAD 已变化");
     expect(writes.filter(args => args.includes("push"))).toHaveLength(0);
     expect(github.requests.filter(item => item.method === "POST")).toHaveLength(0);
-  });
+  }, 20_000);
   it("fetch 后在锁内检查 Gate，只推固定 SHA，质量阻塞可开 PR 而不自动批准或 done", async () => {
     const repository = await bind(), task = await makeTask(repository);
     const gate = async () => { expect(writes.some(args => args.includes("fetch"))).toBe(true); return { ...await task.gate(), blockers: [{ code: "checks_failed", message: "Runner 验证失败", kind: "quality" as const }], can_approve: false }; };
@@ -198,7 +199,7 @@ describe("固定版本 PR 操作与恢复", () => {
     expect(service.getTaskPullRequest(task.taskId)?.head_sha).toBe(task.head);
     const replay = await service.createPullRequest(task.taskId, task.request, "create", task.gate); expect(replay.id).toBe(result.id);
     expect(github.requests.filter(item => item.method === "POST")).toHaveLength(1);
-  });
+  }, 20_000);
   it("完整性阻塞、HEAD 变动或实时权限丢失不推送", async () => {
     const repository = await bind(), task = await makeTask(repository);
     await expect(service.createPullRequest(task.taskId, task.request, "integrity", async () => ({ ...await task.gate(), blockers: [{ code: "dirty", message: "工作树不干净", kind: "integrity" }] }))).rejects.toMatchObject({ code: "dirty" });
@@ -206,13 +207,13 @@ describe("固定版本 PR 操作与恢复", () => {
     github.push = false;
     await expect(service.createPullRequest(task.taskId, task.request, "permission", task.gate)).rejects.toMatchObject({ code: "github_permission_denied" });
     expect(writes.filter(args => args.includes("push"))).toHaveLength(0); expect(github.requests.filter(item => item.method === "POST")).toHaveLength(0);
-  });
+  }, 20_000);
   it("Git pushInsteadOf 重写到非绑定地址被拒绝，不能跨仓推送", async () => {
     const repository = await bind(), task = await makeTask(repository);
     gitR(checkout, ["config", `url.${remote.replace(/\\/g, "/")}.pushInsteadOf`, "https://github.com/owner/repo.git"]);
     const result = await service.createPullRequest(task.taskId, task.request, "rewrite", task.gate);
     expect(result.state).toBe("failed"); expect(writes.filter(args => args.includes("push"))).toHaveLength(0);
-  });
+  }, 20_000);
   it("push 响应丢失持久 unknown，换 key 无法绕过，显式恢复不再推送", async () => {
     const repository = await bind(), task = await makeTask(repository); afterPushFailure = true;
     const unknown = await service.createPullRequest(task.taskId, task.request, "push-lost", task.gate);
@@ -221,7 +222,7 @@ describe("固定版本 PR 操作与恢复", () => {
     const recovered = await service.recoverPullRequest(task.taskId, unknown.id, task.request, "recover", task.gate);
     expect(recovered.state).toBe("succeeded"); expect(recovered.id).not.toBe(unknown.id); expect(writes.filter(args => args.includes("push"))).toHaveLength(1);
     expect((db.prepare("SELECT state,error FROM delivery_operations WHERE id=?").get(unknown.id) as any)).toMatchObject({ state: "failed", error: expect.stringContaining(recovered.id) });
-  });
+  }, 20_000);
   it("创建 PR 响应丢失通过远端 marker 关联，恢复不重复 POST，也不新建 Decision", async () => {
     const repository = await bind(), task = await makeTask(repository); approve(task, repository); github.failAfterCreate = true;
     const unknown = await service.createPullRequest(task.taskId, task.request, "create-lost", task.gate);
@@ -229,7 +230,7 @@ describe("固定版本 PR 操作与恢复", () => {
     const recovered = await service.recoverPullRequest(task.taskId, unknown.id, task.request, "recover", task.gate);
     expect(recovered.state).toBe("succeeded"); expect(github.requests.filter(item => item.method === "POST")).toHaveLength(1);
     expect((db.prepare("SELECT count(*) AS n FROM review_decisions").get() as any).n).toBe(1);
-  });
+  }, 20_000);
   it("恢复查询未明确时保留 unknown，不创建新操作；多 PR 候选拒绝关联", async () => {
     const repository = await bind(), task = await makeTask(repository); github.failAfterCreate = true;
     const unknown = await service.createPullRequest(task.taskId, task.request, "lost", task.gate);
@@ -237,14 +238,14 @@ describe("固定版本 PR 操作与恢复", () => {
     await expect(service.recoverPullRequest(task.taskId, unknown.id, task.request, "recover", task.gate)).rejects.toMatchObject({ code: "pull_request_ambiguous" });
     expect((db.prepare("SELECT state FROM delivery_operations WHERE id=?").get(unknown.id) as any).state).toBe("unknown");
     expect((db.prepare("SELECT count(*) AS n FROM delivery_operations").get() as any).n).toBe(1);
-  });
+  }, 20_000);
   it("PR 已合并且分支删除时恢复只关联，不重新创建分支", async () => {
     const repository = await bind(), task = await makeTask(repository); github.failAfterCreate = true;
     const unknown = await service.createPullRequest(task.taskId, task.request, "lost", task.gate);
     squashMerge(); gitR(remote, ["update-ref", "-d", "refs/heads/task/t01"]);
     const recovered = await service.recoverPullRequest(task.taskId, unknown.id, task.request, "recover", task.gate);
     expect(recovered.state).toBe("succeeded"); expect(github.remoteHead("task/t01")).toBeNull(); expect(github.pulls).toHaveLength(1);
-  });
+  }, 20_000);
   it("同 Issue 返工复用开放 PR，各 Task 保存独立关联和裁决", async () => {
     const repository = await bind(), first = await makeTask(repository); approve(first, repository);
     await service.createPullRequest(first.taskId, first.request, "first", first.gate);
@@ -254,7 +255,7 @@ describe("固定版本 PR 操作与恢复", () => {
     expect(result.state).toBe("succeeded"); expect(github.pulls).toHaveLength(1);
     expect(service.getTaskPullRequest(first.taskId)?.head_sha).toBe(first.head); expect(service.getTaskPullRequest(second.taskId)?.head_sha).toBe(second.head);
     expect((db.prepare("SELECT head_commit FROM review_decisions WHERE task_id=?").get(first.taskId) as any).head_commit).toBe(first.head);
-  });
+  }, 20_000);
   it("返工推送响应丢失后原 PR 被轮询为已合并，仍沿用原意图分支恢复", async () => {
     const repository = await bind(), first = await makeTask(repository);
     expect((await service.createPullRequest(first.taskId, first.request, "first", first.gate)).state).toBe("succeeded");
@@ -287,7 +288,7 @@ describe("权威 PR 合并事实", () => {
     const count = (db.prepare("SELECT count(*) AS n FROM comments WHERE issue_id=?").get(task.issueId) as any).n;
     clock += 11_000; await service.refreshRepository(repository.id);
     expect((db.prepare("SELECT count(*) AS n FROM comments WHERE issue_id=?").get(task.issueId) as any).n).toBe(count);
-  });
+  }, 20_000);
   it.each(["未批准", "旧批准", "未合并关闭", "合并提交不可达", "更新的Task"])("%s不能自动 done", async condition => {
     const repository = await bind(), task = await makeTask(repository);
     if (condition !== "未批准") approve(task, repository, condition === "旧批准" ? "a".repeat(40) : task.head);
@@ -299,5 +300,5 @@ describe("权威 PR 合并事实", () => {
     github.source.state = "closed";
     await service.refreshRepository(repository.id);
     expect((db.prepare("SELECT status FROM issues WHERE id=?").get(task.issueId) as any).status).toBe("in_review");
-  });
+  }, 20_000);
 });
