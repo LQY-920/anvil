@@ -16,7 +16,11 @@ afterEach(async () => { for (const dir of directories.splice(0)) {
 describe("跨进程 Git 锁", () => {
   it("两个调用串行进入临界区，异常后释放", async () => {
     const dir = await directory(), events: string[] = [];
-    const first = withGitLock(dir, async () => { events.push("一进入"); await new Promise(resolve => setTimeout(resolve, 100)); events.push("一退出"); throw new Error("模拟失败"); });
+    let entered!: () => void;
+    const firstEntered = new Promise<void>(resolve => { entered = resolve; });
+    const first = withGitLock(dir, async () => { events.push("一进入"); entered(); await new Promise(resolve => setTimeout(resolve, 100)); events.push("一退出"); throw new Error("模拟失败"); });
+    // 目录锁保证互斥，不保证异步文件系统调用的 FIFO；先确认持锁者再启动竞争者。
+    await firstEntered;
     const second = withGitLock(dir, async () => { events.push("二进入"); });
     const settled = await Promise.allSettled([first, second]);
     expect(settled[0].status).toBe("rejected");
