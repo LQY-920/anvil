@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, uniqueIndex, index, primaryKey, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex, index, primaryKey, check, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 // ----------------------------------------------------------------------------
@@ -10,8 +10,8 @@ import { sql } from "drizzle-orm";
 // - verification_runs / verification_checks(FR-001)
 // - review_measurements(D-002,只测量基础设施,不属于 P0-B Decision 概念)
 //
-// 明确不在此处出现:continuation_mode(0004)、review_decisions / integration_attempts
-// (0004)、improvement_candidates(0005)。
+// A02 不含裁决/合入记录；后续 T01 的最小操作记录单列在文件末尾。
+// 不提前引入 continuation_mode、review_decisions 或 improvement_candidates。
 // ----------------------------------------------------------------------------
 
 export const workspaces = sqliteTable("workspaces", {
@@ -267,3 +267,31 @@ export const reviewMeasurements = sqliteTable("review_measurements", {
   opened_full_diff: integer("opened_full_diff", { mode: "boolean" }).notNull(),
   recorded_at: text("recorded_at").notNull(),
 });
+
+/** T01 S1：Git 副作用前保存不可变意图；未完成记录跨进程占用仓库。
+ *  当前每 Task 仅一条，不伪造 Decision；后续显式恢复流程再扩展多次操作。 */
+export const integrationAttempts = sqliteTable("integration_attempts", {
+  id: text("id").primaryKey(),
+  task_id: text("task_id").notNull().references(() => tasks.id),
+  repo_key: text("repo_key").notNull(),
+  repo_path: text("repo_path").notNull(),
+  repo_common_dir: text("repo_common_dir").notNull(),
+  // 文件标识由 bigint 转十进制文本保存，不能经过 JavaScript number。
+  repo_dev: text("repo_dev").notNull(),
+  repo_ino: text("repo_ino").notNull(),
+  task_branch: text("task_branch").notNull(),
+  target_branch: text("target_branch").notNull(),
+  task_head: text("task_head").notNull(),
+  target_head: text("target_head").notNull(),
+  intent_hash: text("intent_hash").notNull(),
+  status: text("status", { enum: ["prepared", "local_merged", "recovery_required", "completed"] }).notNull(),
+  merge_commit: text("merge_commit"),
+  error: text("error"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (t) => [
+  uniqueIndex("integration_attempts_task_id_unique").on(t.task_id),
+  uniqueIndex("integration_attempts_active_repo_unique").on(t.repo_key).where(sql`${t.status} <> 'completed'`),
+  check("integration_attempts_status_check", sql`${t.status} IN ('prepared','local_merged','recovery_required','completed')`),
+  check("integration_attempts_merge_commit_check", sql`${t.status} NOT IN ('local_merged','completed') OR ${t.merge_commit} IS NOT NULL`),
+]);
