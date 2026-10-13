@@ -4,3 +4,4 @@ export * from "./protocol.js";
 export * from "./reporef.js";
 export * from "./delivery.js";
 export * from "./integration.js";
+export * from "./git-lock.js";

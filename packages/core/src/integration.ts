@@ -66,3 +66,19 @@ export interface TaskIntegration {
   last_synced_at: string | null; next_sync_at: string | null; sync_error: string | null;
 }
 export interface IntegrationActionRequest { expected_head: string; expected_version: string; }
+
+/** 严格区分历史未绑定与损坏快照，避免解析失败后静默使用浮动 Issue。 */
+export function parseRepositorySnapshot(value: string | null | undefined): RepositorySnapshot | null {
+  if (value == null) return null;
+  let parsed: any;
+  try { parsed = JSON.parse(value); } catch { throw new Error("仓库快照无法解析"); }
+  const strings = ["repository_id", "host", "external_id", "full_name", "target_branch", "checkout_path"];
+  if (parsed?.schema_version !== 1 || !["local_git", "github_pr"].includes(parsed.mode)
+    || strings.some((key) => typeof parsed[key] !== "string" || !parsed[key])
+    || typeof parsed.clone_url !== "string" || typeof parsed.identity?.real_path !== "string"
+    || !/^\d+$/.test(parsed.identity?.dev) || !/^\d+$/.test(parsed.identity?.ino)
+    || typeof parsed.input?.title !== "string"
+    || !["description", "acceptance"].every((key) => parsed.input[key] === null || typeof parsed.input[key] === "string")
+    || !(parsed.source_snapshot_id === null || typeof parsed.source_snapshot_id === "string")) throw new Error("仓库快照字段不完整");
+  return parsed as RepositorySnapshot;
+}
