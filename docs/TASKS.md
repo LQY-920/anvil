@@ -4,18 +4,18 @@
 
 ## 1. 当前任务
 
-以下 PRD 均为 v1.0 初稿，供认领时评审；功能都未在本轮实现。测试列的“用例初稿”表示已写测试步骤，不表示已编写自动化或执行通过。
+以下 PRD 均以 v1.0 为范围基线。T01 已认领并进入分段实现；其余尚未认领。测试列的“用例初稿”表示已写测试步骤，不表示已编写自动化或执行通过。
 
 | ID | 任务 / PRD | 认领状态 | 研发状态 | 测试状态 | 验收状态 | 交接 |
 |---|---|---|---|---|---|---|
-| T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 申请认领：LQY-920；待共享 | 需求评审与技术拆分；代码未开始 | [12 条用例未执行](tests/tasks/T01-testcases.md) | 未开始 | [记录](handoffs/T01.md) |
+| T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 已认领：LQY-920；PR #2 已合入 | S1 代码与验证完成；S2–S5 待推进 | [S1 部分场景通过；全量 903/903；完整验收未通过](tests/tasks/T01-testcases.md) | 未开始 | [记录](handoffs/T01.md) |
 | T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T02-testcases.md) | 未开始 | [记录](handoffs/T02.md) |
 | T03 | [Factory 流程与真实任务](prds/T03-factory-workflow.md) | 待认领 | 未开始，等联合验收 | [用例初稿，未执行](tests/tasks/T03-testcases.md) | 未开始 | [记录](handoffs/T03.md) |
 | T04 | [内部频道、线程与 @Agent](prds/T04-channels-threads.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T04-testcases.md) | 未开始 | [记录](handoffs/T04.md) |
 | T05 | [移动端使用与安全访问](prds/T05-mobile-access.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T05-testcases.md) | 未开始 | [记录](handoffs/T05.md) |
 | T06 | [pi、dsh 等 Agent 扩展](prds/T06-agent-providers.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T06-testcases.md) | 未开始 | [记录](handoffs/T06.md) |
 
-2026-10-13 仓库所有者明确要求开始推进 T01，本地认领申请与技术拆分已建立，待认领变更进入共享 main 后生效；Codex 为实施工具。T02 仍由协作者自行选择认领，既有分工意向不代替本人认领；其余任务未分配。
+2026-10-13 经仓库所有者授权，T01 认领 [PR #2](https://github.com/LQY-920/anvil/pull/2) 已进入共享 main，实施基线为 `75dfde4`；Codex 为实施工具。T02 仍由协作者自行选择认领，既有分工意向不代替本人认领；其余任务未分配。
 
 ## 2. 怎么选、怎么推进
 
