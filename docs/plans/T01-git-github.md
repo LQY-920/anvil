@@ -1,6 +1,6 @@
 # T01 · Git/GitHub 技术设计与实施顺序
 
-日期：2026-10-13（Asia/Shanghai）。状态：认领 PR #2 已合入，S1 代码/验证完成；S2–S5 尚未完成。负责人：LQY-920；实施工具：Codex。本文细化实现，不更改 PRD 的验收范围。代码起点为 `75dfde454f653376c3dac10224e44bc734ee75a0`。
+日期：2026-10-13（Asia/Shanghai）。状态：认领 PR #2 已合入，S1–S4 完整功能已实现；`4859fa9` 全量 1011 条、build、四包 noEmit 与独立静态审查通过，S5 真实账号产品验收待执行。负责人：LQY-920；实施工具：Codex。本文细化实现，不更改 PRD 的验收范围。代码起点为 `75dfde454f653376c3dac10224e44bc734ee75a0`。
 
 依据：[PRD v1.0](../prds/T01-git-github.md)、[公共边界 v1.0.1](../prds/COMMON.md)、[交接](../handoffs/T01.md)、[12 条用例](../tests/tasks/T01-testcases.md)。准备基线：`3bfd8ba81a7824fbbfbedbb2c6413e3c8035b853`。PRD SHA-256：`B6A29223757A3F09BF901102CE0E1ED8D8F0A1E642479F7B562C7B62BB21C819`。
 
@@ -75,7 +75,7 @@
 
 2026-10-13 实施调整：成功后保留任务分支/worktree，保证历史 Diff 仍可读取且不误删后来的修改；S1 暂无清理按钮。独立审查指出 porcelain 为空不代表没有未结束的 Git 操作，且无条件 abort 可能撤销用户现场，因此增加操作标记检查，冲突改为保留现场并要求核对，不自动 abort。S1 不提供自动恢复，也不把持久仓库守卫宣称为已接通 Runner 的临界锁。错误 HTTP 与持久记录使用同一个脱敏函数；Git 禁用 replacement objects，避免完整 SHA 被 refs/replace 改变内容语义。
 
-## 6. 后续契约的最低约束
+## 6. S2–S4 契约的最低约束
 
 - Repository/SourceSnapshot：同 host+repo ID 唯一；导入按外部 Issue ID 幂等，不自动派发。Task 固定接受的来源版本，上游变化提示差异。
 - Gate：Decision 提交前及实际操作持锁后分别核对 Task、branch、HEAD、Report、Verification、clean、base/target 和仓库身份。临界锁按 common-dir 跨 Server/Runner 进程协调；不跨 Agent 执行或人类等待持锁。先做崩溃/过期锁测试，不以进程内 Promise 当跨进程锁。
@@ -102,3 +102,19 @@ S1 代码 `bee982a`：专项及独立静态审查后，串行执行全量 46 文
 | 2026-10-13 implementation_audit，只读 Agent | 独立源码边界审查；缺不可变身份，push 失败后重复 merge，branch-only v2 测试夹具不适合作 legacy | S1b 采用持久意图与恢复阻塞；S2 补身份；扩展响应而不改变 base 语义 |
 
 定稿复核：plan_readiness 对四份认领/设计/用例文档给出通过结论；implementation_audit 要求补清 task_id 级恢复守卫和实际 merge 的固定 SHA，两项已纳入 S1b。主会话核对修订与意见一致；没有将文档审查记为产品代码通过。
+
+## 8. 完整实现冻结点（2026-10-13）
+
+S1–S4 已在 `fcbf53c` 整合；上述分段记录保留当时的范围和结果，当前功能与测试以 [交接](../handoffs/T01.md)、[测试记录](../tests/tasks/T01-testcases.md) 为准。PRD v1.0/hash 未改变；以下为拟议接口的实现定稿，不扩展需求范围。
+
+- Core `integration.ts` 为 Repository、SourceSnapshot、Task 快照、ReviewGate、Decision、DeliveryOperation 和 PR 唯一协议。迁移 0005 仅新增表与 nullable 字段；旧任务不补造绑定或证据。Task 在入队时冻结接受的来源与仓库，claim、自动重试与 Runner 都读取该快照。
+- `git-lock.ts` 以 common-dir 的目录锁协调 Server/Runner 进程；活 PID 不抢占，死进程恢复核对 nonce，无法证明所有者时保守阻塞。临界操作用锁，Agent 执行和人工审查不持锁。
+- 后端通过 `@anvil/core/git-lock` 子入口导入文件锁；浏览器使用的 Core 根入口不再导出该 Node 模块。生产构建错误与修复绑定 `4859fa9`，锁算法不变。
+- `gh api` 客户端限制主机、路径和 GET/POST；不读取 token、不自动合入或改保护。轮询 60 秒、手动刷新 10 秒；每仓库每轮最多 20 个来源与 10 个 PR，轮转同步；普通错误有界指数退避 60 秒至 1 小时，限流遵循 Retry-After/重置时间。
+- 操作接口同步返回持久 DeliveryOperation，`GET /integration` 查询最新事实。PR 创建可先于 Decision，允许质量阻塞但拒绝完整性阻塞。Decision 与实际交付分开；本地合入必须已有有效批准。
+- 仓库改绑与 Issue 改绑参与 common-dir 锁，push 和 POST 前再次读取 Gate；只向显式 clone URL 推送固定 SHA，检查 insteadOf/pushInsteadOf，禁止强推。Runner 对绑定任务只准备工作树，不自动 push。
+- 开放 PR 返工仍创建独立 Task/worktree/branch；快照可含 `starting_commit` 继续原 PR 提交，最新目标为新 base。Gate 要求 base 可达；Agent 整合新基线后重新 Report/验证，再非强推更新原 PR 分支。
+- prepared/unknown/failed 仅最新操作可恢复；恢复创建新 Attempt，使用持久 intent 的原 head/version/PR 分支和 marker。响应丢失后先查远端，多个候选不猜测。终态 PR 恢复允许以去掉目标当前 SHA 的稳定证据指纹核对其余证据，只恢复关联，不重新推送或创建。
+- 本地 Git 成功后若数据库收尾失败，核对记录 merge SHA 或原 base/head 双亲后恢复。收尾事务重检最新 Task/绑定，旧操作成功不得将新工作标 done。Decision 不重复创建，旧尝试留作历史。
+
+主会话自审后，`t01_final_audit` 独立只读审查的 7 项缺陷均修复并复核关闭；`t01_acceptance_docs_check` 独立核对用户指南并补清验证策略必须提前提交到目标分支。审查不替代自动化或真实账号验收；TC12、所有者确认、合并/部署与 J01 分别记录。

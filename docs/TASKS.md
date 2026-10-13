@@ -4,11 +4,11 @@
 
 ## 1. 当前任务
 
-以下 PRD 均以 v1.0 为范围基线。T01 已认领并进入分段实现；其余尚未认领。测试列的“用例初稿”表示已写测试步骤，不表示已编写自动化或执行通过。
+以下 PRD 均以 v1.0 为范围基线。T01 已实现完整功能并通过自动化、构建和独立审查，待所有者产品验收；其余尚未认领。测试列的“用例初稿”表示已写测试步骤，不表示已编写自动化或执行通过。
 
 | ID | 任务 / PRD | 认领状态 | 研发状态 | 测试状态 | 验收状态 | 交接 |
 |---|---|---|---|---|---|---|
-| T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 已认领：LQY-920；PR #2 已合入 | S1 [草稿 PR #3](https://github.com/LQY-920/anvil/pull/3)；S2–S5 待推进 | [S1 部分场景通过；全量 903/903；完整验收未通过](tests/tasks/T01-testcases.md) | 未开始 | [记录](handoffs/T01.md) |
+| T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 已认领：LQY-920；PR #2 已合入 | S1–S4 已实现，待验收；[草稿 PR #3](https://github.com/LQY-920/anvil/pull/3) 未合并 | [56 文件/1011 用例、build/四包 noEmit、独立静态审查通过](tests/tasks/T01-testcases.md) | TC12 真实账号与所有者验收待执行；[测试步骤](tests/tasks/T01-user-acceptance.md) | [记录](handoffs/T01.md) |
 | T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T02-testcases.md) | 未开始 | [记录](handoffs/T02.md) |
 | T03 | [Factory 流程与真实任务](prds/T03-factory-workflow.md) | 待认领 | 未开始，等联合验收 | [用例初稿，未执行](tests/tasks/T03-testcases.md) | 未开始 | [记录](handoffs/T03.md) |
 | T04 | [内部频道、线程与 @Agent](prds/T04-channels-threads.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T04-testcases.md) | 未开始 | [记录](handoffs/T04.md) |
@@ -81,5 +81,6 @@ H01 状态：未认领、未完成。旧指标未取消也未宣布达标；未�
 | 2026-10-10 | 按所有者要求通过基线 PR 对齐 main，更新同步和认领入口 | 所有者明确授权分支整理与合入 | 保留 A01–A08；修复旧 Git 任务启动兼容；六项任务仍待认领，PRD 版本和用例状态不变 |
 | 2026-10-13 | 建立 T01 本地认领申请、需求评审与技术拆分 | 所有者要求开始推进 T01 | 负责人申请 LQY-920，Codex 实施；认领未共享，代码未开始，PRD v1.0/hash 不变；T02–T06 状态不变 |
 | 2026-10-13 | 认领 PR #2 合入，S1 草稿 PR #3 共享 | 所有者授权开始；实施按分段设计推进 | S1 代码 bee982a 全量 903/903、build/四包 noEmit 通过；S2–S5 未完成；T02–T06 状态不变 |
+| 2026-10-13 | 完整实现 S2–S4，准备整个板块的用户测试 | 所有者要求持续推进到可测试，不再分段停止 | 仓库/来源/裁决/PR/同步/恢复 UI 与 Runner 整合；独立审查 7 项全部修复；真实外部 TC12、合并/部署和 J01 分别待验收 |
 
 需求整理时未实现六项新功能。后续基线合入运行的产品回归、审查和兼容修复记录在 PROGRESS，不计入六项任务的专项验收；真实 Codex、J01、旧 R2/H01 均尚未通过。
