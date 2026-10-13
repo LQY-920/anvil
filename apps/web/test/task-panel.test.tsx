@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TaskPanel from "../src/components/TaskPanel.js";
 import * as api from "../src/api.js";
+import { integration, decision, task as boundTask } from "./integration-fixtures.js";
 
 vi.mock("../src/api.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/api.js")>()),
@@ -23,6 +24,8 @@ vi.mock("../src/api.js", async (importOriginal) => ({
   addComment: vi.fn(),
   rerunIssue: vi.fn(),
   saveReviewMeasurement: vi.fn(async (id, body) => ({ task_id: id, ...body, recorded_at: new Date().toISOString() })),
+  getTaskIntegration: vi.fn(),
+  submitTaskDecision: vi.fn(),
 }));
 
 vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
@@ -39,6 +42,28 @@ async function sendDraftComment() {
 }
 
 describe("TaskPanel", () => {
+  it("有仓库快照的新流程仅真正裁决保存计时，隐藏历史合入按钮", async () => {
+    vi.mocked(api.getTask).mockResolvedValueOnce({ task: boundTask, issue: { id: "i1", title: "绑定任务", status: "in_review", repository_id: "r1" } } as any);
+    vi.mocked(api.getTaskIntegration).mockResolvedValue(integration());
+    vi.mocked(api.submitTaskDecision).mockResolvedValue({ decision });
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("批准当前交付");
+    expect(screen.queryByRole("button", { name: "合入 main" })).toBeNull();
+    expect(api.saveReviewMeasurement).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("批准当前交付"));
+    await waitFor(() => expect(api.submitTaskDecision).toHaveBeenCalledTimes(1));
+    expect(api.saveReviewMeasurement).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.saveReviewMeasurement).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.submitTaskDecision).mock.invocationCallOrder[0]);
+    expect(api.mergeTask).not.toHaveBeenCalled();
+  });
+
+  it("无原始仓库快照的历史 v2 提示新执行，不继续使用旧合入入口", async () => {
+    vi.mocked(api.getTask).mockResolvedValueOnce({ task: { ...boundTask, repository_id: null, repository_snapshot_json: null }, issue: { id: "i1", title: "旧交付", status: "in_review" } } as any);
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText(/此历史任务缺少原始仓库快照/);
+    expect(screen.queryByRole("button", { name: "合入 main" })).toBeNull();
+    expect(screen.getByText("配置 Issue 仓库并重新执行").getAttribute("href")).toBe("/?issue=i1");
+  });
   it("renders review zone with diff stat and merge button, merges on click", async () => {
     render(<TaskPanel taskId="t1" />);
     await waitFor(() => expect(screen.getByText("合入 main")).toBeTruthy());

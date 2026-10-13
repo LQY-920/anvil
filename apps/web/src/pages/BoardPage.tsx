@@ -34,6 +34,8 @@ import * as api from "../api.js";
 import { useServerEvents } from "../ws.js";
 import { clearTitleBadge, notify, shouldNotify } from "../lib/notify.js";
 import TaskPanel from "../components/TaskPanel.js";
+import RepositoryPicker from "../components/RepositoryPicker.js";
+import IssueSettingsDialog from "../components/IssueSettingsDialog.js";
 import { ISSUE_STATUS_LABELS } from "../labels.js";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -84,6 +86,7 @@ export default function BoardPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [recentRepos, setRecentRepos] = useState<string[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingIssue, setEditingIssue] = useState<IssueWithTask | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const { attentionTasks, clearAttention } = useNotifications(issues);
   const [searchParams] = useSearchParams();
@@ -120,12 +123,15 @@ export default function BoardPage() {
     const active = tasks.find((t) => ["queued", "dispatched", "running"].includes(t.status)) ?? tasks[tasks.length - 1];
     clearAttention(issue.id); // 注意点按 issue 键控：打开该 issue 任意面板即清除
     if (active) setSelectedTaskId(active.id);
+    else setEditingIssue(issue);
   };
 
   // ?task=<taskId>：issues 首次加载完成后定位所属 issue 并打开面板，只处理一次
   useEffect(() => {
     if (taskQueryHandledRef.current || issues.length === 0) return;
     taskQueryHandledRef.current = true;
+    const issueId = searchParams.get("issue");
+    if (issueId) { const issue = issues.find(i => i.id === issueId); if (issue) setEditingIssue(issue); return; }
     const taskId = searchParams.get("task");
     if (!taskId) return;
     (async () => {
@@ -185,6 +191,7 @@ export default function BoardPage() {
                         selected={selected}
                         attention={attentionTasks.has(issue.id)}
                         onOpen={() => openIssue(issue)}
+                        onEdit={() => setEditingIssue(issue)}
                         onRerun={async () => { await api.rerunIssue(issue.id); reload(); }}
                       />
                     );
@@ -213,6 +220,7 @@ export default function BoardPage() {
         onClose={() => setShowCreate(false)}
         onCreated={() => { setShowCreate(false); reload(); }}
       />
+      {editingIssue && <IssueSettingsDialog key={editingIssue.id} issue={editingIssue} agents={agents} onClose={() => setEditingIssue(null)} onSaved={reload} onSelectTask={setSelectedTaskId} />}
     </div>
   );
 }
@@ -263,6 +271,7 @@ function TaskCard(props: {
   selected: boolean;
   attention: boolean;
   onOpen: () => void;
+  onEdit: () => void;
   onRerun: () => Promise<void>;
 }) {
   const { issue, agent } = props;
@@ -324,6 +333,7 @@ function TaskCard(props: {
         )}
       </div>
       <TaskChip task={t} issueStatus={issue.status} />
+      <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" aria-label={`配置 ${issue.title}`} onClick={event => { event.stopPropagation(); props.onEdit(); }}>配置与仓库绑定</button>
       {issue.assignee_type === "agent" && (
         <button
           type="button"
@@ -397,6 +407,8 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  const [repositoryId, setRepositoryId] = useState("");
+  const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
   const [guidance, setGuidance] = useState<{ content: string; truncated: boolean } | null>(null);
 
@@ -419,14 +431,17 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
     if (!title.trim() || creatingRef.current) return;
     creatingRef.current = true;
     setCreating(true);
+    setCreateError("");
     try {
       await api.createIssue({
         title, description: description || undefined, acceptance: acceptance || undefined, priority,
         assignee_type: assigneeId ? "agent" : undefined,
         assignee_id: assigneeId || undefined,
-        repo_path: repoPath || undefined,
+        ...(repositoryId ? { repository_id: repositoryId } : { repo_path: repoPath || undefined }),
       });
       props.onCreated();
+    } catch (error) {
+      setCreateError(api.apiErrorText(error));
     } finally {
       creatingRef.current = false;
       setCreating(false);
@@ -480,7 +495,8 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
               </Select>
             </div>
           </div>
-          <div className="relative">
+          {props.open && <RepositoryPicker value={repositoryId} onChange={setRepositoryId} />}
+          {!repositoryId && <div className="relative">
             <FolderGit2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <Input
               className="pl-9"
@@ -488,8 +504,8 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
               value={repoPath}
               onChange={(e) => setRepoPath(e.target.value)}
             />
-          </div>
-          {guidance && (
+          </div>}
+          {!repositoryId && guidance && (
             <div className="rounded-md border bg-muted/50 px-2.5 py-1.5">
               <div className="whitespace-pre-wrap font-mono text-[11px] leading-4 text-muted-foreground">
                 {guidance.content.slice(0, 200)}{(guidance.truncated || guidance.content.length > 200) && "…"}
@@ -497,7 +513,7 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
               <div className="mt-1 text-[11px] text-muted-foreground">将随任务注入</div>
             </div>
           )}
-          {props.recentRepos.length > 0 && (
+          {!repositoryId && props.recentRepos.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {props.recentRepos.map((r) => (
                 <button
@@ -512,6 +528,7 @@ function CreateIssueModal(props: { open: boolean; workspaceId: string; agents: A
               ))}
             </div>
           )}
+          {createError && <p role="alert" className="text-sm text-destructive">{createError}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={props.onClose}>取消</Button>

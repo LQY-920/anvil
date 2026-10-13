@@ -27,6 +27,7 @@ import { messageToEntry, summarizeProgress } from "@/lib/trace-presenter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import IntegrationPanel from "./IntegrationPanel.js";
 
 interface Msg { seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null; created_at?: string | null; }
 
@@ -222,8 +223,10 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   // 历史服务端无分支的 404 继续隐藏；固定版本证据错误必须明确展示。
   const taskStatus = task?.status;
   const issueStatus = issue?.status;
+  const hasRepositorySnapshot = Boolean(task?.repository_snapshot_json);
+  const legacyReview = task?.delivery_contract_version !== 2 && !hasRepositorySnapshot && !issue?.repository_id;
   useEffect(() => {
-    if (!taskId || taskStatus !== "completed" || issueStatus === "done" || !issueStatus) return;
+    if (!taskId || taskStatus !== "completed" || (issueStatus === "done" && !hasRepositorySnapshot) || !issueStatus) return;
     let cancelled = false;
     api.getTaskDiff(taskId)
       .then((d) => { if (!cancelled) { setDiff(d); setDiffError(""); } })
@@ -232,9 +235,9 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
         setDiffError(errorMessage(error));
       });
     return () => { cancelled = true; };
-  }, [taskId, taskStatus, issueStatus]);
+  }, [taskId, taskStatus, issueStatus, hasRepositorySnapshot]);
 
-  const reviewTimer = useReviewTimer(taskId, task?.id === taskId && taskStatus === "completed" && Boolean(issueStatus) && issueStatus !== "done" && diff !== null && merged === null);
+  const reviewTimer = useReviewTimer(taskId, task?.id === taskId && taskStatus === "completed" && Boolean(issueStatus) && issueStatus !== "done" && (diff !== null || hasRepositorySnapshot) && merged === null);
 
   if (!task || !issue) {
     return (
@@ -244,7 +247,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     );
   }
   const active = ["queued", "dispatched", "running"].includes(task.status);
-  const showDelivery = task.status === "completed" && issue.status !== "done" && (diff !== null || merged !== null || Boolean(diffError));
+  const showDelivery = task.status === "completed" && (issue.status !== "done" || hasRepositorySnapshot) && (diff !== null || merged !== null || Boolean(diffError));
   const statusMeta = TASK_STATUS_META[task.status];
   const StatusIcon = statusMeta?.icon;
   const progress = summarizeProgress(messages);
@@ -262,7 +265,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   };
 
   const doMerge = async () => {
-    if (mergingRef.current || rejectingRef.current || recoveryError) return;
+    if (!legacyReview || mergingRef.current || rejectingRef.current || recoveryError) return;
     mergingRef.current = true;
     setMergeError("");
     setMerging(true);
@@ -369,6 +372,13 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
             [{task.failure_reason}] {task.error}
           </div>
         )}
+        {hasRepositorySnapshot && <IntegrationPanel key={task.id} task={task} onChanged={props.onChanged} onSelectTask={props.onSelectTask} onBeforeDecision={saveMeasurement} onDecisionSaved={() => reviewTimer.finish()} onDecisionError={() => reviewTimer.resume()} />}
+        {!hasRepositorySnapshot && !legacyReview && (
+          <div className="space-y-2 rounded-lg border bg-muted p-3 text-sm">
+            <p>此历史任务缺少原始仓库快照。请绑定仓库后重新执行，用新任务审查与交付；已有 Task 的输入和证据不会回写。</p>
+            <a className="text-primary underline" href={`/?issue=${encodeURIComponent(issue.id)}`}>配置 Issue 仓库并重新执行</a>
+          </div>
+        )}
         {showDelivery && (
           <section aria-label="交付">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">交付</h3>
@@ -435,9 +445,9 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                           </pre>
                         </>
                       )}
-                      <div className="flex items-center gap-2 pt-1">
+                      {legacyReview && <div className="flex items-center gap-2 pt-1">
                         <Button size="sm" onClick={doMerge} disabled={merging || rejecting || Boolean(recoveryError)}>合入 {diff.base}</Button>
-                      </div>
+                      </div>}
                     </>
                   )}
                   {diffError && <div role="alert" className="whitespace-pre-wrap text-sm text-destructive">{diffError}</div>}
@@ -448,7 +458,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                     </div>
                   )}
                   {mergeError && <div className="whitespace-pre-wrap text-sm text-rose-600 dark:text-rose-400">{mergeError}</div>}
-                  <div className="flex flex-col gap-2 pt-1">
+                  {legacyReview && <div className="flex flex-col gap-2 pt-1">
                     <Textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} placeholder="打回意见…" />
                     <Button
                       variant="outline"
@@ -459,7 +469,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                     >
                       提交意见并重跑
                     </Button>
-                  </div>
+                  </div>}
                 </>
               )}
             </div>

@@ -1,4 +1,5 @@
 import type { Agent, Comment, CreateIssueRequest, Issue, IssueWithTask, MergeResponse, Runtime, Task, TaskDiffResponse, UpdateIssueRequest, ReviewMeasurement, ReviewMeasurementRequest, ReviewMeasurementFailure } from "@anvil/core";
+import type { Repository, BindRepositoryRequest, IssueSource, TaskIntegration, SubmitDecisionRequest, ReviewDecision, IntegrationActionRequest, DeliveryOperation } from "@anvil/core";
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly code?: string, public readonly detail?: string) {
@@ -10,12 +11,16 @@ export class ApiError extends Error {
 /** 兼容未返回固定版本字段的历史服务端。 */
 export type ReviewDiffResponse = TaskDiffResponse;
 
-async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export function apiErrorText(error: unknown): string {
+  return error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : String(error);
+}
+
+async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(path, {
     method,
     signal,
     // 注意：无 body 时不能带 content-type: application/json，否则 fastify 会因空 JSON body 返回 400
-    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+    headers: body !== undefined ? { "content-type": "application/json", ...headers } : headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -70,3 +75,20 @@ export const createDaemonToken = (label: string) => req<{ id: string; token: str
 export interface DaemonTokenInfo { id: string; label: string; revoked_at: string | null; created_at: string; }
 export const listDaemonTokens = () => req<DaemonTokenInfo[]>("GET", "/api/daemon-tokens");
 export const revokeDaemonToken = (id: string) => req<{ ok: true }>("POST", `/api/daemon-tokens/${id}/revoke`);
+
+export const listRepositories = () => req<Repository[]>("GET", "/api/repositories");
+export const bindRepository = (body: BindRepositoryRequest) => req<Repository>("POST", "/api/repositories", body);
+export const syncRepository = (id: string) => req<Repository>("POST", `/api/repositories/${id}/sync`);
+export const importRepositoryIssue = (id: string, issueNumber: number, sourceUpdatedAt?: string) =>
+  req<{ issue_id: string; source_snapshot_id: string; disposition: string }>("POST", `/api/repositories/${id}/import-issue`, { issue_number: issueNumber, ...(sourceUpdatedAt ? { source_updated_at: sourceUpdatedAt } : {}) });
+export const getIssueSource = (id: string) => req<IssueSource | null>("GET", `/api/issues/${id}/source`);
+export const acceptIssueSource = (id: string, snapshotId: string) => req<IssueSource>("POST", `/api/issues/${id}/accept-source`, { snapshot_id: snapshotId });
+export const getTaskIntegration = (id: string) => req<TaskIntegration>("GET", `/api/tasks/${id}/integration`);
+export const submitTaskDecision = (id: string, body: SubmitDecisionRequest, key: string) =>
+  req<{ decision: ReviewDecision; next_task_id?: string }>("POST", `/api/tasks/${id}/decisions`, body, undefined, { "Idempotency-Key": key });
+export const integrateTask = (id: string, body: IntegrationActionRequest, key: string) =>
+  req<DeliveryOperation>("POST", `/api/tasks/${id}/integrate`, body, undefined, { "Idempotency-Key": key });
+export const createTaskPullRequest = (id: string, body: IntegrationActionRequest, key: string) =>
+  req<DeliveryOperation>("POST", `/api/tasks/${id}/pull-request`, body, undefined, { "Idempotency-Key": key });
+export const recoverTaskOperation = (id: string, operationId: string, body: IntegrationActionRequest, key: string) =>
+  req<DeliveryOperation>("POST", `/api/tasks/${id}/operations/${operationId}/recover`, body, undefined, { "Idempotency-Key": key });

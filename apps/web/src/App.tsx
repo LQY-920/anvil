@@ -1,14 +1,16 @@
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { Bot, Hammer, Kanban, Moon, Sun } from "lucide-react";
+import { Bot, Hammer, Kanban, Moon, Sun, FolderGit2 } from "lucide-react";
 import BoardPage from "./pages/BoardPage.js";
 import TaskDetailPage from "./pages/TaskDetailPage.js";
 import AgentsPage from "./pages/AgentsPage.js";
+import RepositoriesPage from "./pages/RepositoriesPage.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { cn } from "@/lib/utils";
 
 function pageTitle(pathname: string): string {
   if (pathname === "/") return "看板";
   if (pathname.startsWith("/agents")) return "Agents";
+  if (pathname.startsWith("/repositories")) return "仓库";
   if (pathname.startsWith("/tasks/")) return "任务详情";
   return "";
 }
@@ -39,6 +41,7 @@ export default function App() {
             <Bot className="size-4 shrink-0" aria-hidden="true" />
             <span>Agents</span>
           </NavLink>
+          <NavLink to="/repositories" className={navLinkClass}><FolderGit2 className="size-4 shrink-0" aria-hidden="true" /><span>仓库</span></NavLink>
         </nav>
         <button
           type="button"
@@ -58,6 +61,7 @@ export default function App() {
             <Route path="/" element={<BoardPage />} />
             <Route path="/tasks/:id" element={<TaskDetailPage />} />
             <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/repositories" element={<RepositoriesPage />} />
           </Routes>
         </main>
       </div>
