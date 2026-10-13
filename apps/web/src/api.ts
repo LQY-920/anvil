@@ -1,5 +1,19 @@
 import type { Agent, Comment, CreateIssueRequest, Issue, IssueWithTask, MergeResponse, Runtime, Task, TaskDiffResponse, UpdateIssueRequest, ReviewMeasurement, ReviewMeasurementRequest, ReviewMeasurementFailure } from "@anvil/core";
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number, public readonly code?: string, public readonly detail?: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** 兼容未返回固定版本字段的历史服务端。 */
+export type ReviewDiffResponse = TaskDiffResponse & {
+  delivery_contract_version?: 1 | 2;
+  base_commit?: string | null;
+  head_commit?: string | null;
+};
+
 async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -9,9 +23,14 @@ async function req<T>(method: string, path: string, body?: unknown, signal?: Abo
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    let detail = "";
-    try { const j = await res.json(); if (j && typeof j.error === "string") detail = ` — ${j.error}`; } catch { /* ignore */ }
-    throw new Error(`${method} ${path} → ${res.status}${detail}`);
+    let detail: string | undefined;
+    let code: string | undefined;
+    try {
+      const j = await res.json();
+      if (j && typeof j.error === "string") detail = j.error;
+      if (j && typeof j.code === "string") code = j.code;
+    } catch { /* 非 JSON 错误仍保留 HTTP 状态。 */ }
+    throw new ApiError(`${method} ${path} → ${res.status}${detail ? ` — ${detail}` : ""}`, res.status, code, detail);
   }
   return res.json() as Promise<T>;
 }
@@ -39,7 +58,7 @@ export const getTaskMessages = (id: string, afterSeq = -1) =>
     "GET", `/api/tasks/${id}/messages?after_seq=${afterSeq}`,
   );
 export const cancelTask = (id: string) => req("POST", `/api/tasks/${id}/cancel`);
-export const getTaskDiff = (id: string) => req<TaskDiffResponse>("GET", `/api/tasks/${id}/diff`);
+export const getTaskDiff = (id: string) => req<ReviewDiffResponse>("GET", `/api/tasks/${id}/diff`);
 export const mergeTask = (id: string, measurementFailure?: ReviewMeasurementFailure) => req<MergeResponse>("POST", `/api/tasks/${id}/merge`, measurementFailure);
 export async function saveReviewMeasurement(id: string, body: ReviewMeasurementRequest): Promise<ReviewMeasurement> {
   const controller = new AbortController();
