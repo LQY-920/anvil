@@ -36,6 +36,7 @@ function readRepositorySnapshot(task: Task): RepositorySnapshot | null {
     || typeof snapshot.identity.dev !== "string" || !/^\d+$/.test(snapshot.identity.dev)
     || typeof snapshot.identity.ino !== "string" || !/^\d+$/.test(snapshot.identity.ino)
     || snapshot.source_snapshot_id !== (task.source_snapshot_id ?? null)
+    || !(snapshot.starting_commit === undefined || typeof snapshot.starting_commit === "string" && /^[a-f0-9]{40}$/i.test(snapshot.starting_commit))
     || !(snapshot.source_snapshot_id === null || validText(snapshot.source_snapshot_id))
     || !snapshot.input || typeof snapshot.input.title !== "string"
     || !(snapshot.input.description === null || typeof snapshot.input.description === "string")

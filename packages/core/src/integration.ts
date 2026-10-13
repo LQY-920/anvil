@@ -15,6 +15,8 @@ export interface RepositorySnapshot {
   host: string; external_id: string; full_name: string; clone_url: string;
   target_branch: string; checkout_path: string; identity: RepositoryIdentity;
   source_snapshot_id: string | null;
+  /** 开放 PR 返工从已记录的交付提交新建工作树，绝不复用旧工作目录。 */
+  starting_commit?: string;
   input: { title: string; description: string | null; acceptance: string | null };
 }
 export interface BindRepositoryRequest {
@@ -36,6 +38,7 @@ export interface ReviewGate {
   task_id: string; expected_head: string | null; evidence_version: string;
   mode: RepositoryMode | null; repository: Repository | null;
   blockers: GateBlocker[]; can_approve: boolean; can_override: boolean;
+  stable_evidence_version?: string;
 }
 export type DecisionResult = "approved" | "overridden" | "rejected";
 export interface ReviewDecision {
@@ -58,6 +61,7 @@ export interface DeliveryOperation {
   action: "local_merge" | "pull_request";
   state: "prepared" | "unknown" | "failed" | "succeeded";
   expected_head: string; request_key: string; result_json: string | null; error: string | null;
+  expected_version?: string;
   created_at: string; updated_at: string;
 }
 export interface TaskIntegration {
@@ -75,9 +79,11 @@ export function parseRepositorySnapshot(value: string | null | undefined): Repos
   const strings = ["repository_id", "host", "external_id", "full_name", "target_branch", "checkout_path"];
   if (parsed?.schema_version !== 1 || !["local_git", "github_pr"].includes(parsed.mode)
     || strings.some((key) => typeof parsed[key] !== "string" || !parsed[key])
-    || typeof parsed.clone_url !== "string" || typeof parsed.identity?.real_path !== "string"
-    || !/^\d+$/.test(parsed.identity?.dev) || !/^\d+$/.test(parsed.identity?.ino)
+    || typeof parsed.clone_url !== "string" || !parsed.clone_url || typeof parsed.identity?.real_path !== "string" || !parsed.identity.real_path
+    || typeof parsed.identity?.dev !== "string" || typeof parsed.identity?.ino !== "string"
+    || !/^\d+$/.test(parsed.identity.dev) || !/^\d+$/.test(parsed.identity.ino)
     || typeof parsed.input?.title !== "string"
+    || !(parsed.starting_commit === undefined || typeof parsed.starting_commit === "string" && /^[a-f0-9]{40}$/i.test(parsed.starting_commit))
     || !["description", "acceptance"].every((key) => parsed.input[key] === null || typeof parsed.input[key] === "string")
     || !(parsed.source_snapshot_id === null || typeof parsed.source_snapshot_id === "string")) throw new Error("仓库快照字段不完整");
   return parsed as RepositorySnapshot;

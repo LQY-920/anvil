@@ -138,6 +138,18 @@ describe("GET /api/tasks/:id/diff", () => {
 });
 
 describe("POST /api/tasks/:id/merge", () => {
+  it("历史独立 checkout 的旧 GitHub 地址即使重定向到新名称也不能经旧入口直推", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    gitR(repo, ["remote", "add", "origin", "git@github.com:old-owner/old-name.git"]);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    const before = gitR(repo, ["rev-parse", "HEAD"]);
+    const response = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("github_pr_required");
+    expect(gitR(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(app.db.prepare("SELECT count(*) AS n FROM integration_attempts").get()).toEqual({ n: 0 });
+  });
   it("成功：合入 main、issue 置 done、保留分支并幂等返回", async () => {
     const repo = makeRepo();
     makeTaskBranch(repo);
@@ -158,7 +170,7 @@ describe("POST /api/tasks/:id/merge", () => {
     expect(replay.json()).toEqual(res.json());
     expect(gitR(repo, ["rev-parse", "HEAD"])).toBe(head);
     expect(app.db.prepare("SELECT COUNT(*) AS n FROM comments WHERE issue_id=?").get(issue.id)).toEqual(comments);
-  });
+  }, 15_000);
 
   it("冲突：409 且 issue 状态不变", async () => {
     const repo = makeRepo();

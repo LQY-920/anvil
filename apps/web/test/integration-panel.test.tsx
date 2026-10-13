@@ -25,6 +25,41 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("T01 交付审查", () => {
+  it("恢复成功后旧 failed 尝试只作为历史显示，不能再触发恢复", async () => {
+    current = { ...current, decision, operations: [{ ...operation, id: "recovered", state: "succeeded" }, { ...operation, state: "failed" }] };
+    render(panel());
+    await screen.findByText(/本地 Git 交付|GitHub PR 交付/);
+    expect(screen.queryByText("查询并恢复操作")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+  it("尚无裁决且质量失败时可先创建 PR 供审阅，但不能普通批准或保存测量", async () => {
+    current.gate = { ...current.gate, blockers: [{ kind: "quality", code: "verification_failed", message: "验证未通过" }], can_approve: false, can_override: true };
+    vi.mocked(api.createTaskPullRequest).mockImplementation(async () => {
+      const op = { ...operation, decision_id: null, state: "succeeded" as const, error: null };
+      current = { ...current, operations: [op] }; return op;
+    });
+    render(panel()); await screen.findByText("创建或关联 PR");
+    expect((screen.getByText("批准当前交付") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("创建或关联 PR") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("创建或关联 PR"));
+    await waitFor(() => expect(api.createTaskPullRequest).toHaveBeenCalledWith("t1", { expected_head: head, expected_version: "v1" }, expect.any(String)));
+    expect(beforeDecision).not.toHaveBeenCalled(); expect(api.submitTaskDecision).not.toHaveBeenCalled(); expect(saved).not.toHaveBeenCalled();
+  });
+
+  it("未裁决 PR 恢复使用持久操作原版本，不使用已变化的当前 Gate", async () => {
+    current = { ...current, gate: { ...current.gate, evidence_version: "new-version", expected_head: "c".repeat(40) }, operations: [{ ...operation, decision_id: null, expected_version: "original-pr-version" } as typeof operation] };
+    vi.mocked(api.recoverTaskOperation).mockResolvedValue({ ...operation, state: "succeeded", error: null });
+    render(panel()); fireEvent.click(await screen.findByText("查询并恢复操作"));
+    await waitFor(() => expect(api.recoverTaskOperation).toHaveBeenCalledWith("t1", "op1", { expected_head: operation.expected_head, expected_version: "original-pr-version" }, expect.any(String)));
+    expect(beforeDecision).not.toHaveBeenCalled(); expect(api.submitTaskDecision).not.toHaveBeenCalled();
+  });
+
+  it("本地模式尚无裁决时保持本地交付按钮禁用", async () => {
+    current.gate = { ...current.gate, mode: "local_git", repository: { ...repository, mode: "local_git" } };
+    render(panel()); await screen.findByText("执行本地交付");
+    expect((screen.getByText("执行本地交付") as HTMLButtonElement).disabled).toBe(true);
+    expect(api.integrateTask).not.toHaveBeenCalled();
+  });
   it("来源差异可显式接受，只调用来源接口，不重写当前 Task 或自动裁决", async () => {
     const accepted = { id: "s1", repository_id: "r1", external_id: "42", issue_number: 42, url: "https://github.com/owner/repo/issues/42", title: "旧需求", body: "旧范围", state: "open" as const, source_updated_at: "2026-10-12T00:00:00Z", hash: "old", created_at: "2026-10-12T00:00:00Z" };
     const latest = { ...accepted, id: "s2", title: "新需求", body: "新增验收标准", hash: "new" };
@@ -106,8 +141,8 @@ describe("T01 交付审查", () => {
     expect(screen.queryByRole("button", { name: /合入/ })).toBeNull();
   });
 
-  it("失败或未知操作只能查询恢复，恢复失败重试保留同一键", async () => {
-    current = { ...current, decision, operations: [operation], gate: { ...current.gate, expected_head: "c".repeat(40), evidence_version: "target-advanced" } };
+  it.each(["prepared", "failed", "unknown"] as const)("%s 操作只能查询恢复，恢复失败重试保留同一键", async (state) => {
+    current = { ...current, decision, operations: [{ ...operation, state }], gate: { ...current.gate, expected_head: "c".repeat(40), evidence_version: "target-advanced" } };
     vi.mocked(api.recoverTaskOperation).mockRejectedValue(new TypeError("响应丢失"));
     render(panel()); fireEvent.click(await screen.findByText("查询并恢复操作"));
     await screen.findByText("响应丢失");

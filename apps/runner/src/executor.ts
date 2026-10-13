@@ -1,5 +1,5 @@
 import type { DeliveryQueryResponse, Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
-import { isRepoUrl } from "@anvil/core";
+import { isRepoUrl, parseRepositorySnapshot } from "@anvil/core";
 import fs from "node:fs";
 import path from "node:path";
 import type { ApiClient } from "./client.js";
@@ -168,14 +168,25 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
 /** 单任务完整旅程：准备目录 → start → spawn → 流式上报 → complete/fail。任何异常收敛为 fail 上报，绝不外抛。 */
 export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise<void> {
   const { client, backend, daemonId } = deps;
-  const { task, issue, prior_work_dir, task_token } = pkg;
+  const { task, prior_work_dir, task_token } = pkg;
   let workDir: string | null = null;
   try {
+    const snapshot = parseRepositorySnapshot(task.repository_snapshot_json);
+    if (snapshot && (snapshot.repository_id !== task.repository_id || snapshot.source_snapshot_id !== (task.source_snapshot_id ?? null))) {
+      throw new Error("仓库快照与 Task 的仓库/来源标识不一致");
+    }
+    if (!snapshot && (task.repository_id || task.source_snapshot_id || pkg.issue.repository_id)) {
+      throw new Error("绑定任务缺少仓库快照，禁止退回可变 Issue 输入");
+    }
+    const issue: Issue = snapshot ? {
+      ...pkg.issue, ...snapshot.input, repo_path: snapshot.checkout_path,
+      repository_id: snapshot.repository_id, source_snapshot_id: snapshot.source_snapshot_id,
+    } : pkg.issue;
     const prepared = await prepareWorkdir(issue, task.id, deps.runnerRoot, prior_work_dir, {
       taskBranch: task.task_branch ?? null,
       targetBranch: task.target_branch ?? null,
       baseCommit: task.base_commit ?? null,
-    });
+    }, snapshot);
     workDir = prepared.workDir;
     // A03 · start / complete / fail 使用 daemon token + body.daemon_id,不再传 task_token
     // 仅 v2 任务上报 Git 锚点；迁移保留的 v1 任务仍走旧协议，不能在启动时改写版本。
@@ -185,8 +196,12 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       baseCommit: prepared.baseCommit,
     } : undefined);
 
-    // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
-    const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
+    // 平台/GitHub 连接凭据不进入 Agent；保留 Provider 自身所需的执行环境。
+    const connectionCredential = /^(?:ANVIL_DAEMON_TOKEN|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)$/i;
+    const connectionSecrets = Object.entries(process.env)
+      .filter(([key, value]) => connectionCredential.test(key) && Boolean(value)).map(([, value]) => value!);
+    const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key, value]) =>
+      value !== undefined && !connectionCredential.test(key) && !connectionSecrets.some(secret => value.includes(secret))));
     const env = {
       ...baseEnv,
       ANVIL_TOKEN: task_token,
@@ -197,7 +212,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     } as Record<string, string>;
 
     // 纵深防御：daemon token 若出现在消息流里同样抹掉
-    const secrets = [task_token, process.env.ANVIL_DAEMON_TOKEN ?? ""].filter(Boolean);
+    const secrets = [task_token, ...connectionSecrets].filter(Boolean);
     const uploader = new MessageUploader(client, task.id, task_token, secrets, 500);
     const guidance = readRepoGuidance(workDir);
     // 在 Agent 启动前固化可信策略；任务分支上的 ANVIL.verify.json 不参与本次终检。
@@ -206,7 +221,9 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     const execOpts = {
       workDir,
       env,
-      prompt: buildPrompt(issue, task, pkg.comments ?? []) + (guidance ? `\n\n## 仓库常驻指引（ANVIL.md）\n\n${guidance}` : ""),
+      prompt: buildPrompt(issue, task, pkg.comments ?? [])
+        + (snapshot?.starting_commit ? `\n\n本次使用新的工作树承接开放 PR 提交 ${snapshot.starting_commit}。当前目标基线为 ${prepared.baseCommit}；请将该基线整合进任务分支并解决冲突，完成验证后重新提交报告。不要直接推送，PR 更新由平台执行。` : "")
+        + (guidance ? `\n\n## 仓库常驻指引（ANVIL.md）\n\n${guidance}` : ""),
       resume: prepared.resumed,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     };
@@ -330,7 +347,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         if (terminal.signal.aborted) return;
         // URL 仓库:把任务分支推回远程,server 验收合并时用。推送失败不阻断 complete(分支仍在本地缓存)。
         let pushed: boolean | undefined;
-        if (prepared.taskBranch && issue.repo_path && isRepoUrl(issue.repo_path)) {
+        if (!snapshot && prepared.taskBranch && issue.repo_path && isRepoUrl(issue.repo_path)) {
           try {
             await git(workDir, ["push", "-u", "origin", prepared.taskBranch]);
             pushed = true;

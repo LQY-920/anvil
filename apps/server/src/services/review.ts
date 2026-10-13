@@ -1,6 +1,6 @@
 import type { Db } from "../db/client.js";
 import type { MergeResponse, TaskDiffResponse, Task } from "@anvil/core";
-import { isRepoUrl, repoCachePath } from "@anvil/core";
+import { isRepoUrl, repoCachePath, parseRepositorySnapshot, withGitLock } from "@anvil/core";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,7 @@ import { getDeliveryReport } from "./delivery.js";
 import { findIntegrationAttempt, reserveIntegrationAttempt, setIntegrationLocalMerged,
   requireIntegrationRecovery, completeIntegrationAttempt, integrationDiagnostic } from "./integration-attempts.js";
 import type { IntegrationIntent } from "./integration-attempts.js";
+import { parseGitHubRepository } from "../lib/github.js";
 
 /** diff_text 超过 50KB 截断（看板展示用，完整 diff 可去仓库看）。 */
 const MAX_DIFF_TEXT = 50 * 1024;
@@ -60,9 +61,13 @@ export async function getTaskDiff(db: Db, taskId: string): Promise<DiffResult> {
   const branch = legacy ? parseBranch(task.result_json) : task.task_branch;
   if (!branch) return { ok: false, error: "no branch" };
   const issue = getIssue(db, task.issue_id);
-  if (!issue?.repo_path) return legacy ? { ok: false, error: "no repo" }
+  let snapshot;
+  try { snapshot = parseRepositorySnapshot(task.repository_snapshot_json); }
+  catch { return failure("repository_snapshot_invalid", "原始仓库快照已损坏"); }
+  const repoPath = snapshot?.checkout_path ?? issue?.repo_path;
+  if (!repoPath) return legacy ? { ok: false, error: "no repo" }
     : failure("repository_mismatch", "任务当前未关联仓库，无法确认固定 Diff 的仓库身份");
-  const { repo, isUrl } = resolveRepo(issue.repo_path);
+  const { repo, isUrl } = resolveRepo(repoPath);
   if (isUrl && !fs.existsSync(repo)) return legacy ? { ok: false, error: "repo cache not found" }
     : failure("diff_unavailable", "本地仓库缓存不存在，无法读取固定版本 Diff", 404);
   try {
@@ -71,6 +76,7 @@ export async function getTaskDiff(db: Db, taskId: string): Promise<DiffResult> {
       try {
         const actual = await readGitRepositoryIdentity(task.work_dir!);
         const expected = await readGitRepositoryIdentity(repo);
+        if (snapshot && !sameGitRepository(expected, snapshot.identity)) return failure("repository_mismatch", "仓库与保存的原始身份不符");
         if (!sameGitRepository(actual, expected)) return failure("repository_mismatch", "任务工作区与当前仓库身份不一致");
       } catch { return failure("repository_mismatch", "无法确认任务工作区所属仓库，请保留现场并检查仓库绑定"); }
     }
@@ -155,6 +161,29 @@ async function checkMergeState(db: Db, task: Task, intent: IntegrationIntent): P
 export async function mergeTaskBranch(db: Db, taskId: string): Promise<MergeResult> {
   const task = getTask(db, taskId);
   if (!task) return { ok: false, error: "task not found" };
+  const issue = getIssue(db, task.issue_id);
+  // 新版任务一律走不可变裁决；历史任务也不能借旧入口绕开后来绑定的 PR 模式。
+  if (task.delivery_contract_version !== 1 || task.repository_id || issue?.repository_id)
+    return failure("modern_integration_required", "请绑定仓库并使用新版裁决与交付入口；历史任务需要重新执行");
+  if (!issue?.repo_path) return { ok: false, error: "no repo" };
+  const { repo } = resolveRepo(issue.repo_path);
+  try {
+    const identity = await readGitRepositoryIdentity(repo);
+    const bindings = db.$client.prepare("SELECT identity_json,host,full_name FROM repositories WHERE mode='github_pr'").all() as { identity_json: string; host: string; full_name: string }[];
+    const addresses = [issue.repo_path];
+    try { addresses.push((await git(repo, ["remote", "get-url", "origin"])).trim()); } catch { /* 纯本地仓库可以无 origin */ }
+    try { addresses.push((await git(repo, ["remote", "get-url", "--push", "origin"])).trim()); } catch { /* 同上 */ }
+    const aliases = addresses.flatMap(address => { try { return [parseGitHubRepository(address)]; } catch { return []; } });
+    if (aliases.length) return failure("github_pr_required", "历史 GitHub 仓库必须重新绑定并通过 PR 交付，不能由旧入口直接合入或推送");
+    if (bindings.some(row => sameGitRepository(identity, JSON.parse(row.identity_json))
+      || aliases.some(alias => alias.host === row.host && alias.fullName.toLowerCase() === row.full_name.toLowerCase())))
+      return failure("github_pr_required", "此仓库采用 GitHub PR 模式，历史入口不能直接合入或推送");
+    return await withGitLock(identity.real_path, () => mergeLegacyTaskBranch(db, taskId));
+  } catch (error) { return failure("git_state_changed", diagnostic(error)); }
+}
+
+async function mergeLegacyTaskBranch(db: Db, taskId: string): Promise<MergeResult> {
+  const task = getTask(db, taskId)!;
   const existing = findIntegrationAttempt(db, taskId);
   if (existing) {
     if (existing.status === "completed") return { ok: true, replayed: true,

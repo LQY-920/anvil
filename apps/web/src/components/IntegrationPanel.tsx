@@ -87,10 +87,14 @@ export default function IntegrationPanel(props: IntegrationPanelProps) {
       if (!request) {
         const latest = await reload();
         if (!mounted.current) return;
-        if ((!recover && !latest.gate.expected_head) || (recover && !latest.decision)) throw new Error("交付 HEAD 或原始裁决缺失，无法执行。");
-        if (!recover && (latest.operations.length || !latest.decision || latest.decision.result === "rejected" || latest.decision.head_commit !== latest.gate.expected_head || latest.gate.blockers.some(b => b.kind === "integrity"))) throw new Error("裁决或 Git 状态已变化，请刷新并处理已有操作。");
-        if (!recover && !(latest.gate.can_approve || (latest.decision?.result === "overridden" && latest.gate.can_override))) throw new Error("最新质量检查未通过，当前裁决不允许执行交付。");
-        request = { key: crypto.randomUUID(), body: { expected_head: recover ? recover.expected_head : latest.gate.expected_head!, expected_version: recover ? latest.decision!.evidence_version : latest.gate.evidence_version } };
+        const originalVersion = recover ? (recover as DeliveryOperation & { expected_version?: string }).expected_version ?? latest.decision?.evidence_version : undefined;
+        if ((!recover && !latest.gate.expected_head) || (recover && !originalVersion)) throw new Error("交付 HEAD 或原始操作证据版本缺失，请刷新状态后再恢复。");
+        if (!recover && (task.status !== "completed" || latest.operations.length || latest.gate.blockers.some(b => b.kind === "integrity"))) throw new Error("Git 完整性状态已变化，请刷新并处理已有操作。");
+        if (!recover && latest.gate.mode !== "github_pr") {
+          if (!latest.decision || latest.decision.result === "rejected" || latest.decision.head_commit !== latest.gate.expected_head) throw new Error("本地交付需要当前 HEAD 的有效裁决。");
+          if (!(latest.gate.can_approve || (latest.decision.result === "overridden" && latest.gate.can_override))) throw new Error("最新质量检查未通过，当前裁决不允许执行本地交付。");
+        }
+        request = { key: crypto.randomUUID(), body: { expected_head: recover ? recover.expected_head : latest.gate.expected_head!, expected_version: recover ? originalVersion! : latest.gate.evidence_version } };
         operationRequests.current.set(action, request);
       }
       const operation = recover
@@ -125,9 +129,9 @@ export default function IntegrationPanel(props: IntegrationPanelProps) {
   let snapshot: RepositorySnapshot | null = null;
   try { snapshot = JSON.parse(task.repository_snapshot_json ?? "null"); } catch { /* Gate 展示无效快照的阻塞原因。 */ }
   const integrityBlocked = gate.blockers.some(b => b.kind === "integrity");
-  const canDeliver = task.status === "completed" && decision && decision.result !== "rejected" && decision.head_commit === gate.expected_head && !integrityBlocked && (gate.can_approve || (decision.result === "overridden" && gate.can_override));
+  const canDeliver = task.status === "completed" && gate.expected_head && !integrityBlocked && (gate.mode === "github_pr" || (decision && decision.result !== "rejected" && decision.head_commit === gate.expected_head && (gate.can_approve || (decision.result === "overridden" && gate.can_override))));
   const decisionDisabled = busy || task.status !== "completed" || !gate.expected_head || Boolean(decision) || decisionPending;
-  const pendingOperation = operations.some(o => o.state !== "succeeded");
+  const pendingOperation = operations.length > 0 && operations[0].state !== "succeeded";
   return <section aria-label="Git 交付" className="space-y-3 rounded-lg border bg-card p-3 text-sm">
     <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{gate.mode === "github_pr" ? "GitHub PR 交付" : "本地 Git 交付"}</h3><Button variant="outline" size="sm" disabled={busy} onClick={refresh}>刷新交付状态</Button></div>
     <p className="break-all">{gate.repository?.full_name ?? "仓库身份未确认"} → {gate.repository?.target_branch ?? task.target_branch ?? "未确认"}</p>
@@ -149,8 +153,9 @@ export default function IntegrationPanel(props: IntegrationPanelProps) {
       {decisionPending && <div className="space-y-1"><p>裁决响应未确认，请重试同一裁决；不会重新计时或创建另一份决定。</p><Button variant="outline" disabled={busy} onClick={() => decide(decisionRequest.current!.body.result)}>重试保存裁决</Button></div>}
     </div>}
     {!operations.length && !operationUncertain && <Button size="sm" disabled={busy || !canDeliver} onClick={() => operate()}>{gate.mode === "github_pr" ? "创建或关联 PR" : "执行本地交付"}</Button>}
-    {operations.map(operation => <div key={operation.id} className="space-y-1 rounded border p-2"><p>{operation.action === "pull_request" ? "PR 操作" : "本地交付"}：{operationLabels[operation.state]}</p>{operation.error && <p className="whitespace-pre-wrap text-destructive">{operation.error}</p>}{["failed", "unknown"].includes(operation.state) && <><p className="text-xs text-muted-foreground">先查询已有结果再恢复，不重复运行 Agent，不强推或自动回退。</p><Button variant="outline" size="sm" disabled={busy} onClick={() => operate(operation)}>查询并恢复操作</Button></>}</div>)}
-    {(operationUncertain || pendingOperation) && <p role="status" className="text-muted-foreground">操作结果尚未确认。请刷新状态，在失败或未知操作的恢复入口继续。</p>}
+    {gate.mode === "github_pr" && !decision && <p className="text-xs text-muted-foreground">可先创建 PR 供审阅；创建或打开 PR 不代表批准，质量检查失败时仍需打回或明确覆盖。</p>}
+    {operations.map(operation => <div key={operation.id} className="space-y-1 rounded border p-2"><p>{operation.action === "pull_request" ? "PR 操作" : "本地交付"}：{operationLabels[operation.state]}</p>{operation.error && <p className="whitespace-pre-wrap text-destructive">{operation.error}</p>}{operation.id === operations[0]?.id && ["prepared", "failed", "unknown"].includes(operation.state) && <><p className="text-xs text-muted-foreground">先查询已有结果再恢复，不重复运行 Agent，不强推或自动回退。</p><Button variant="outline" size="sm" disabled={busy} onClick={() => operate(operation)}>查询并恢复操作</Button></>}</div>)}
+    {(operationUncertain || pendingOperation) && <p role="status" className="text-muted-foreground">操作结果尚未确认。请刷新状态，在已准备、失败或未知操作的恢复入口继续。</p>}
     {pr && <div className="space-y-2 border-t pt-2"><h4 className="font-medium">GitHub PR #{pr.number} · {pr.state === "merged" ? "远端已合入" : pr.state === "closed" ? "已关闭，未合入" : "等待 GitHub 审查与合入"}</h4><a href={webUrl(pr.url)} target="_blank" rel="noreferrer" className="text-primary underline">在 GitHub 审查或合入</a>{pr.state === "closed" && <p className="text-destructive">关闭 PR 不等于交付完成。请在 GitHub 核对并处理此 PR，再刷新。</p>}{pr.head_sha !== decision?.head_commit && <p className="text-destructive">PR HEAD 与批准版本不一致，不能确认远端交付。</p>}<h5>GitHub checks（与 Runner 验证分别记录）</h5>{pr.checks.length ? pr.checks.map((check, i) => <p key={`${check.name}-${i}`}>{check.name}：{check.status} / {check.conclusion ?? "尚无结论"}{check.url && <a href={webUrl(check.url)} target="_blank" rel="noreferrer" className="ml-2 text-primary underline">查看</a>}</p>) : <p className="text-muted-foreground">GitHub 暂未返回 checks。</p>}</div>}
     <p className="text-xs text-muted-foreground">上次同步：{integration.last_synced_at ?? "尚无记录"} · 下次同步：{integration.next_sync_at ?? "尚无记录"}</p>
     {(error || integration.sync_error) && <div role="alert" className="whitespace-pre-wrap text-destructive">{error || integration.sync_error}<p className="text-muted-foreground">请核对阻塞说明、连接权限或网络，再刷新状态。结果未知时从已有操作恢复。</p></div>}

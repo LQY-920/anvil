@@ -8,7 +8,7 @@ export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile("git", ["--no-replace-objects", ...args], { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       // git 的冲突/失败详情常打在 stdout（如 merge CONFLICT），stderr 为空时 err.message 只有 "Command failed"——把 stdout 也带上
-      if (err) return reject(new Error([stderr, stdout, err?.message].filter(Boolean).join("\n").trim()));
+      if (err) return reject(Object.assign(new Error([stderr, stdout, err?.message].filter(Boolean).join("\n").trim()), { code: err.code }));
       resolve(stdout);
     });
   });

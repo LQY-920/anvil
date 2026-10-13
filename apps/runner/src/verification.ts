@@ -12,7 +12,7 @@ type Policy = { source: VerificationRun["policy_source"]; hash: string | null; c
 
 /** 保留文件的原始换行与空白；worktree.git() 会 trim，不能用来计算策略 hash。 */
 async function gitRaw(workDir: string, args: string[]) {
-  const { stdout } = await execFileAsync("git", args, {
+  const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
     cwd: workDir, encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1" },
   });

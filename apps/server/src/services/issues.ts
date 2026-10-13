@@ -42,6 +42,9 @@ function snapshotForIssue(db: Db, issue: Issue): RepositorySnapshot | null {
       invalidRepository("接受的来源版本不属于当前仓库/Issue", "source_repository_mismatch", 409);
     }
   }
+  const priorPull = repository.mode === "github_pr" ? db.$client.prepare(`SELECT t.head_commit FROM pull_request_links p JOIN tasks t ON t.id=p.task_id
+    WHERE t.issue_id=? AND p.repository_id=? AND p.state='open' AND p.head_sha=t.head_commit AND t.status='completed'
+    ORDER BY t.created_at DESC,t.rowid DESC LIMIT 1`).get(issue.id, repository.id) as { head_commit: string } | undefined : undefined;
   return {
     schema_version: 1, repository_id: repository.id, mode: repository.mode,
     host: repository.host, external_id: repository.external_id, full_name: repository.full_name,
@@ -49,6 +52,7 @@ function snapshotForIssue(db: Db, issue: Issue): RepositorySnapshot | null {
     checkout_path: repository.checkout_path,
     identity: { real_path: identity.real_path, dev: identity.dev, ino: identity.ino },
     source_snapshot_id: sourceSnapshotId,
+    ...(priorPull && /^[a-f0-9]{40}$/i.test(priorPull.head_commit) ? { starting_commit: priorPull.head_commit } : {}),
     input: { title: issue.title, description: issue.description, acceptance: issue.acceptance },
   };
 }

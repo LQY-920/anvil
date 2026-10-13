@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
+import fs from "node:fs";
 import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
 import { addComment, createIssueRow, enqueueForComment, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
 import { seed } from "../db/client.js";
-import { ISSUE_STATUSES, PRIORITIES, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
+import { ISSUE_STATUSES, PRIORITIES, withGitLock, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
 import { excludeReviewMeasurement } from "../services/review-measurements.js";
 
 export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
@@ -44,10 +45,18 @@ export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {
     if (body.priority !== undefined && !(PRIORITIES as readonly string[]).includes(body.priority)) {
       return reply.code(400).send({ error: "invalid priority" });
     }
-    if (body.status && before.status !== body.status) {
-      addComment(db, id, { author_type: "member", author_id: seed(db).user.id, type: "status_change", body: `${before.status} → ${body.status}` });
-    }
-    const after = updateIssueRow(db, id, body)!;
+    const mutate = () => db.$client.transaction(() => {
+      const updated = updateIssueRow(db, id, body)!;
+      if (body.status && before.status !== body.status) {
+        addComment(db, id, { author_type: "member", author_id: seed(db).user.id, type: "status_change", body: `${before.status} → ${body.status}` });
+      }
+      return updated;
+    }).immediate();
+    const repository = before.repository_id && (body.repository_id !== undefined || body.repo_path !== undefined)
+      ? db.$client.prepare("SELECT identity_json FROM repositories WHERE id=?").get(before.repository_id) as { identity_json: string } | undefined : null;
+    const lockDirectory: string | undefined = repository ? JSON.parse(repository.identity_json).real_path : undefined;
+    // 已删除的 checkout 没有可参与竞争的 Git 操作，仍允许用户修复绑定。
+    const after = lockDirectory && fs.existsSync(lockDirectory) ? await withGitLock(lockDirectory, async () => mutate()) : mutate();
     const becameActive = before.status === "backlog" && after.status !== "backlog";
     const assignedAgent = after.assignee_type === "agent" &&
       (before.assignee_id !== after.assignee_id || before.assignee_type !== "agent");
