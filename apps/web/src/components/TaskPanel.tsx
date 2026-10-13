@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Comment, Issue, Task, TaskDiffResponse, ReviewMeasurementFailure } from "@anvil/core";
+import type { Comment, Issue, Task, ReviewMeasurementFailure } from "@anvil/core";
 import {
   AlertCircle,
   Ban,
@@ -18,7 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import * as api from "../api.js";
-import type { CommentTrigger } from "../api.js";
+import type { CommentTrigger, ReviewDiffResponse } from "../api.js";
 import { useServerEvents } from "../ws.js";
 import { useReviewTimer } from "../hooks/useReviewTimer.js";
 import { TASK_STATUS_LABELS } from "../labels.js";
@@ -27,8 +27,14 @@ import { messageToEntry, summarizeProgress } from "@/lib/trace-presenter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import IntegrationPanel from "./IntegrationPanel.js";
 
 interface Msg { seq: number; type: string; tool: string | null; content: string | null; input_json: string | null; output: string | null; created_at?: string | null; }
+
+function errorMessage(error: unknown): string {
+  if (error instanceof api.ApiError && error.detail) return error.detail;
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** 任务状态徽章配色（徽章公式：10% 底 + 20% 描边 + 实色字） */
 const TASK_STATUS_META: Record<string, { icon: LucideIcon; className: string }> = {
@@ -139,9 +145,11 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   const [messages, setMessages] = useState<Msg[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
   const [draft, setDraft] = useState("");
-  const [diff, setDiff] = useState<TaskDiffResponse | null>(null);
+  const [diff, setDiff] = useState<ReviewDiffResponse | null>(null);
+  const [diffError, setDiffError] = useState("");
   const [showDiff, setShowDiff] = useState(false);
   const [mergeError, setMergeError] = useState("");
+  const [recoveryError, setRecoveryError] = useState("");
   const [merged, setMerged] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   const [commentHint, setCommentHint] = useState("");
@@ -200,7 +208,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     genRef.current += 1;
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     setTask(null); setIssue(null); setMessages([]); setComments([]);
-    setDiff(null); setShowDiff(false); setMerged(null); setMergeError(""); setFeedback(""); setDraft(""); setCommentHint(""); setCommentError("");
+    setDiff(null); setDiffError(""); setShowDiff(false); setMerged(null); setMergeError(""); setRecoveryError(""); setFeedback(""); setDraft(""); setCommentHint(""); setCommentError("");
     lastSeq.current = -1;
   }, [taskId]);
 
@@ -212,19 +220,24 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   }, [taskId, scheduleReload]));
   useEffect(() => { bottomRef.current?.scrollIntoView?.({ behavior: "smooth" }); }, [messages.length]);
 
-  // 交付区：completed 且 issue 未 done 时拉 diff；404（无分支）则整区不显示
+  // 历史服务端无分支的 404 继续隐藏；固定版本证据错误必须明确展示。
   const taskStatus = task?.status;
   const issueStatus = issue?.status;
+  const hasRepositorySnapshot = Boolean(task?.repository_snapshot_json);
+  const legacyReview = task?.delivery_contract_version !== 2 && !hasRepositorySnapshot && !issue?.repository_id;
   useEffect(() => {
-    if (!taskId || taskStatus !== "completed" || issueStatus === "done" || !issueStatus) return;
+    if (!taskId || taskStatus !== "completed" || (issueStatus === "done" && !hasRepositorySnapshot) || !issueStatus) return;
     let cancelled = false;
     api.getTaskDiff(taskId)
-      .then((d) => { if (!cancelled) setDiff(d); })
-      .catch(() => { /* 无分支 → 不显示交付区 */ });
+      .then((d) => { if (!cancelled) { setDiff(d); setDiffError(""); } })
+      .catch((error: unknown) => {
+        if (cancelled || (error instanceof api.ApiError && error.status === 404 && !error.code)) return;
+        setDiffError(errorMessage(error));
+      });
     return () => { cancelled = true; };
-  }, [taskId, taskStatus, issueStatus]);
+  }, [taskId, taskStatus, issueStatus, hasRepositorySnapshot]);
 
-  const reviewTimer = useReviewTimer(taskId, task?.id === taskId && taskStatus === "completed" && Boolean(issueStatus) && issueStatus !== "done" && diff !== null && merged === null);
+  const reviewTimer = useReviewTimer(taskId, task?.id === taskId && taskStatus === "completed" && Boolean(issueStatus) && issueStatus !== "done" && (diff !== null || hasRepositorySnapshot) && merged === null);
 
   if (!task || !issue) {
     return (
@@ -234,7 +247,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
     );
   }
   const active = ["queued", "dispatched", "running"].includes(task.status);
-  const showDelivery = task.status === "completed" && issue.status !== "done" && (diff !== null || merged !== null);
+  const showDelivery = task.status === "completed" && (issue.status !== "done" || hasRepositorySnapshot) && (diff !== null || merged !== null || Boolean(diffError));
   const statusMeta = TASK_STATUS_META[task.status];
   const StatusIcon = statusMeta?.icon;
   const progress = summarizeProgress(messages);
@@ -252,7 +265,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
   };
 
   const doMerge = async () => {
-    if (mergingRef.current || rejectingRef.current) return;
+    if (!legacyReview || mergingRef.current || rejectingRef.current || recoveryError) return;
     mergingRef.current = true;
     setMergeError("");
     setMerging(true);
@@ -265,7 +278,10 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
       props.onChanged?.();
     } catch (e) {
       reviewTimer.resume();
-      if (gen === genRef.current) setMergeError(e instanceof Error ? e.message : String(e));
+      if (gen === genRef.current) {
+        if (e instanceof api.ApiError && e.code === "recovery_required") setRecoveryError(errorMessage(e));
+        else setMergeError(errorMessage(e));
+      }
     } finally {
       mergingRef.current = false;
       setMerging(false);
@@ -291,7 +307,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
       if (nextTaskId && gen === genRef.current) props.onSelectTask?.(nextTaskId);
     } catch (e) {
       reviewTimer.resume();
-      if (gen === genRef.current) setMergeError(e instanceof Error ? e.message : String(e));
+      if (gen === genRef.current) setMergeError(errorMessage(e));
     } finally {
       rejectingRef.current = false;
       setRejecting(false);
@@ -356,62 +372,93 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
             [{task.failure_reason}] {task.error}
           </div>
         )}
+        {hasRepositorySnapshot && <IntegrationPanel key={task.id} task={task} onChanged={props.onChanged} onSelectTask={props.onSelectTask} onBeforeDecision={saveMeasurement} onDecisionSaved={() => reviewTimer.finish()} onDecisionError={() => reviewTimer.resume()} />}
+        {!hasRepositorySnapshot && !legacyReview && (
+          <div className="space-y-2 rounded-lg border bg-muted p-3 text-sm">
+            <p>此历史任务缺少原始仓库快照。请绑定仓库后重新执行，用新任务审查与交付；已有 Task 的输入和证据不会回写。</p>
+            <a className="text-primary underline" href={`/?issue=${encodeURIComponent(issue.id)}`}>配置 Issue 仓库并重新执行</a>
+          </div>
+        )}
         {showDelivery && (
           <section aria-label="交付">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">交付</h3>
             <div className="space-y-2 rounded-lg border bg-card p-3">
               {merged ? (
                 <div className="text-sm text-emerald-600 dark:text-emerald-400">✓ 已合入 {merged}</div>
-              ) : diff && (
+              ) : (
                 <>
-                  <div className="flex items-center gap-2 font-mono text-[11px]">
-                    <code className="rounded border bg-muted px-1.5 py-0.5">{diff.branch}</code>
-                    <span className="text-muted-foreground">→</span>
-                    <code className="rounded border bg-muted px-1.5 py-0.5 text-amber-600 dark:text-amber-400">{diff.base}</code>
-                  </div>
-                  <DiffStat stat={diff.diff_stat} />
-                  {!showDiff && (
-                    <Button variant="outline" size="sm" onClick={() => { reviewTimer.markFullDiff(); setShowDiff(true); }}>查看 diff</Button>
-                  )}
-                  {showDiff && (
+                  {diff && (
                     <>
-                      {diff.truncated && <div className="text-sm text-rose-600 dark:text-rose-400">内容过长已截断</div>}
-                      <pre className="m-0 max-h-[400px] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 py-1.5 font-mono text-xs leading-[18px]">
-                        {diff.diff_text.split("\n").map((line, i) => {
-                          const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : line.startsWith("@") ? "hunk" : "ctx";
-                          return (
-                            <div
-                              key={i}
-                              className={cn(
-                                "flex min-w-max",
-                                kind === "add" && "bg-emerald-500/10",
-                                kind === "del" && "bg-rose-500/10",
-                                kind === "hunk" && "bg-blue-500/10",
-                              )}
-                            >
-                              <span className={cn(
-                                "w-[22px] shrink-0 select-none text-center",
-                                kind === "add" ? "text-emerald-400" : kind === "del" ? "text-rose-400" : "text-zinc-600",
-                              )}>
-                                {kind === "add" ? "+" : kind === "del" ? "-" : ""}
-                              </span>
-                              <span className={cn(
-                                "whitespace-pre pr-3",
-                                kind === "hunk" ? "text-blue-400" : "text-zinc-300",
-                              )}>
-                                {kind === "add" || kind === "del" ? line.slice(1) : line}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </pre>
+                      <div className="flex items-center gap-2 font-mono text-[11px]">
+                        <code className="rounded border bg-muted px-1.5 py-0.5">{diff.branch}</code>
+                        <span className="text-muted-foreground">→</span>
+                        <code className="rounded border bg-muted px-1.5 py-0.5 text-amber-600 dark:text-amber-400">{diff.base}</code>
+                      </div>
+                      {diff.delivery_contract_version === 2 ? (
+                        <div className="space-y-1 text-xs text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span>固定版本比较</span>
+                            <code title={diff.base_commit ?? undefined}>{diff.base_commit?.slice(0, 12) ?? "基线缺失"}</code>
+                            <span>→</span>
+                            <code title={diff.head_commit ?? undefined}>{diff.head_commit?.slice(0, 12) ?? "交付版本缺失"}</code>
+                          </div>
+                          <p className="m-0">此 diff 展示存档版本，合入前仍需核对当前仓库与交付证据。</p>
+                        </div>
+                      ) : (
+                        <p className="m-0 text-xs text-muted-foreground">历史任务比较（v1），未绑定固定提交版本。</p>
+                      )}
+                      <DiffStat stat={diff.diff_stat} />
+                      {!showDiff && (
+                        <Button variant="outline" size="sm" onClick={() => { reviewTimer.markFullDiff(); setShowDiff(true); }}>查看 diff</Button>
+                      )}
+                      {showDiff && (
+                        <>
+                          {diff.truncated && <div className="text-sm text-rose-600 dark:text-rose-400">内容过长已截断</div>}
+                          <pre className="m-0 max-h-[400px] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 py-1.5 font-mono text-xs leading-[18px]">
+                            {diff.diff_text.split("\n").map((line, i) => {
+                              const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : line.startsWith("@") ? "hunk" : "ctx";
+                              return (
+                                <div
+                                  key={i}
+                                  className={cn(
+                                    "flex min-w-max",
+                                    kind === "add" && "bg-emerald-500/10",
+                                    kind === "del" && "bg-rose-500/10",
+                                    kind === "hunk" && "bg-blue-500/10",
+                                  )}
+                                >
+                                  <span className={cn(
+                                    "w-[22px] shrink-0 select-none text-center",
+                                    kind === "add" ? "text-emerald-400" : kind === "del" ? "text-rose-400" : "text-zinc-600",
+                                  )}>
+                                    {kind === "add" ? "+" : kind === "del" ? "-" : ""}
+                                  </span>
+                                  <span className={cn(
+                                    "whitespace-pre pr-3",
+                                    kind === "hunk" ? "text-blue-400" : "text-zinc-300",
+                                  )}>
+                                    {kind === "add" || kind === "del" ? line.slice(1) : line}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </pre>
+                        </>
+                      )}
+                      {legacyReview && <div className="flex items-center gap-2 pt-1">
+                        <Button size="sm" onClick={doMerge} disabled={merging || rejecting || Boolean(recoveryError)}>合入 {diff.base}</Button>
+                      </div>}
                     </>
                   )}
-                  <div className="flex items-center gap-2 pt-1">
-                    <Button size="sm" onClick={doMerge} disabled={merging || rejecting}>合入 {diff.base}</Button>
-                  </div>
+                  {diffError && <div role="alert" className="whitespace-pre-wrap text-sm text-destructive">{diffError}</div>}
+                  {recoveryError && (
+                    <div role="alert" className="space-y-1 rounded-md border border-destructive/30 bg-muted px-3 py-2 text-sm">
+                      <p className="m-0 whitespace-pre-wrap">{recoveryError}</p>
+                      <p className="m-0 text-muted-foreground">合入结果待恢复确认，普通合入已停用。仍可查看 diff 或提交意见。</p>
+                    </div>
+                  )}
                   {mergeError && <div className="whitespace-pre-wrap text-sm text-rose-600 dark:text-rose-400">{mergeError}</div>}
-                  <div className="flex flex-col gap-2 pt-1">
+                  {legacyReview && <div className="flex flex-col gap-2 pt-1">
                     <Textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} placeholder="打回意见…" />
                     <Button
                       variant="outline"
@@ -422,7 +469,7 @@ export default function TaskPanel(props: { taskId: string; onClose?: () => void;
                     >
                       提交意见并重跑
                     </Button>
-                  </div>
+                  </div>}
                 </>
               )}
             </div>

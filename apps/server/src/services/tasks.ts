@@ -7,7 +7,7 @@ import {
   AnvilErrorCode,
   canonicalJsonHash,
 } from "@anvil/core";
-import type { Issue, Task, TaskComment, TaskPackage, ReviewPacketStatus, V2CompleteResponse } from "@anvil/core";
+import type { Issue, Task, TaskComment, TaskPackage, RepositorySnapshot, ReviewPacketStatus, V2CompleteResponse } from "@anvil/core";
 import { validateCompleteEvidence, redactVerification, persistVerification, getDeliveryReport, deriveCompletedPacketStatus } from "./delivery.js";
 
 /** SQLite 没有原生 boolean;raw SQL 读出的 worktree_clean 是 0/1/null。
@@ -21,6 +21,51 @@ function normalizeTaskRow(row: Record<string, unknown>): Record<string, unknown>
 }
 
 export const LEASE_MS = 2 * 60 * 1000;
+
+/** 已绑定 Task 只能消费入队时的快照；损坏/部分绑定不能退回可变 Issue。 */
+function readRepositorySnapshot(task: Task): RepositorySnapshot | null {
+  if (!task.repository_id && !task.repository_snapshot_json && !task.source_snapshot_id) return null;
+  let snapshot: RepositorySnapshot;
+  try { snapshot = JSON.parse(task.repository_snapshot_json ?? "null"); }
+  catch { throw new Error("任务仓库快照损坏，请重新执行"); }
+  const validText = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+  if (!snapshot || snapshot.schema_version !== 1 || !validText(snapshot.repository_id)
+    || snapshot.repository_id !== task.repository_id || !["local_git", "github_pr"].includes(snapshot.mode)
+    || ![snapshot.host, snapshot.external_id, snapshot.full_name, snapshot.clone_url, snapshot.target_branch, snapshot.checkout_path].every(validText)
+    || !snapshot.identity || !validText(snapshot.identity.real_path)
+    || typeof snapshot.identity.dev !== "string" || !/^\d+$/.test(snapshot.identity.dev)
+    || typeof snapshot.identity.ino !== "string" || !/^\d+$/.test(snapshot.identity.ino)
+    || snapshot.source_snapshot_id !== (task.source_snapshot_id ?? null)
+    || !(snapshot.starting_commit === undefined || typeof snapshot.starting_commit === "string" && /^[a-f0-9]{40}$/i.test(snapshot.starting_commit))
+    || !(snapshot.source_snapshot_id === null || validText(snapshot.source_snapshot_id))
+    || !snapshot.input || typeof snapshot.input.title !== "string"
+    || !(snapshot.input.description === null || typeof snapshot.input.description === "string")
+    || !(snapshot.input.acceptance === null || typeof snapshot.input.acceptance === "string")) {
+    throw new Error("任务仓库快照缺失或与任务不一致，请重新执行");
+  }
+  return snapshot;
+}
+
+function issueForTask(issue: Issue, snapshot: RepositorySnapshot | null): Issue {
+  if (!snapshot) return issue;
+  return {
+    ...issue, ...snapshot.input, repo_path: snapshot.checkout_path,
+    repository_id: snapshot.repository_id, source_snapshot_id: snapshot.source_snapshot_id,
+  };
+}
+
+/** 不给旧任务猜仓库身份，也不自动重试出另一条同样缺快照的任务。 */
+function rejectQueuedSnapshot(db: Db, task: Task, error: string): void {
+  db.$client.transaction(() => {
+    const updated = db.$client.prepare(`UPDATE tasks SET status='failed',failure_reason=NULL,error=?,completed_at=?,
+      task_token_hash=NULL,lease_expires_at=NULL WHERE id=? AND status='queued'`)
+      .run(error, new Date().toISOString(), task.id);
+    if (updated.changes === 1) {
+      addComment(db, task.issue_id, { author_type: "system", author_id: "system", type: "system", body: error });
+      syncAgentIdle(db, task.agent_id);
+    }
+  }).immediate();
+}
 
 /** A03 · 读 runtime 行(daemon plane ownership 反查需要)。 */
 export function getRuntimeById(db: Db, runtimeId: string) {
@@ -111,12 +156,17 @@ export function validateStartAnchors(
     delivery_contract_version?: number | null;
   },
 ): { ok: true } | { ok: false; http: number; code: AnvilErrorCode; message: string; details: Record<string, unknown> } {
+  let repositorySnapshot: RepositorySnapshot | null;
+  try { repositorySnapshot = readRepositorySnapshot(task); }
+  catch (error) {
+    return { ok: false, http: 409, code: "base_mismatch", message: (error as Error).message, details: { task_id: task.id } };
+  }
   const hasAnyAnchor =
     payload.task_branch != null || payload.target_branch != null ||
     payload.base_commit != null || payload.delivery_contract_version != null;
 
   // 兼容模式:全 null,放行
-  if (!hasAnyAnchor) return { ok: true };
+  if (!hasAnyAnchor && !repositorySnapshot) return { ok: true };
 
   // 至少一项存在 → 必须是完整 v2
   if (payload.task_branch == null || payload.target_branch == null ||
@@ -175,6 +225,13 @@ export function validateStartAnchors(
       ok: false, http: 400, code: "invalid_schema",
       message: "delivery_contract_version 与 Task 已存值不一致",
       details: { task_value: task.delivery_contract_version, payload_value: payload.delivery_contract_version },
+    };
+  }
+
+  if (repositorySnapshot && payload.target_branch !== repositorySnapshot.target_branch) {
+    return {
+      ok: false, http: 409, code: "base_mismatch", message: "目标分支与 Task 入队快照不一致",
+      details: { field: "target_branch", task_value: repositorySnapshot.target_branch, payload_value: payload.target_branch },
     };
   }
 
@@ -476,7 +533,8 @@ function syncAgentIdle(db: Db, agentId: string) {
  * 逐个用单条 UPDATE ... WHERE status='queued' 判赢（better-sqlite3 同步执行 + SQLite 单写者，
  * 语义等价 FOR UPDATE SKIP LOCKED）。认领前检查 agent 并发上限。
  *
- * A04-FIX1 · 跨 Task 锚点接力:
+ * T01：绑定 Task 消费不可变输入，采用新工作树，不从其他 Task 猜测续作。
+ * A04-FIX1 · 未绑定历史任务继续沿用跨 Task 锚点接力:
  *  - Git 仓库任务:优先读 prior Task 的 task_branch / target_branch / base_commit,
  *    全部完整且合法时,在认领 UPDATE 中一并 SET 到当前 Task;prior_work_dir 一并下发。
  *    当前 Task 已存锚点与 prior 一致时允许补齐缺失字段;不一致则拒绝继承
@@ -508,24 +566,37 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
       .get(cand.agent_id) as any;
     if (running.n >= agent.max_concurrent_tasks) continue;
 
+    const currentIssue = getIssue(db, cand.issue_id)!;
+    let repositorySnapshot: RepositorySnapshot | null;
+    try { repositorySnapshot = readRepositorySnapshot(cand); }
+    catch (error) {
+      rejectQueuedSnapshot(db, cand, (error as Error).message);
+      continue;
+    }
+    if (!repositorySnapshot && currentIssue.repository_id) {
+      rejectQueuedSnapshot(db, cand, "旧任务缺仓库快照，请重新执行");
+      continue;
+    }
+    const frozenIssue = issueForTask(currentIssue, repositorySnapshot);
+
     const runtime = db.$client
       .prepare(`SELECT * FROM runtimes WHERE workspace_id = ? AND daemon_id = ? AND provider = ? AND status = 'online'`)
       .get(workspaceId, daemonId, agent.provider) as any;
     const taskToken = `atk_${crypto.randomBytes(24).toString("hex")}`;
     const lease = new Date(Date.now() + LEASE_MS).toISOString();
     const now = new Date().toISOString();
-    // A04-FIX1 · 读 prior Task 的 Git 锚点(只为判定继承,不当成完成证据使用)。
+    // 绑定 Task 暂按 fresh 执行；历史未绑定任务继续读取 prior 的 Git 锚点。
     // 故意只 SELECT 锚点字段,不读 head_commit / verification_* / 任何 hash / response_json:
     // 这些是完成证据,本次认领不得复制。
-    const prior = db.$client
+    const prior = repositorySnapshot ? null : db.$client
       .prepare(`SELECT work_dir, task_branch, target_branch, base_commit
                 FROM tasks WHERE issue_id = ? AND id != ? AND work_dir IS NOT NULL
+                  AND repository_id IS NULL AND repository_snapshot_json IS NULL
                 ORDER BY created_at DESC LIMIT 1`)
       .get(cand.issue_id, cand.id) as any;
 
     // 计算继承决策:issue.repo_path 决定本次任务是 Git 还是普通目录
-    const issueForType = getIssue(db, cand.issue_id);
-    const issueHasRepo = !!issueForType?.repo_path;
+    const issueHasRepo = !!frozenIssue.repo_path;
     let priorWorkDir: string | null = null;
     let inheritTaskBranch: string | null = null;
     let inheritTargetBranch: string | null = null;
@@ -578,7 +649,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
 
     // 重新读取以反映继承后的真实状态(anchors 已落库)
     const task = getTask(db, cand.id)!;
-    const issue = getIssue(db, cand.issue_id)!;
+    const issue = frozenIssue;
     // issue 最近 10 条评论随任务包下发（组 prompt 用）；rowid 作 created_at 同毫秒的决胜序，返回反转为时间正序
     const comments = (db.$client
       .prepare(`SELECT author_type, body, created_at FROM comments WHERE issue_id = ?
@@ -610,18 +681,21 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
     db.$client
       .prepare(`INSERT INTO tasks
                 (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                 parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                 parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit,
+                 repository_id,repository_snapshot_json,source_snapshot_id,created_at)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(newId(), task.workspace_id, task.issue_id, task.agent_id,
            task.priority, task.attempt + 1, task.max_attempts,
            task.id, DELIVERY_CONTRACT_CURRENT_VERSION,
            // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
            // 不得覆盖已有的不一致锚点,也不得继承 head_commit / verification_* /
            // 任何 payload hash / response_json 等完成证据。
-           task.task_branch, task.target_branch, task.base_commit, now);
+           // T01 绑定任务只保留原输入并 fresh；上述锚点继承限于旧未绑定任务。
+           task.repository_id ? null : task.task_branch, task.repository_id ? null : task.target_branch, task.repository_id ? null : task.base_commit,
+           task.repository_id ?? null, task.repository_snapshot_json ?? null, task.source_snapshot_id ?? null, now);
     addComment(db, task.issue_id, {
       author_type: "system", author_id: "system", type: "system",
-      body: `任务失败(${reason}),自动重试 ${task.attempt + 1}/${task.max_attempts}`,
+      body: `任务失败(${reason}),自动重试 ${task.attempt + 1}/${task.max_attempts}${task.repository_id ? "；保留原始输入并使用新工作树，避免继承失效基线" : ""}`,
     });
   })();
 }
@@ -1114,17 +1188,20 @@ export function runFailInTransaction(
         db.$client
           .prepare(`INSERT INTO tasks
                     (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                     parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
-                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                     parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit,
+                     repository_id,repository_snapshot_json,source_snapshot_id,created_at)
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(newId(), cur.workspace_id, cur.issue_id, cur.agent_id,
                cur.priority, cur.attempt + 1, cur.max_attempts,
                cur.id, DELIVERY_CONTRACT_CURRENT_VERSION,
                // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
                // 不得继承 head_commit / verification_* / 任何 hash / response_json。
-               cur.task_branch, cur.target_branch, cur.base_commit, now);
+               // T01 绑定任务只保留原输入并 fresh；上述锚点继承限于旧未绑定任务。
+               cur.repository_id ? null : cur.task_branch, cur.repository_id ? null : cur.target_branch, cur.repository_id ? null : cur.base_commit,
+               cur.repository_id ?? null, cur.repository_snapshot_json ?? null, cur.source_snapshot_id ?? null, now);
         addComment(db, cur.issue_id, {
           author_type: "system", author_id: "system", type: "system",
-          body: `任务失败(${persisted.failure_reason}),自动重试 ${cur.attempt + 1}/${cur.max_attempts}`,
+          body: `任务失败(${persisted.failure_reason}),自动重试 ${cur.attempt + 1}/${cur.max_attempts}${cur.repository_id ? "；保留原始输入并使用新工作树，避免继承失效基线" : ""}`,
         });
       }
     }

@@ -30,6 +30,7 @@ export interface Issue {
   assignee_type: "member" | "agent" | null; assignee_id: string | null;
   creator_type: "member" | "agent"; creator_id: string;
   repo_path: string | null; position: number;
+  repository_id?: string | null; source_snapshot_id?: string | null;
   created_at: string; updated_at: string;
 }
 
@@ -59,6 +60,10 @@ export interface Task {
   complete_response_json: string | null;
   fail_payload_hash: string | null;
   fail_response_json: string | null;
+  /** 历史任务为 null；绑定任务在入队时固定仓库与输入，不能随 Issue 修改。 */
+  repository_id?: string | null;
+  repository_snapshot_json?: string | null;
+  source_snapshot_id?: string | null;
 }
 
 export interface Comment {

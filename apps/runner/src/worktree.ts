@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isRepoUrl, repoCachePath, type Issue } from "@anvil/core";
+import { isRepoUrl, repoCachePath, type Issue, type RepositorySnapshot } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import { ensureRepoCache } from "./repocache.js";
 
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, {
+    execFile("git", ["--no-replace-objects", ...args], {
       cwd, windowsHide: true, timeout: 30_000,
       // 无凭据时立即失败而非挂到超时:禁终端密码提示与 GCM 交互弹窗
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
@@ -437,8 +438,12 @@ export async function prepareWorkdir(
   runnerRoot: string,
   priorWorkDir: string | null,
   savedAnchors: SavedAnchors | null = null,
+  repositorySnapshot: RepositorySnapshot | null = null,
 ): Promise<PreparedWorkdir> {
   await ensureGitAvailable();
+  if (repositorySnapshot) {
+    return createBoundGitWorkdir(repositorySnapshot, taskId, runnerRoot, priorWorkDir, savedAnchors);
+  }
   // 第一次决定 workDir 来源(复用 vs 新建)
   const short = taskId.slice(0, 8);
   const base = path.join(runnerRoot, "worktrees");
@@ -590,6 +595,64 @@ async function createFreshGitWorkdir(
   const { targetBranch, baseCommit } = await resolveLocalRepoAnchors(repoPath);
   await git(repoPath, ["worktree", "add", "-b", taskBranch, freshDir, baseCommit]);
   return { workDir: freshDir, taskBranch, targetBranch, baseCommit, resumed: false };
+}
+
+/** 绑定任务只从冻结仓库及明确目标创建新工作树；锁不跨 Agent 执行或终检。 */
+async function createBoundGitWorkdir(
+  snapshot: RepositorySnapshot,
+  taskId: string,
+  runnerRoot: string,
+  priorWorkDir: string | null,
+  savedAnchors: SavedAnchors | null,
+): Promise<PreparedWorkdir> {
+  if (priorWorkDir !== null || hasAnySavedAnchor(savedAnchors)) {
+    throw new Error("绑定任务必须使用新工作树，不能继承 prior_work_dir 或旧 Git 锚点");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(taskId)) throw new Error("绑定任务 ID 不能安全用于工作树和分支名");
+  if (!snapshot.identity.real_path || typeof snapshot.identity.dev !== "string" || typeof snapshot.identity.ino !== "string"
+    || !/^\d+$/.test(snapshot.identity.dev) || !/^\d+$/.test(snapshot.identity.ino)) {
+    throw new Error("仓库身份必须包含真实路径与无损十进制文件标识");
+  }
+  const expected: GitCommonDirId = {
+    realPath: snapshot.identity.real_path,
+    path: canonicalizePathForCompare(snapshot.identity.real_path),
+    dev: BigInt(snapshot.identity.dev), ino: BigInt(snapshot.identity.ino),
+  };
+  const checkout = snapshot.checkout_path;
+  const initial = await readGitCommonDir(checkout);
+  const assertIdentity = (actual: GitCommonDirId) => {
+    if (!reposEqualById(actual, expected) || !reposEqualById(actual, initial)) {
+      throw new Error("绑定仓库身份与 Task 原始快照不一致，禁止创建工作树");
+    }
+  };
+  assertIdentity(initial);
+  return withGitLock(initial.realPath, async () => {
+    // 获取锁期间 checkout 可能被替换；任何 fetch/worktree add 前再次读取文件标识。
+    assertIdentity(await readGitCommonDir(checkout));
+    await git(checkout, ["check-ref-format", `refs/heads/${snapshot.target_branch}`]);
+    if (snapshot.mode === "github_pr") {
+      const normalized = (address: string) => address.replace(/^git@([^:]+):/, "https://$1/").replace(/^ssh:\/\/git@/, "https://").replace(/\.git\/?$/, "").replace(/\/$/, "").toLowerCase();
+      // 绑定阶段已以 API 稳定 ID 核对 checkout；改名后 origin 可以仍是旧地址。
+      // 始终使用冻结的明确地址，既不依赖也不修改 origin。
+      const effective = await git(checkout, ["ls-remote", "--get-url", snapshot.clone_url]);
+      if (normalized(effective) !== normalized(snapshot.clone_url)) throw new Error("Git URL 重写与原始绑定不一致");
+      await git(checkout, ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", "fetch", "--no-tags", "--", snapshot.clone_url, `+refs/heads/${snapshot.target_branch}:refs/remotes/origin/${snapshot.target_branch}`]);
+      assertIdentity(await readGitCommonDir(checkout));
+    }
+    const targetRef = snapshot.mode === "github_pr" ? `refs/remotes/origin/${snapshot.target_branch}` : `refs/heads/${snapshot.target_branch}`;
+    const baseCommit = await readFullShaOfRef(checkout, targetRef);
+    const taskBranch = `task/${taskId}`;
+    const freshDir = path.join(runnerRoot, "worktrees", taskId);
+    fs.mkdirSync(path.dirname(freshDir), { recursive: true });
+    assertIdentity(await readGitCommonDir(checkout));
+    const startingCommit = snapshot.starting_commit ?? baseCommit;
+    assertFullSha1("starting_commit", startingCommit);
+    await git(checkout, ["cat-file", "-e", `${startingCommit}^{commit}`]);
+    await git(checkout, ["worktree", "add", "-b", taskBranch, freshDir, startingCommit]);
+    assertIdentity(await readGitCommonDir(freshDir));
+    if (await readWorktreeHead(freshDir, taskBranch) !== startingCommit) throw new Error("新工作树 HEAD 与冻结起点不一致");
+    return { workDir: freshDir, taskBranch, targetBranch: snapshot.target_branch, baseCommit, resumed: false };
+  });
 }
 
 /** A04 · 固定 base..head diff 范围。

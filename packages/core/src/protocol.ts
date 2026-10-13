@@ -26,7 +26,13 @@ export interface LatestTaskSummary {
 }
 export interface IssueWithTask extends Issue { latest_task: LatestTaskSummary | null; }
 
-export interface TaskDiffResponse { branch: string; base: string; diff_stat: string; diff_text: string; truncated: boolean; }
+export interface TaskDiffResponse {
+  branch: string; base: string; diff_stat: string; diff_text: string; truncated: boolean;
+  /** v1 为历史浮动比较；v2 的全文与统计均来自保存的完整提交。 */
+  delivery_contract_version?: 1 | 2;
+  base_commit?: string | null;
+  head_commit?: string | null;
+}
 export interface MergeResponse { ok: true; merged_branch: string; target: string; }
 
 export interface MessageBatchItem extends AgentMessage { seq: number; }
@@ -44,10 +50,12 @@ export interface ServerEvent { type: ServerEventType; data: unknown; }
 export interface CreateIssueRequest {
   title: string; description?: string; acceptance?: string; priority?: Priority;
   assignee_type?: "member" | "agent"; assignee_id?: string; repo_path?: string;
+  repository_id?: string;
 }
 export interface UpdateIssueRequest {
   title?: string; description?: string; acceptance?: string; status?: IssueStatus; priority?: Priority;
   assignee_type?: "member" | "agent" | null; assignee_id?: string | null; repo_path?: string | null;
+  repository_id?: string | null;
 }
 
 // ----------------------------------------------------------------------------

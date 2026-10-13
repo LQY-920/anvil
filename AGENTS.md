@@ -2,11 +2,11 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
-协作者入门先读 `docs/TASKS.md`、`docs/prds/COMMON.md`、`CONTRIBUTING.md`。2026-10-10 按用户要求移除总 PRD v0.2，改为六项独立 PRD、测试用例和交接记录；认领与细节进度在 `docs/handoffs/`。T01 Git/GitHub 与 T02 Codex 可并行独立验收，J01 联合验收后再进入 T03 Factory；后续方向看总清单，不按旧 M1/M2 排序。当前全部待正式认领。旧 Delivery Loop 的证据/权限语义保留，旧 R2 未通过；H01 计时研究单独跟踪。自审与独立审查分开记录，历史实绩在 `docs/PROGRESS.md`。
+协作者入门先读 `docs/TASKS.md`、`docs/prds/COMMON.md`、`CONTRIBUTING.md`。2026-10-10 按用户要求移除总 PRD v0.2，改为六项独立 PRD、测试用例和交接记录；认领与细节进度在 `docs/handoffs/`。T01 Git/GitHub 与 T02 Codex 可并行独立验收，J01 联合验收后再进入 T03 Factory；后续方向看总清单，不按旧 M1/M2 排序。2026-10-13 T01 已由 LQY-920 通过 PR #2 认领，完整功能已在草稿 PR #3 实现，真实 GitHub 产品验收与合并尚未完成；T02–T06 待认领。旧 Delivery Loop 的证据/权限语义保留，旧 R2 未通过；H01 计时研究单独跟踪。自审与独立审查分开记录，历史实绩在 `docs/PROGRESS.md`。
 
 ## 项目性质
 
-Anvil 是自建的个人 AI Agent 工作台。目标定位是 GitHub 编码协作空间 + 本机 CLI 执行；当前实现仍是 web 看板建 issue → server task → 本机 runner/worktree → Kimi CLI → 消息流与旧版验收。Codex、GitHub Issue/PR 集成、频道/线程和手机访问尚未实现。当前单机单用户，server 绑 `127.0.0.1`，无用户认证（只有 daemon/task token）；不得将其直接暴露为移动服务。
+Anvil 是自建的个人 AI Agent 工作台。目标定位是 GitHub 编码协作空间 + 本机 CLI 执行；当前分支支持仓库绑定/指定 Issue 导入 → server task → 本机 runner/worktree → Kimi CLI → 固定证据审查/裁决 → PR 手动合入与同步，或纯本地交付。Codex、频道/线程和手机访问尚未实现。当前单机单用户，server 绑 `127.0.0.1`，无用户认证（只有 daemon/task token）；不得将其直接暴露为移动服务。
 
 代码注释、UI 文案、提交信息、文档均用中文。
 
@@ -66,20 +66,22 @@ pnpm workspace，四包：
 3. runner `POST /api/daemon/claim` → `claimTasks` 原子认领并下发 **TaskPackage**（task + issue + prior_work_dir + 一次性 task_token + 最近 10 条评论）。
 4. runner `prepareWorkdir` 建 worktree → `startTask` → `backend.execute` spawn CLI → `MessageUploader` 每 500ms 批量上报消息 → `complete` / `fail`。
 5. v2 Agent 提交绑定 HEAD 的 Delivery Report；Runner 终检后由 server 按材料完整性推进人工审查。v1 保留 `issue-status` 回调兼容；v2 Agent 不能自行写 `in_review` 或 `done`。
-6. web 从 `/api/tasks/:id/diff` 看 diff，`POST /api/tasks/:id/merge` 合入（`services/review.ts`）。
+6. web 从 `/api/tasks/:id/diff` 看固定 v2 diff，通过 `/integration` 实时 Gate 和 `/decisions` 提交裁决。绑定任务使用 `/integrate` 本地交付或 `/pull-request` 建立 PR，再人工远端合入与同步；旧 `/merge` 仅保留未绑定 v1 本地兼容，拒绝 GitHub 直推。
 
 ### 必须知道的不变量
 
 - **两种 token，两套 preHandler**（`lib/auth.ts`）：daemon token（`anv_`，库里存 sha256，可吊销）走 `makeDaemonAuth` 并给 request 挂 `workspaceId`；task token（`atk_`，认领时生成、终态清空）走 `makeTaskAuth`。runner 给子进程只注入 task token，`ANVIL_DAEMON_TOKEN` 被显式剔除，且 `redact()` 会把两者从消息流里抹掉。
 - **同 issue 最多一个 pending task**：靠部分唯一索引 `tasks_one_pending_per_issue`（`status IN ('queued','dispatched')`）。`insertQueuedTask` 捕获这个 UNIQUE 错误返回 `null` 表示"已合并进排队任务"——不要把它当异常。running 不受索引限制，所以「评论即指令」是排队接力：当前任务跑完，下一个接上。
 - **进程结束 ≠ 交付**：v1 的 `delivered_at` 来自 `issue-status`，v2 来自成功提交 Delivery Report。runner 对缺报告或报告与当前 HEAD 不一致最多追问 2 轮；最后一轮结束仍须核对，不能把进程成功当成交付成功。
-- **状态自动流转**（`autoAdvanceIssue`）：`start` 且 issue 是 `todo` → `in_progress`；v1 complete 保留 branch 兜底，v2 complete 要求 Report/delivered、Git facts 与 Run 等材料齐全才进入 `in_review`。验证失败仍可人工审查；`in_review` 和完成时 Packet 快照都不等于安全合入，B 阶段实时 Gate 尚待实现。`blocked`/`done` 不抢。
+- **状态自动流转**（`autoAdvanceIssue`）：`start` 且 issue 是 `todo` → `in_progress`；v1 complete 保留 branch 兜底，v2 complete 要求 Report/delivered、Git facts 与 Run 等材料齐全才进入 `in_review`。验证失败仍可人工审查；`in_review` 和完成时 Packet 快照都不等于安全合入，裁决/操作前仍须实时 Gate。`blocked`/`done` 不抢。
 - **租约**：认领即写 `lease_expires_at`（`LEASE_MS` 2 分钟），`app.ts` 里 30s 定时 sweep 过期租约（未满 attempt → 回 `queued`，已满 → `failed/lease_expired`）并同步 `agents.status`。runner 只在 start/complete/fail 时推进，不续租——所以任务执行期间靠的是 `status='running'` 不在 sweep 范围内。
 - **认领是"逐个 UPDATE 判赢"**：`claimTasks` 用 `UPDATE ... WHERE id=? AND status='queued'` 的 `changes===1` 当锁，等价 `FOR UPDATE SKIP LOCKED`。这类需要精确 SQL 的地方（部分索引、原子更新、聚合）直接用 `db.$client.prepare()`；简单 CRUD 用 drizzle。两种写法在服务层共存是有意的。
 - **Hub 两个池**：`broadcast` 给 web（`issue.updated` / `task.updated` / `task.message`），`hintDaemons` 给 runner。`runtime.updated` 在类型里声明了但没有发送方。
 - **消息 seq 严格连续**：`appendTaskMessages` 要求 `items[0].seq === last_seq+1`，否则 409 带 `last_seq`；uploader 收到 409 按 `last_seq` 裁掉重发。
 
 ### runner 侧细节
+
+- 绑定任务固定 `repository_snapshot_json` 与接受的来源输入，Server/Runner 共用 Core 的跨进程 common-dir Git 锁。新 Task 创建独立工作树，不复用旧锚点；开放 PR 返工可从冻结 `starting_commit` 继续，但仍读取最新明确目标基线并重新验证。GitHub fetch 使用快照的明确 clone URL，绑定任务不由 Runner push；Agent 环境剔除 GitHub 连接凭据。
 
 - 工作区（`worktree.ts`）：`repo_path` 是本地路径 → 直接 `git worktree add -b task/<short8>`；是 URL（`isRepoUrl`：http(s)/file/git@）→ 先 `ensureRepoCache` 落到 `~/.anvil/repos/<sha1前12位>`（clone/fetch/ff、per-URL 互斥、残骸自愈）再从缓存建 worktree；无 repo_path → 普通空目录。`prior_work_dir` 存在则复用并 `resume`（`kimi -c`），此时会 `rev-parse` 读回分支名，否则 `result_json` 丢分支、验收区不显示。
 - prompt 组装（`executor.ts`）：目标契约四段（目标 / 完成标准 / 平台回调 / 边界与停止规则）+ 最近评论 + 仓库根 `ANVIL.md` 常驻指引（8192 字符截断）。改 prompt 结构要同步 `apps/runner/test` 里的断言。

@@ -195,6 +195,31 @@ describe("executor", () => {
     expect(capturedEnv!["ANVIL_TASK_ID"]).toBe(pkg.task.id);
   });
 
+  it("GitHub 连接环境变量及值别名不进入 Agent，Provider 普通环境仍保留", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setup();
+    const names = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "ANVIL_TEST_TOKEN_ALIAS", "ANVIL_TEST_PROVIDER_VALUE"];
+    const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+    for (const name of names.slice(0, 4)) process.env[name] = `fake-connection-secret-${name}`;
+    process.env.ANVIL_TEST_TOKEN_ALIAS = `alias:${process.env.GH_TOKEN}`;
+    process.env.ANVIL_TEST_PROVIDER_VALUE = "provider-config";
+    let captured: Record<string, string> = {};
+    const backend: AgentBackend = { provider: "kimi", execute(opts) { captured = opts.env; return { messages: (async function* () {})(), result: Promise.resolve({ status: "completed", exitCode: 0 }), kill() {} }; } };
+    try { await executeTask({ client, backend, runnerRoot, daemonId }, pkg); }
+    finally { for (const name of names) { if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name]; } }
+    for (const name of names.slice(0, 5)) expect(captured[name]).toBeUndefined();
+    expect(captured.ANVIL_TEST_PROVIDER_VALUE).toBe("provider-config");
+    expect(captured.ANVIL_TOKEN).toBe(pkg.task_token);
+  });
+
+  it("损坏的绑定快照在启动 Agent 前失败，不降级使用 Issue 路径", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setup();
+    pkg.task.repository_snapshot_json = "{坏快照";
+    const backend = fakeBackend("success"), execute = vi.spyOn(backend, "execute");
+    await executeTask({ client, backend, runnerRoot, daemonId }, pkg);
+    expect(execute).not.toHaveBeenCalled();
+    expect((await app.inject(`/api/tasks/${pkg.task.id}`)).json().task).toMatchObject({ status: "failed", work_dir: null });
+  });
+
   it("buildPrompt follows goal-contract structure with issue acceptance", () => {
     const p = buildPrompt({ title: "标题", description: "描述", acceptance: "1. 单测通过\n2. 已 commit" } as any, { id: "t1" } as any);
     expect(p).toContain("# 目标\n标题");

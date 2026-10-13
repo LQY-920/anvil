@@ -21,6 +21,9 @@ vi.mock("../src/api.js", () => ({
   updateIssue: vi.fn(),
   rerunIssue: vi.fn(),
   getGuidance: vi.fn(async () => ({ found: false })),
+  listRepositories: vi.fn(async () => []),
+  getIssueSource: vi.fn(async () => null),
+  apiErrorText: (error: Error) => error.message,
 }));
 
 vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
@@ -28,6 +31,18 @@ vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
 afterEach(cleanup);
 
 describe("BoardPage", () => {
+  it("新建 Issue 选择绑定仓库时只发送 repository_id，不沿用自由路径", async () => {
+    vi.mocked(api.listRepositories).mockResolvedValueOnce([{ id: "r1", full_name: "owner/repo", mode: "github_pr", target_branch: "main" } as any]);
+    render(<MemoryRouter><BoardPage /></MemoryRouter>);
+    await screen.findByText("修 bug"); fireEvent.click(screen.getByText("新建 Issue"));
+    fireEvent.change(screen.getByPlaceholderText(/目标仓库/), { target: { value: "D:/old-path" } });
+    await screen.findByRole("option", { name: /owner\/repo/ });
+    fireEvent.change(screen.getByLabelText("绑定仓库"), { target: { value: "r1" } });
+    fireEvent.change(screen.getByPlaceholderText("输入任务标题..."), { target: { value: "已绑定任务" } });
+    fireEvent.click(screen.getByText("创建任务"));
+    await waitFor(() => expect(api.createIssue).toHaveBeenCalledWith(expect.objectContaining({ title: "已绑定任务", repository_id: "r1" })));
+    const body = vi.mocked(api.createIssue).mock.calls.at(-1)![0]; expect(body).not.toHaveProperty("repo_path");
+  });
   it("renders issue in its status column with agent name", async () => {
     render(<MemoryRouter><BoardPage /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("修 bug")).toBeTruthy());

@@ -1,6 +1,6 @@
 # T01 · Git/GitHub 技术设计与实施顺序
 
-日期：2026-10-13（Asia/Shanghai）。状态：开工设计提案，认领待共享，代码未开始。负责人：LQY-920；实施工具：Codex。本文细化实现，不更改 PRD 的验收范围。
+日期：2026-10-13（Asia/Shanghai）。状态：认领 PR #2 已合入，S1–S4 完整功能已实现；`4859fa9` 全量 1011 条、build、四包 noEmit 与独立静态审查通过，S5 真实账号产品验收待执行。负责人：LQY-920；实施工具：Codex。本文细化实现，不更改 PRD 的验收范围。代码起点为 `75dfde454f653376c3dac10224e44bc734ee75a0`。
 
 依据：[PRD v1.0](../prds/T01-git-github.md)、[公共边界 v1.0.1](../prds/COMMON.md)、[交接](../handoffs/T01.md)、[12 条用例](../tests/tasks/T01-testcases.md)。准备基线：`3bfd8ba81a7824fbbfbedbb2c6413e3c8035b853`。PRD SHA-256：`B6A29223757A3F09BF901102CE0E1ED8D8F0A1E642479F7B562C7B62BB21C819`。
 
@@ -10,7 +10,7 @@
 
 先让认领文档进入共享 main，再建立代码分支并记录实际 SHA。文档申请与实现分开提交；不在当前认领分支混入产品代码。T02 可独立推进，Provider 私有输出不属于 T01。T03 等待 T01/T02 独立验收及 J01。
 
-当前可立即完成的准备是认领、代码事实核对、需求/设计审查与测试映射。真实 GitHub 验收还需明确试验仓库和写入范围；准备/认领 PR 不计作 Anvil 产品真实闭环。
+认领、代码事实核对、需求/设计审查与测试映射已共享。真实 GitHub 验收还需明确试验仓库和写入范围；准备/认领 PR 不计作 Anvil 产品真实闭环。
 
 ## 2. 已确认的代码边界
 
@@ -73,7 +73,9 @@
 - push 拒绝或响应未知不会 done/清现场，二次请求不会合入新 HEAD；原合入成功/冲突、空 JSON body、计时失败排除语义继续有效。
 - 明确首段尚未实现的身份替换、完整 Gate、Decision 与 GitHub PR，用例保持未完成或部分覆盖。
 
-## 6. 后续契约的最低约束
+2026-10-13 实施调整：成功后保留任务分支/worktree，保证历史 Diff 仍可读取且不误删后来的修改；S1 暂无清理按钮。独立审查指出 porcelain 为空不代表没有未结束的 Git 操作，且无条件 abort 可能撤销用户现场，因此增加操作标记检查，冲突改为保留现场并要求核对，不自动 abort。S1 不提供自动恢复，也不把持久仓库守卫宣称为已接通 Runner 的临界锁。错误 HTTP 与持久记录使用同一个脱敏函数；Git 禁用 replacement objects，避免完整 SHA 被 refs/replace 改变内容语义。
+
+## 6. S2–S4 契约的最低约束
 
 - Repository/SourceSnapshot：同 host+repo ID 唯一；导入按外部 Issue ID 幂等，不自动派发。Task 固定接受的来源版本，上游变化提示差异。
 - Gate：Decision 提交前及实际操作持锁后分别核对 Task、branch、HEAD、Report、Verification、clean、base/target 和仓库身份。临界锁按 common-dir 跨 Server/Runner 进程协调；不跨 Agent 执行或人类等待持锁。先做崩溃/过期锁测试，不以进程内 Promise 当跨进程锁。
@@ -85,11 +87,13 @@
 
 ## 7. 验证与审查记录
 
-本轮是文档准备。2026-10-13 较早的状态核验发现 Server 全量一条 5 秒超时、单文件 11/11 通过；Core/Web/补测 Runner、build、四包 noEmit 通过。此为准备基线事实，不是本次 T01 产品用例结果；正式代码合入前须在实际 SHA 上取得完整门槛通过，不修改超时掩盖问题。
+准备阶段历史：2026-10-13 较早的状态核验发现 Server 全量一条 5 秒超时、单文件 11/11 通过；Core/Web/补测 Runner、build、四包 noEmit 通过。此为准备基线事实，不是 T01 产品用例结果；后续成功不覆盖历史失败记录。
+
+S1 代码 `bee982a`：专项及独立静态审查后，串行执行全量 46 文件/903 用例、build、四包 noEmit 全部通过。没有修改旧用例的 5 秒超时；新增多步真实 Git 场景明确 15 秒上限。完整运行记录、首轮错误和修复见 [T01 用例](../tests/tasks/T01-testcases.md)。S1 没有完成 Repository/Decision/PR/同步或真实外部验收。
 
 代码阶段依次运行相关专项、`pnpm test`、`pnpm build`、四包 `pnpm exec tsc --noEmit -p tsconfig.json`，不得叠加执行。真实 Git 使用临时仓库；真实 GitHub 使用另行明确授权的测试仓库。用例须记录 SHA、环境、命令、日期和结果。
 
-主会话自审与只读 Agent 的需求/设计审查分开记录；设计审查不是代码独立审查、GitHub 人类审批或产品验收。当前没有通过的 T01 产品用例，没有远端写入或迁移运行库。
+主会话自审与只读 Agent 的需求/设计/代码审查分开记录；设计或代码审查不是 GitHub 人类审批或产品验收。S1 仅有部分子场景通过；远端操作为认领 PR，不属于产品验收；迁移只在临时库测试，未迁移运行库。
 
 | 日期 / 审查者 | 范围与结论 | 本轮处理 |
 |---|---|---|
@@ -98,3 +102,19 @@
 | 2026-10-13 implementation_audit，只读 Agent | 独立源码边界审查；缺不可变身份，push 失败后重复 merge，branch-only v2 测试夹具不适合作 legacy | S1b 采用持久意图与恢复阻塞；S2 补身份；扩展响应而不改变 base 语义 |
 
 定稿复核：plan_readiness 对四份认领/设计/用例文档给出通过结论；implementation_audit 要求补清 task_id 级恢复守卫和实际 merge 的固定 SHA，两项已纳入 S1b。主会话核对修订与意见一致；没有将文档审查记为产品代码通过。
+
+## 8. 完整实现冻结点（2026-10-13）
+
+S1–S4 已在 `fcbf53c` 整合；上述分段记录保留当时的范围和结果，当前功能与测试以 [交接](../handoffs/T01.md)、[测试记录](../tests/tasks/T01-testcases.md) 为准。PRD v1.0/hash 未改变；以下为拟议接口的实现定稿，不扩展需求范围。
+
+- Core `integration.ts` 为 Repository、SourceSnapshot、Task 快照、ReviewGate、Decision、DeliveryOperation 和 PR 唯一协议。迁移 0005 仅新增表与 nullable 字段；旧任务不补造绑定或证据。Task 在入队时冻结接受的来源与仓库，claim、自动重试与 Runner 都读取该快照。
+- `git-lock.ts` 以 common-dir 的目录锁协调 Server/Runner 进程；活 PID 不抢占，死进程恢复核对 nonce，无法证明所有者时保守阻塞。临界操作用锁，Agent 执行和人工审查不持锁。
+- 后端通过 `@anvil/core/git-lock` 子入口导入文件锁；浏览器使用的 Core 根入口不再导出该 Node 模块。生产构建错误与修复绑定 `4859fa9`，锁算法不变。
+- `gh api` 客户端限制主机、路径和 GET/POST；不读取 token、不自动合入或改保护。轮询 60 秒、手动刷新 10 秒；每仓库每轮最多 20 个来源与 10 个 PR，轮转同步；普通错误有界指数退避 60 秒至 1 小时，限流遵循 Retry-After/重置时间。
+- 操作接口同步返回持久 DeliveryOperation，`GET /integration` 查询最新事实。PR 创建可先于 Decision，允许质量阻塞但拒绝完整性阻塞。Decision 与实际交付分开；本地合入必须已有有效批准。
+- 仓库改绑与 Issue 改绑参与 common-dir 锁，push 和 POST 前再次读取 Gate；只向显式 clone URL 推送固定 SHA，检查 insteadOf/pushInsteadOf，禁止强推。Runner 对绑定任务只准备工作树，不自动 push。
+- 开放 PR 返工仍创建独立 Task/worktree/branch；快照可含 `starting_commit` 继续原 PR 提交，最新目标为新 base。Gate 要求 base 可达；Agent 整合新基线后重新 Report/验证，再非强推更新原 PR 分支。
+- prepared/unknown/failed 仅最新操作可恢复；恢复创建新 Attempt，使用持久 intent 的原 head/version/PR 分支和 marker。响应丢失后先查远端，多个候选不猜测。终态 PR 恢复允许以去掉目标当前 SHA 的稳定证据指纹核对其余证据，只恢复关联，不重新推送或创建。
+- 本地 Git 成功后若数据库收尾失败，核对记录 merge SHA 或原 base/head 双亲后恢复。收尾事务重检最新 Task/绑定，旧操作成功不得将新工作标 done。Decision 不重复创建，旧尝试留作历史。
+
+主会话自审后，`t01_final_audit` 独立只读审查的 7 项缺陷均修复并复核关闭；`t01_acceptance_docs_check` 独立核对用户指南并补清验证策略必须提前提交到目标分支。审查不替代自动化或真实账号验收；TC12、所有者确认、合并/部署与 J01 分别记录。

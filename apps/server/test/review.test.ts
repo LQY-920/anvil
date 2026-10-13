@@ -49,7 +49,7 @@ async function createIssue(payload: Record<string, unknown> = {}) {
 async function completeTaskWithResult(issueId: string, result: Record<string, unknown>): Promise<string> {
   const tasks = await app.inject({ method: "GET", url: `/api/issues/${issueId}/tasks` });
   const taskId = tasks.json()[0].id;
-  app.db.prepare(`UPDATE tasks SET status='completed', result_json=?, completed_at=? WHERE id=?`)
+  app.db.prepare(`UPDATE tasks SET status='completed', delivery_contract_version=1, result_json=?, completed_at=? WHERE id=?`)
     .run(JSON.stringify(result), new Date().toISOString(), taskId);
   return taskId;
 }
@@ -138,7 +138,19 @@ describe("GET /api/tasks/:id/diff", () => {
 });
 
 describe("POST /api/tasks/:id/merge", () => {
-  it("成功：合入 main、issue 置 done、分支被清理", async () => {
+  it("历史独立 checkout 的旧 GitHub 地址即使重定向到新名称也不能经旧入口直推", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    gitR(repo, ["remote", "add", "origin", "git@github.com:old-owner/old-name.git"]);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    const before = gitR(repo, ["rev-parse", "HEAD"]);
+    const response = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("github_pr_required");
+    expect(gitR(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(app.db.prepare("SELECT count(*) AS n FROM integration_attempts").get()).toEqual({ n: 0 });
+  });
+  it("成功：合入 main、issue 置 done、保留分支并幂等返回", async () => {
     const repo = makeRepo();
     makeTaskBranch(repo);
     const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
@@ -150,8 +162,15 @@ describe("POST /api/tasks/:id/merge", () => {
     expect(fs.readFileSync(path.join(repo, "file.txt"), "utf8")).toContain("line2");
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
     expect(detail.json().issue.status).toBe("done");
-    expect(gitR(repo, ["branch", "--list", "task/test123"])).toBe("");
-  });
+    expect(gitR(repo, ["branch", "--list", "task/test123"])).toContain("task/test123");
+    const head = gitR(repo, ["rev-parse", "HEAD"]);
+    const comments = app.db.prepare("SELECT COUNT(*) AS n FROM comments WHERE issue_id=?").get(issue.id);
+    const replay = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(res.json());
+    expect(gitR(repo, ["rev-parse", "HEAD"])).toBe(head);
+    expect(app.db.prepare("SELECT COUNT(*) AS n FROM comments WHERE issue_id=?").get(issue.id)).toEqual(comments);
+  }, 15_000);
 
   it("冲突：409 且 issue 状态不变", async () => {
     const repo = makeRepo();
@@ -169,8 +188,9 @@ describe("POST /api/tasks/:id/merge", () => {
     expect(res.json().error).toContain("CONFLICT"); // git 冲突详情在 stdout，必须透出给用户
     const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
     expect(detail.json().issue.status).not.toBe("done");
-    // merge 失败已 abort，仓库不留 MERGING 状态
-    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+    // S1 保留冲突现场，不在无法确认所有权时自动 abort。
+    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+    expect(res.json().code).toBe("recovery_required");
   });
 
   it("回归：带 content-type: application/json 但 body 为空的 POST 不返回 400", async () => {
@@ -266,7 +286,7 @@ describe("URL 仓库（缓存路径解析）", () => {
     });
   });
 
-  it("merge：合入后推送 main 到远程，并删除远程任务分支", async () => {
+  it("merge：合入后推送固定提交到远程，保留任务分支", async () => {
     const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
     tmpDirs.push(runnerRoot);
     await withRunnerRoot(runnerRoot, async () => {
@@ -280,21 +300,20 @@ describe("URL 仓库（缓存路径解析）", () => {
       expect(res.json()).toMatchObject({ ok: true, merged_branch: "task/test123", target: "main" });
       // 远程 main 包含任务改动
       expect(gitR(bareDir, ["show", "main:file.txt"])).toContain("line2");
-      // 远程任务分支被删除
-      expect(gitR(bareDir, ["branch", "--list", "task/test123"])).toBe("");
-      // 缓存本地分支也被清理
-      expect(gitR(cache, ["branch", "--list", "task/test123"])).toBe("");
+      // 保留远端和本地分支，清理不能删除后来出现的改动。
+      expect(gitR(bareDir, ["branch", "--list", "task/test123"])).toContain("task/test123");
+      expect(gitR(cache, ["branch", "--list", "task/test123"])).toContain("task/test123");
       const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
       expect(detail.json().issue.status).toBe("done");
     });
   }, 15000);
 
-  it("merge：推送失败 → 409 且 issue 仍置 done（本地已合入）", async () => {
+  it("merge：推送失败保留现场且不 done，重启后换请求键也不再次合入", async () => {
     const runnerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-root-"));
     tmpDirs.push(runnerRoot);
     await withRunnerRoot(runnerRoot, async () => {
       const { url, bareDir } = makeBareRemote();
-      makeUrlTaskBranch(url, runnerRoot, "task/test123");
+      const cache = makeUrlTaskBranch(url, runnerRoot, "task/test123");
       const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: url });
       const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
       // 删掉远程让 push 失败
@@ -304,8 +323,93 @@ describe("URL 仓库（缓存路径解析）", () => {
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toContain("已合入本地");
       expect(res.json().error).toContain("推送");
+      expect(res.json().code).toBe("recovery_required");
       const detail = await app.inject({ method: "GET", url: `/api/issues/${issue.id}` });
-      expect(detail.json().issue.status).toBe("done");
+      expect(detail.json().issue.status).not.toBe("done");
+      const mergedHead = gitR(cache, ["rev-parse", "HEAD"]);
+      expect(gitR(cache, ["show", "HEAD:file.txt"])).toContain("line2");
+      const saved = app.db.prepare("SELECT * FROM integration_attempts WHERE task_id=?").get(taskId) as any;
+      expect(saved).toMatchObject({ status: "recovery_required", merge_commit: mergedHead });
+      gitR(cache, ["checkout", "task/test123"]);
+      fs.writeFileSync(path.join(cache, "later.txt"), "不应进入旧操作\n");
+      gitR(cache, ["add", "."]); gitR(cache, ["commit", "-m", "后续修改"]); gitR(cache, ["checkout", "main"]);
+      // 落盘并重新启动服务，证明保护不依赖进程内 Promise 或内存标记。
+      const dbFile = path.join(runnerRoot, "restart.db");
+      await app.db.$client.backup(dbFile);
+      await app.close();
+      app = await buildApp({ dbPath: dbFile, logger: false });
+      const replay = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge`, headers: { "idempotency-key": "换一个键" } });
+      expect(replay.statusCode).toBe(409);
+      expect(replay.json().code).toBe("recovery_required");
+      expect(gitR(cache, ["rev-parse", "HEAD"])).toBe(mergedHead);
+      expect(fs.existsSync(path.join(cache, "later.txt"))).toBe(false);
+      expect(app.db.prepare("SELECT * FROM integration_attempts WHERE task_id=?").get(taskId)).toEqual(saved);
     });
+  }, 15000);
+});
+
+describe("持久合入保护", () => {
+  it("Git 错误在首次响应、重放和数据库中统一脱敏", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    const hooks = path.join(repo, ".git", "review-test-hooks"); fs.mkdirSync(hooks);
+    const fakeCredential = "dGVzdDpmYWtlLXJldmlldy1vbmx5";
+    fs.writeFileSync(path.join(hooks, "pre-merge-commit"), `#!/bin/sh\nprintf '%s\\n' 'Authorization: Basic ${fakeCredential}' >&2\nexit 1\n`, { mode: 0o755 });
+    gitR(repo, ["config", "core.hooksPath", hooks]);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    const first = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    const replay = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    for (const response of [first, replay]) {
+      expect(response.statusCode).toBe(409); expect(response.json().code).toBe("recovery_required");
+      expect(response.body).not.toContain(fakeCredential); expect(response.json().error).toContain("[REDACTED]");
+    }
+    const attempt = app.db.prepare("SELECT error FROM integration_attempts WHERE task_id=?").get(taskId);
+    expect(JSON.stringify(attempt)).not.toContain(fakeCredential);
+  }, 15000);
+
+  it("porcelain 为空但已有未结束合并时拒绝操作，不 abort 用户现场", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    gitR(repo, ["checkout", "-b", "user-merge"]);
+    gitR(repo, ["commit", "--allow-empty", "-m", "无文件差异的用户提交"]);
+    gitR(repo, ["checkout", "main"]);
+    gitR(repo, ["merge", "--no-commit", "--no-ff", "user-merge"]);
+    expect(gitR(repo, ["status", "--porcelain"])).toBe("");
+    const marker = fs.readFileSync(path.join(repo, ".git", "MERGE_HEAD"), "utf8");
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    const response = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(response.statusCode).toBe(409); expect(response.json().code).toBe("git_state_changed");
+    expect(fs.readFileSync(path.join(repo, ".git", "MERGE_HEAD"), "utf8")).toBe(marker);
+    expect(app.db.prepare("SELECT COUNT(*) AS n FROM integration_attempts").get()).toEqual({ n: 0 });
+  }, 15000);
+
+  it("并发点击只执行一次合入与完成副作用", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    const responses = await Promise.all([1, 2].map(() => app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` })));
+    expect(responses.some((response) => response.statusCode === 200)).toBe(true);
+    expect(responses.every((response) => response.statusCode === 200 || response.json().code === "recovery_required")).toBe(true);
+    expect(app.db.prepare("SELECT COUNT(*) AS n FROM integration_attempts WHERE task_id=?").get(taskId)).toEqual({ n: 1 });
+    expect(app.db.prepare("SELECT COUNT(*) AS n FROM comments WHERE issue_id=? AND body LIKE '%本地交付%'").get(issue.id)).toEqual({ n: 1 });
+    expect(gitR(repo, ["rev-list", "--count", "--merges", "main"])).toBe("1");
+  }, 15000);
+
+  it("Git 成功后数据库记账失败，仍保留持久守卫且不完成任务", async () => {
+    const repo = makeRepo(); makeTaskBranch(repo);
+    const issue = await createIssue({ assignee_type: "agent", assignee_id: agentId, repo_path: repo });
+    const taskId = await completeTaskWithResult(issue.id, { branch: "task/test123" });
+    app.db.$client.exec(`CREATE TRIGGER fail_local_merge BEFORE UPDATE OF status ON integration_attempts
+      WHEN NEW.status='local_merged' BEGIN SELECT RAISE(ABORT,'模拟记录中断'); END`);
+    const first = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(first.statusCode).toBe(409); expect(first.json().code).toBe("recovery_required");
+    expect(first.json().error).toContain("已合入本地");
+    const head = gitR(repo, ["rev-parse", "HEAD"]);
+    expect(gitR(repo, ["show", "HEAD:file.txt"])).toContain("line2");
+    app.db.$client.exec("DROP TRIGGER fail_local_merge");
+    const retry = await app.inject({ method: "POST", url: `/api/tasks/${taskId}/merge` });
+    expect(retry.json().code).toBe("recovery_required");
+    expect(gitR(repo, ["rev-parse", "HEAD"])).toBe(head);
+    expect((await app.inject({ method: "GET", url: `/api/issues/${issue.id}` })).json().issue.status).not.toBe("done");
   }, 15000);
 });

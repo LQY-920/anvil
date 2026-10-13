@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TaskPanel from "../src/components/TaskPanel.js";
 import * as api from "../src/api.js";
+import { integration, decision, task as boundTask } from "./integration-fixtures.js";
 
-vi.mock("../src/api.js", () => ({
+vi.mock("../src/api.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/api.js")>()),
   getTask: vi.fn(async () => ({
     task: { id: "t1", issue_id: "i1", status: "completed", agent_id: "a1", error: null, failure_reason: null },
     issue: { id: "i1", title: "修 bug", status: "in_progress", description: "详细描述" },
@@ -12,6 +14,7 @@ vi.mock("../src/api.js", () => ({
   getIssueDetail: vi.fn(async () => ({ issue: { id: "i1", title: "修 bug" }, comments: [] })),
   getTaskDiff: vi.fn(async () => ({
     branch: "agent/t1", base: "main",
+    delivery_contract_version: 1, base_commit: null, head_commit: null,
     diff_stat: " src/a.ts | 2 +-",
     diff_text: "diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new",
     truncated: false,
@@ -21,6 +24,8 @@ vi.mock("../src/api.js", () => ({
   addComment: vi.fn(),
   rerunIssue: vi.fn(),
   saveReviewMeasurement: vi.fn(async (id, body) => ({ task_id: id, ...body, recorded_at: new Date().toISOString() })),
+  getTaskIntegration: vi.fn(),
+  submitTaskDecision: vi.fn(),
 }));
 
 vi.mock("../src/ws.js", () => ({ useServerEvents: vi.fn() }));
@@ -37,6 +42,28 @@ async function sendDraftComment() {
 }
 
 describe("TaskPanel", () => {
+  it("有仓库快照的新流程仅真正裁决保存计时，隐藏历史合入按钮", async () => {
+    vi.mocked(api.getTask).mockResolvedValueOnce({ task: boundTask, issue: { id: "i1", title: "绑定任务", status: "in_review", repository_id: "r1" } } as any);
+    vi.mocked(api.getTaskIntegration).mockResolvedValue(integration());
+    vi.mocked(api.submitTaskDecision).mockResolvedValue({ decision });
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("批准当前交付");
+    expect(screen.queryByRole("button", { name: "合入 main" })).toBeNull();
+    expect(api.saveReviewMeasurement).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("批准当前交付"));
+    await waitFor(() => expect(api.submitTaskDecision).toHaveBeenCalledTimes(1));
+    expect(api.saveReviewMeasurement).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.saveReviewMeasurement).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.submitTaskDecision).mock.invocationCallOrder[0]);
+    expect(api.mergeTask).not.toHaveBeenCalled();
+  });
+
+  it("无原始仓库快照的历史 v2 提示新执行，不继续使用旧合入入口", async () => {
+    vi.mocked(api.getTask).mockResolvedValueOnce({ task: { ...boundTask, repository_id: null, repository_snapshot_json: null }, issue: { id: "i1", title: "旧交付", status: "in_review" } } as any);
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText(/此历史任务缺少原始仓库快照/);
+    expect(screen.queryByRole("button", { name: "合入 main" })).toBeNull();
+    expect(screen.getByText("配置 Issue 仓库并重新执行").getAttribute("href")).toBe("/?issue=i1");
+  });
   it("renders review zone with diff stat and merge button, merges on click", async () => {
     render(<TaskPanel taskId="t1" />);
     await waitFor(() => expect(screen.getByText("合入 main")).toBeTruthy());
@@ -92,6 +119,99 @@ describe("TaskPanel", () => {
     fireEvent.click(screen.getByText("合入 main")); await screen.findByText("✓ 已合入 agent/t1");
     const second = vi.mocked(api.saveReviewMeasurement).mock.calls[1][1];
     expect(second.review_started_at).toBe(first.review_started_at); expect(second.active_review_ms!).toBeGreaterThanOrEqual(first.active_review_ms!);
+  });
+
+  it("固定 Diff 展示短 SHA 并保留完整 SHA，不把存档展示当作合入检查", async () => {
+    const base = "0123456789abcdef0123456789abcdef01234567";
+    const head = "abcdef0123456789abcdef0123456789abcdef01";
+    vi.mocked(api.getTaskDiff).mockResolvedValueOnce({
+      branch: "agent/t1", base: "main", delivery_contract_version: 2,
+      base_commit: base, head_commit: head, diff_stat: " src/a.ts | 1 +", diff_text: "+交付版本", truncated: false,
+    });
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("固定版本比较");
+    expect(screen.getByText(base.slice(0, 12)).title).toBe(base);
+    expect(screen.getByText(head.slice(0, 12)).title).toBe(head);
+    expect(screen.getByText(/合入前仍需核对当前仓库与交付证据/)).toBeTruthy();
+    expect(screen.queryByText(/历史任务比较/)).toBeNull();
+    expect(api.mergeTask).not.toHaveBeenCalled();
+  });
+
+  it("v1 Diff 明确标为历史比较，不补造固定 SHA", async () => {
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("历史任务比较（v1），未绑定固定提交版本。");
+    expect(screen.queryByText("固定版本比较")).toBeNull();
+    expect(screen.getByText("查看 diff")).toBeTruthy();
+  });
+
+  it("恢复错误保留后端说明并阻止再次普通合入，查看和打回继续可用", async () => {
+    vi.mocked(api.mergeTask).mockRejectedValueOnce(new api.ApiError("POST /merge → 409", 409, "recovery_required", "推送失败，需核对已有本地合入结果。"));
+    vi.mocked(api.addComment).mockResolvedValueOnce({ id: "c1", trigger: { enqueued: true, task_id: "t2" } });
+    const onChanged = vi.fn();
+    const onSelectTask = vi.fn();
+    render(<TaskPanel taskId="t1" onChanged={onChanged} onSelectTask={onSelectTask} />);
+    const mergeButton = await screen.findByRole("button", { name: "合入 main" });
+    fireEvent.click(mergeButton);
+    await screen.findByText("推送失败，需核对已有本地合入结果。");
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("POST /merge → 409")).toBeNull();
+    expect(screen.queryByText(/✓ 已合入/)).toBeNull();
+    expect(onChanged).not.toHaveBeenCalled();
+    fireEvent.click(mergeButton);
+    expect(api.mergeTask).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("查看 diff"));
+    expect(screen.getByText("new")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("打回意见…"), { target: { value: "核对推送结果后再处理" } });
+    fireEvent.click(screen.getByText("提交意见并重跑"));
+    await waitFor(() => expect(onSelectTask).toHaveBeenCalledWith("t2"));
+    expect(api.addComment).toHaveBeenCalledWith("i1", "核对推送结果后再处理");
+    expect(screen.getByText("推送失败，需核对已有本地合入结果。")).toBeTruthy();
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it.each(["integration_busy", "git_state_changed"])("%s 只显示失败，不误报成功或永久禁用合入", async (code) => {
+    vi.mocked(api.mergeTask).mockRejectedValueOnce(new api.ApiError("POST /merge → 409", 409, code, "仓库状态需重新核对。"));
+    render(<TaskPanel taskId="t1" />);
+    const mergeButton = await screen.findByRole("button", { name: "合入 main" });
+    fireEvent.click(mergeButton);
+    await screen.findByText("仓库状态需重新核对。");
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/✓ 已合入/)).toBeNull();
+    expect(screen.queryByText(/普通合入已停用/)).toBeNull();
+  });
+
+  it("切换任务清除上一个任务的恢复错误和本地合入阻塞", async () => {
+    vi.mocked(api.mergeTask).mockRejectedValueOnce(new api.ApiError("合入待恢复", 409, "recovery_required", "旧任务待恢复。"));
+    const view = render(<TaskPanel taskId="t1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "合入 main" }));
+    await screen.findByText("旧任务待恢复。");
+    vi.mocked(api.getTask).mockResolvedValueOnce({
+      task: { id: "t2", issue_id: "i2", status: "completed", agent_id: "a1", error: null, failure_reason: null },
+      issue: { id: "i2", title: "另一个任务", status: "in_progress" },
+    } as any);
+    view.rerender(<TaskPanel taskId="t2" />);
+    await screen.findByText("另一个任务");
+    const mergeButton = await screen.findByRole("button", { name: "合入 main" });
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText("旧任务待恢复。")).toBeNull();
+    expect(screen.queryByText(/普通合入已停用/)).toBeNull();
+  });
+
+  it("固定 Diff 缺对象时展示后端错误，继续保留打回入口", async () => {
+    vi.mocked(api.getTaskDiff).mockRejectedValueOnce(new api.ApiError("GET /diff → 404", 404, "diff_object_missing", "交付提交对象已不存在。"));
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("交付提交对象已不存在。");
+    expect(screen.queryByRole("button", { name: "合入 main" })).toBeNull();
+    expect((screen.getByText("提交意见并重跑") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("历史服务端无分支的 404 仍不展示交付区", async () => {
+    vi.mocked(api.getTaskDiff).mockRejectedValueOnce(new api.ApiError("GET /diff → 404", 404));
+    render(<TaskPanel taskId="t1" />);
+    await screen.findByText("修 bug");
+    await waitFor(() => expect(api.getTaskDiff).toHaveBeenCalledWith("t1"));
+    expect(screen.queryByRole("region", { name: "交付" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows enqueue hint after comment triggers a new task", async () => {
