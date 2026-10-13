@@ -4,7 +4,8 @@ import type { Db } from "../db/client.js";
 import type { Hub } from "../ws/hub.js";
 import { addComment, createIssueRow, enqueueForComment, enqueueForIssue, getIssue, listIssues, listTasksForIssue, updateIssueRow } from "../services/issues.js";
 import { seed } from "../db/client.js";
-import { ISSUE_STATUSES, PRIORITIES, withGitLock, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
+import { ISSUE_STATUSES, PRIORITIES, type CreateIssueRequest, type UpdateIssueRequest } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import { excludeReviewMeasurement } from "../services/review-measurements.js";
 
 export function registerIssueRoutes(app: FastifyInstance, db: Db, hub: Hub) {

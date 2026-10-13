@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
-import { withGitLock, type Issue, type RepositorySnapshot } from "@anvil/core";
+import { type Issue, type RepositorySnapshot } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import { git, prepareWorkdir, readGitCommonDir } from "../src/worktree.js";
 
 const roots: string[] = [];

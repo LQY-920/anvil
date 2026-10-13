@@ -1,6 +1,7 @@
 import type { Db } from "../db/client.js";
 import type { MergeResponse, TaskDiffResponse, Task } from "@anvil/core";
-import { isRepoUrl, repoCachePath, parseRepositorySnapshot, withGitLock } from "@anvil/core";
+import { isRepoUrl, repoCachePath, parseRepositorySnapshot } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

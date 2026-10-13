@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./git-lock": "./src/git-lock.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "build": "tsc -p tsconfig.json"

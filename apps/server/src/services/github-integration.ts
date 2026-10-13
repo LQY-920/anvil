@@ -1,4 +1,5 @@
-import { canonicalJsonHash, parseRepositorySnapshot, withGitLock, type BindRepositoryRequest, type DeliveryOperation,
+import { withGitLock } from "@anvil/core/git-lock";
+import { canonicalJsonHash, parseRepositorySnapshot, type BindRepositoryRequest, type DeliveryOperation,
   type GitHubCheck, type IntegrationActionRequest, type PullRequestRecord, type Repository, type ReviewGate } from "@anvil/core";
 import { newId, type Db } from "../db/client.js";
 import { git } from "../lib/git.js";

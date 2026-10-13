@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalJsonHash, parseRepositorySnapshot, withGitLock } from "@anvil/core";
+import { canonicalJsonHash, parseRepositorySnapshot } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import type { GateBlocker, ReviewGate, ReviewDecision, SubmitDecisionRequest, IntegrationActionRequest, DeliveryOperation, TaskIntegration, RepositorySnapshot, PullRequestRecord } from "@anvil/core";
 import type { Db } from "../db/client.js";
 import { newId, seed } from "../db/client.js";

@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isRepoUrl, repoCachePath, withGitLock, type Issue, type RepositorySnapshot } from "@anvil/core";
+import { isRepoUrl, repoCachePath, type Issue, type RepositorySnapshot } from "@anvil/core";
+import { withGitLock } from "@anvil/core/git-lock";
 import { ensureRepoCache } from "./repocache.js";
 
 export function git(cwd: string, args: string[]): Promise<string> {
