@@ -144,13 +144,13 @@ describe("db · 0003 P0-A 证据迁移", () => {
       .run(workspace.id, now)).toThrow();
   });
 
-  it("当前迁移不提前引入 continuation_mode / review_decision / improvement_candidate", () => {
+  it("当前迁移不提前引入 continuation_mode / improvement_candidate", () => {
     const db = createDb(":memory:");
     runMigrations(db);
     const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as any[];
     const names: string[] = tables.map((t: any) => t.name);
-    // integration_attempts 已由 T01 的 0004 单独引入；不等于完整裁决流程已实现。
-    for (const banned of ["continuation_modes", "review_decisions", "improvement_candidates"]) {
+    // T01 的 0004/0005 引入合入、裁决记录；Factory 概念仍不提前落库。
+    for (const banned of ["continuation_modes", "improvement_candidates"]) {
       expect(names).not.toContain(banned);
     }
     // tasks 表也不应有 continuation_mode 列

@@ -47,7 +47,11 @@ describe("T01 0004 旧库升级", () => {
 
       runMigrations(db);
       runMigrations(db);
-      expect(db.prepare("SELECT * FROM tasks ORDER BY id").all()).toEqual(beforeTasks);
+      const migratedTasks = db.prepare("SELECT * FROM tasks ORDER BY id").all() as Record<string, unknown>[];
+      expect(migratedTasks.map(({ repository_id, repository_snapshot_json, source_snapshot_id, ...legacy }) => {
+        expect([repository_id, repository_snapshot_json, source_snapshot_id]).toEqual([null, null, null]);
+        return legacy;
+      })).toEqual(beforeTasks);
       expect(db.prepare("SELECT * FROM task_delivery_reports").all()).toEqual(beforeReports);
       expect(db.prepare("SELECT * FROM review_measurements").all()).toEqual(beforeMeasurements);
       expect(db.prepare("SELECT * FROM integration_attempts").all()).toEqual([]);

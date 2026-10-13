@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm";
 // - review_measurements(D-002,只测量基础设施,不属于 P0-B Decision 概念)
 //
 // A02 不含裁决/合入记录；后续 T01 的最小操作记录单列在文件末尾。
-// 不提前引入 continuation_mode、review_decisions 或 improvement_candidates。
+// T01 的仓库/来源/裁决/交付操作单列；不提前引入 continuation_mode 或 improvement_candidates。
 // ----------------------------------------------------------------------------
 
 export const workspaces = sqliteTable("workspaces", {
@@ -38,6 +38,52 @@ export const workspaceMembers = sqliteTable("workspace_members", {
   primaryKey({ columns: [t.workspace_id, t.user_id] }),
 ]);
 
+export const repositories = sqliteTable("repositories", {
+  id: text("id").primaryKey(),
+  workspace_id: text("workspace_id").notNull().references(() => workspaces.id),
+  mode: text("mode", { enum: ["local_git", "github_pr"] }).notNull(),
+  host: text("host").notNull(),
+  external_id: text("external_id").notNull(),
+  full_name: text("full_name").notNull(),
+  clone_url: text("clone_url").notNull(),
+  target_branch: text("target_branch").notNull(),
+  checkout_path: text("checkout_path").notNull(),
+  identity_json: text("identity_json").notNull(),
+  connection_login: text("connection_login"),
+  can_push: integer("can_push", { mode: "boolean" }).notNull().default(false),
+  connection_status: text("connection_status", { enum: ["connected", "unavailable", "renamed", "permission_denied"] }).notNull(),
+  last_synced_at: text("last_synced_at"),
+  next_sync_at: text("next_sync_at"),
+  error: text("error"),
+  version: integer("version").notNull().default(1),
+  sync_failures: integer("sync_failures").notNull().default(0),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (t) => [
+  uniqueIndex("repositories_host_external_id_unique").on(t.host, t.external_id),
+  index("repositories_workspace").on(t.workspace_id),
+  check("repositories_mode_check", sql`${t.mode} IN ('local_git','github_pr')`),
+  check("repositories_connection_status_check", sql`${t.connection_status} IN ('connected','unavailable','renamed','permission_denied')`),
+]);
+
+/** 上游内容按版本追加；接受版本与最新观测版本由 external_issues 分别指向。 */
+export const sourceSnapshots = sqliteTable("source_snapshots", {
+  id: text("id").primaryKey(),
+  repository_id: text("repository_id").notNull().references(() => repositories.id),
+  external_id: text("external_id").notNull(),
+  issue_number: integer("issue_number").notNull(),
+  url: text("url").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  state: text("state", { enum: ["open", "closed"] }).notNull(),
+  source_updated_at: text("source_updated_at").notNull(),
+  hash: text("hash").notNull(),
+  created_at: text("created_at").notNull(),
+}, (t) => [
+  uniqueIndex("source_snapshots_repository_external_hash_unique").on(t.repository_id, t.external_id, t.hash),
+  check("source_snapshots_state_check", sql`${t.state} IN ('open','closed')`),
+]);
+
 export const issues = sqliteTable("issues", {
   id: text("id").primaryKey(),
   workspace_id: text("workspace_id").notNull().references(() => workspaces.id),
@@ -51,6 +97,8 @@ export const issues = sqliteTable("issues", {
   creator_type: text("creator_type").notNull(),
   creator_id: text("creator_id").notNull(),
   repo_path: text("repo_path"),
+  repository_id: text("repository_id").references(() => repositories.id),
+  source_snapshot_id: text("source_snapshot_id").references(() => sourceSnapshots.id),
   position: real("position").notNull().default(0),
   created_at: text("created_at").notNull(),
   updated_at: text("updated_at").notNull(),
@@ -107,6 +155,9 @@ export const tasks = sqliteTable("tasks", {
   failure_reason: text("failure_reason"),
   session_id: text("session_id"),
   work_dir: text("work_dir"),
+  repository_id: text("repository_id").references(() => repositories.id),
+  repository_snapshot_json: text("repository_snapshot_json"),
+  source_snapshot_id: text("source_snapshot_id").references(() => sourceSnapshots.id),
   task_token_hash: text("task_token_hash"),
   result_json: text("result_json"),
   error: text("error"),
@@ -294,4 +345,77 @@ export const integrationAttempts = sqliteTable("integration_attempts", {
   uniqueIndex("integration_attempts_active_repo_unique").on(t.repo_key).where(sql`${t.status} <> 'completed'`),
   check("integration_attempts_status_check", sql`${t.status} IN ('prepared','local_merged','recovery_required','completed')`),
   check("integration_attempts_merge_commit_check", sql`${t.status} NOT IN ('local_merged','completed') OR ${t.merge_commit} IS NOT NULL`),
+]);
+
+export const externalIssues = sqliteTable("external_issues", {
+  repository_id: text("repository_id").notNull().references(() => repositories.id),
+  external_id: text("external_id").notNull(),
+  local_issue_id: text("local_issue_id").notNull().references(() => issues.id),
+  issue_number: integer("issue_number").notNull(),
+  url: text("url").notNull(),
+  accepted_snapshot_id: text("accepted_snapshot_id").notNull().references(() => sourceSnapshots.id),
+  latest_snapshot_id: text("latest_snapshot_id").notNull().references(() => sourceSnapshots.id),
+}, (t) => [
+  primaryKey({ columns: [t.repository_id, t.external_id] }),
+  uniqueIndex("external_issues_local_issue_unique").on(t.local_issue_id),
+]);
+
+export const reviewDecisions = sqliteTable("review_decisions", {
+  id: text("id").primaryKey(),
+  task_id: text("task_id").notNull().references(() => tasks.id),
+  repository_id: text("repository_id").notNull().references(() => repositories.id),
+  actor_id: text("actor_id").notNull(),
+  result: text("result", { enum: ["approved", "overridden", "rejected"] }).notNull(),
+  reason: text("reason").notNull(),
+  head_commit: text("head_commit").notNull(),
+  evidence_version: text("evidence_version").notNull(),
+  request_key: text("request_key").notNull(),
+  payload_hash: text("payload_hash").notNull(),
+  snapshot_json: text("snapshot_json").notNull(),
+  created_at: text("created_at").notNull(),
+}, (t) => [
+  uniqueIndex("review_decisions_task_unique").on(t.task_id),
+  check("review_decisions_result_check", sql`${t.result} IN ('approved','overridden','rejected')`),
+]);
+
+export const deliveryOperations = sqliteTable("delivery_operations", {
+  id: text("id").primaryKey(),
+  task_id: text("task_id").notNull().references(() => tasks.id),
+  repository_id: text("repository_id").notNull().references(() => repositories.id),
+  decision_id: text("decision_id").references(() => reviewDecisions.id),
+  action: text("action", { enum: ["local_merge", "pull_request"] }).notNull(),
+  state: text("state", { enum: ["prepared", "unknown", "failed", "succeeded"] }).notNull(),
+  expected_head: text("expected_head").notNull(),
+  request_key: text("request_key").notNull(),
+  payload_hash: text("payload_hash").notNull(),
+  intent_json: text("intent_json").notNull(),
+  result_json: text("result_json"),
+  error: text("error"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (t) => [
+  uniqueIndex("delivery_operations_request_unique").on(t.task_id, t.action, t.request_key),
+  uniqueIndex("delivery_operations_active_task_action_unique").on(t.task_id, t.action).where(sql`${t.state} IN ('prepared','unknown')`),
+  check("delivery_operations_action_check", sql`${t.action} IN ('local_merge','pull_request')`),
+  check("delivery_operations_state_check", sql`${t.state} IN ('prepared','unknown','failed','succeeded')`),
+]);
+
+export const pullRequestLinks = sqliteTable("pull_request_links", {
+  id: text("id").primaryKey(),
+  repository_id: text("repository_id").notNull().references(() => repositories.id),
+  task_id: text("task_id").notNull().references(() => tasks.id),
+  external_id: text("external_id").notNull(),
+  number: integer("number").notNull(),
+  url: text("url").notNull(),
+  head_ref: text("head_ref").notNull(),
+  head_sha: text("head_sha").notNull(),
+  base_ref: text("base_ref").notNull(),
+  state: text("state", { enum: ["open", "closed", "merged"] }).notNull(),
+  merge_commit: text("merge_commit"),
+  last_synced_at: text("last_synced_at").notNull(),
+  checks_json: text("checks_json").notNull().default("[]"),
+}, (t) => [
+  uniqueIndex("pull_request_links_task_unique").on(t.task_id),
+  index("pull_request_links_repository_external").on(t.repository_id, t.external_id),
+  check("pull_request_links_state_check", sql`${t.state} IN ('open','closed','merged')`),
 ]);
