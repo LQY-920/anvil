@@ -363,4 +363,4 @@ docs: 申请认领 T02 Codex adapter
 文档链接、PRD hash 和 diff 检查见计划第 11 节的实际结果。本轮没有重跑产品测试。
 ```
 
-获得授权后的操作只有这三项：在认领工作树按文件暂存并提交、`git push -u origin codex/claim-t02`、`gh pr create --base main --head codex/claim-t02`。不合并，不改分支保护，不推 main。
+2026-10-18 已按授权完成这三项：提交 `dbee4703495c89f25183a3778aba8058d5cfcbdc`、推送 `codex/claim-t02`、创建 [PR #4](https://github.com/LQY-920/anvil/pull/4)。没有合并，没有改分支保护，没有推 main。
