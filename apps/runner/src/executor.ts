@@ -169,6 +169,19 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
   return lines.filter((l) => l !== null).join("\n");
 }
 
+export function agentServerUrl(baseUrl: string, secrets: string[]): string {
+  let out = baseUrl;
+  try {
+    const url = new URL(baseUrl);
+    url.username = "";
+    url.password = "";
+    out = url.toString();
+    if (url.pathname === "/" && !url.search && !url.hash && !baseUrl.endsWith("/")) out = out.slice(0, -1);
+  } catch { /* 不是 URL 时只做子串清除 */ }
+  for (const secret of secrets) if (secret) out = out.split(secret).join("");
+  return out;
+}
+
 function failureReasonOf(result: AgentResult): "spawn_failed" | "protocol_error" | "approval_blocked" | "non_zero_exit" {
   const error = result.error ?? "";
   if (error.includes("spawn_failed")) return "spawn_failed";
@@ -236,7 +249,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     const env = {
       ...baseEnv,
       ANVIL_TOKEN: task_token,
-      ANVIL_SERVER_URL: (client as any).baseUrl,
+      ANVIL_SERVER_URL: agentServerUrl(String((client as any).baseUrl ?? ""), connectionSecrets),
       ANVIL_WORKSPACE_ID: task.workspace_id,
       ANVIL_AGENT_ID: task.agent_id,
       ANVIL_TASK_ID: task.id,
@@ -261,6 +274,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       fs.writeFileSync(outputSchemaPath, JSON.stringify(CODEX_REPORT_SCHEMA));
     }
     const launch = provider === "codex" ? resolveCodexLaunch(snapshot?.executable || "codex") : null;
+    if (launch && !launch.ok) throw new Error(launch.error);
     const sessionRef = provider === "codex" && pkg.session_action === "resume" ? (pkg.prior_session_ref ?? null) : null;
     if (provider === "codex" && pkg.session_action === "resume" && !sessionRef) {
       throw new Error("protocol_error: 要求恢复会话但没有显式 ID");
@@ -276,8 +290,8 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       model: snapshot?.model,
       outputLastMessagePath,
       outputSchemaPath,
-      command: launch?.command,
-      argsPrefix: launch?.argsPrefix,
+      command: launch?.ok ? launch.command : undefined,
+      argsPrefix: launch?.ok ? launch.argsPrefix : undefined,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     };
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
@@ -305,7 +319,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       } finally {
         agentActive = false;
       }
-      let observedSession = result.sessionRef;
+      let observedSession = result.sessionRef ?? execOpts.sessionRef ?? undefined;
       if (provider === "codex" && outputLastMessagePath) {
         await submitCodexReportFile(client, task.id, task_token, outputLastMessagePath);
       }
@@ -367,7 +381,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
             ...execOpts,
             prompt: followPrompt,
             resume: provider === "kimi",
-            sessionRef: provider === "codex" ? (observedSession ?? null) : null,
+            sessionRef: provider === "codex" ? (observedSession ?? execOpts.sessionRef ?? null) : null,
           });
           agentActive = true;
           try {

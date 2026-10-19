@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { buildCodexArgs, createCodexBackend } from "../src/agents/codex.js";
 import { resolveCodexLaunch } from "../src/agents/codex-launch.js";
 import { readBoundedUtf8 } from "../src/bounded-read.js";
+import { tryVersion } from "../src/probe.js";
 import { CODEX_MAX_EVENT_CHARS, type AgentMessage } from "@anvil/core";
 
 const fakeCli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "testing", "fake-cli.mjs");
@@ -69,6 +70,8 @@ describe("codex adapter", () => {
     expect(result.status).toBe("completed");
     expect(result.sessionRef).toBe("thread-path");
     const launch = resolveCodexLaunch(path.join(dir, "codex.ps1"));
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) return;
     expect(launch.argsPrefix).toContain(path.join(dir, "codex.ps1"));
     expect(launch.command.toLowerCase()).toContain("powershell.exe");
   });
@@ -92,6 +95,17 @@ describe("codex adapter", () => {
     const result = await session.result;
     expect(result.status).toBe("failed");
     expect(result.error).toBe("protocol_error");
+  });
+
+  it("does not spawn a cmd shim that has no node entry", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-cmd-"));
+    const cmd = path.join(dir, "codex.cmd");
+    fs.writeFileSync(cmd, "@echo off\r\n");
+    const launch = resolveCodexLaunch(cmd);
+    expect(launch.ok).toBe(false);
+    if (launch.ok) return;
+    expect(launch.error).toContain("spawn_failed");
+    await expect(tryVersion(cmd, ["--version"], 1000)).resolves.toBeNull();
   });
 
   it("reports a missing or oversized report without reading past the limit", () => {

@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { buildApp } from "@anvil/server";
 import type { FastifyInstance } from "fastify";
 import { ApiClient } from "../src/client.js";
-import { executeTask, buildPrompt } from "../src/executor.js";
+import { executeTask, buildPrompt, agentServerUrl } from "../src/executor.js";
 import * as verificationModule from "../src/verification.js";
 import type { AgentBackend } from "../src/agents/backend.js";
 import type { AgentMessage } from "@anvil/core";
@@ -173,10 +173,14 @@ describe("executor", () => {
 
   // A03 · Agent 子进程 env 不含 daemon token(纵深防御 + ANVIL_DAEMON_TOKEN 不进 env)
   it("does not leak ANVIL_DAEMON_TOKEN or any daemon token into agent env", async () => {
-    const { client, pkg, runnerRoot, daemonId, daemonToken } = await setup();
+    const { client, pkg, runnerRoot, daemonId, daemonToken, url } = await setup();
+    expect(agentServerUrl("http://127.0.0.1:3100", [])).toBe("http://127.0.0.1:3100");
+    expect(agentServerUrl("http://ghp_fake_marker@127.0.0.1:3100/", ["ghp_fake_marker"])).not.toContain("ghp_fake_marker");
+    expect(agentServerUrl(`${url}?token=ghp_fake_marker`, ["ghp_fake_marker"])).not.toContain("ghp_fake_marker");
     process.env.ANVIL_DAEMON_TOKEN = "anv_supersecret_xyz";
     process.env.GH_TOKEN = "ghp_fake_marker";
     process.env.ANVIL_PROMPT_CARRIER = "prefix ghp_fake_marker suffix";
+    process.env.ANVIL_SERVER_URL = `${url}?token=ghp_fake_marker`;
     let capturedEnv: Record<string, string> | null = null;
     const capturing: AgentBackend = {
       provider: "kimi",
@@ -188,6 +192,7 @@ describe("executor", () => {
       delete process.env.ANVIL_DAEMON_TOKEN;
       delete process.env.GH_TOKEN;
       delete process.env.ANVIL_PROMPT_CARRIER;
+      delete process.env.ANVIL_SERVER_URL;
     }
     expect(capturedEnv).not.toBeNull();
     // A03 断言 1: ANVIL_DAEMON_TOKEN 绝不能进入子进程 env
@@ -201,6 +206,34 @@ describe("executor", () => {
     // ANVIL_TOKEN 仍使用 task token
     expect(capturedEnv!["ANVIL_TOKEN"]).toBe(pkg.task_token);
     expect(capturedEnv!["ANVIL_TASK_ID"]).toBe(pkg.task.id);
+    expect(capturedEnv!["ANVIL_SERVER_URL"]).not.toContain("ghp_fake_marker");
+  });
+
+  it("keeps the approved codex session id across follow-ups that emit no new thread id", async () => {
+    const { client, pkg, runnerRoot, daemonId } = await setup();
+    pkg.session_action = "resume";
+    pkg.prior_session_ref = "thread-approved";
+    pkg.task.execution_snapshot_json = JSON.stringify({
+      schema: "anvil.execution_snapshot.v1",
+      provider: "codex",
+      profile_id: "p1",
+      config_version: 1,
+      executable: process.execPath,
+      sandbox: "workspace-write",
+      model: null,
+      cli_version: null,
+      capabilities: { stream: true, resume: true, cancel: true, structured_report: true },
+    });
+    const seen: Array<string | null | undefined> = [];
+    const backend: AgentBackend = {
+      provider: "codex",
+      execute(opts) {
+        seen.push(opts.sessionRef);
+        return { messages: (async function* () {})(), result: Promise.resolve({ status: "completed", exitCode: 0 }), kill() {} };
+      },
+    };
+    await executeTask({ client, backend, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
+    expect(seen).toEqual(["thread-approved", "thread-approved", "thread-approved"]);
   });
 
   it("buildPrompt follows goal-contract structure with issue acceptance", () => {

@@ -16,6 +16,7 @@ export interface ExecOptions {
   /** 入队快照里的可执行文件。缺省时才用 backend 构造时的命令。 */
   command?: string;
   argsPrefix?: string[];
+  launchError?: string;
 }
 
 export type AgentResultStatus = "completed" | "failed" | "aborted" | "timeout" | "cancelled";

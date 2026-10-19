@@ -53,6 +53,13 @@ export function createCodexBackend(opts: CodexBackendOptions = {}): AgentBackend
     provider: "codex",
     execute(execOpts: ExecOptions): AgentSession {
       const state = emptyCodexParseState();
+      if (execOpts.launchError) {
+        return {
+          messages: (async function* () {})(),
+          result: Promise.resolve({ status: "failed", error: execOpts.launchError }),
+          kill() {},
+        };
+      }
       const p = runCliProcess({
         command: execOpts.command ?? command,
         args: [...(execOpts.command ? execOpts.argsPrefix ?? [] : prefix), ...buildCodexArgs({

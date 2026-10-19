@@ -16,19 +16,24 @@ function findExecutable(executable: string): string {
   return executable;
 }
 
-/** 选择实际启动方式。Windows 上优先原生 exe，其次 .cmd；`.ps1` 改走 powershell -File。参数保持数组。 */
-export function resolveCodexLaunch(executable: string): { command: string; argsPrefix: string[] } {
+export type CodexLaunch =
+  | { ok: true; command: string; argsPrefix: string[] }
+  | { ok: false; error: string };
+
+/** 选择实际启动方式。找不到 node 入口的 .cmd 不交给 spawn，避免 Node 22 的 EINVAL。 */
+export function resolveCodexLaunch(executable: string): CodexLaunch {
   const found = findExecutable(executable.trim());
   if (found.toLowerCase().endsWith(".cmd")) {
     const js = path.join(path.dirname(found), "node_modules", "@openai", "codex", "bin", "codex.js");
     if (fs.existsSync(js)) {
       const nodeBeside = path.join(path.dirname(found), "node.exe");
-      return { command: fs.existsSync(nodeBeside) ? nodeBeside : "node", argsPrefix: [js] };
+      return { ok: true, command: fs.existsSync(nodeBeside) ? nodeBeside : "node", argsPrefix: [js] };
     }
+    return { ok: false, error: "spawn_failed: Windows 不能直接启动 .cmd，且没有找到 codex.js" };
   }
   if (found.toLowerCase().endsWith(".ps1")) {
     const powershell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    return { command: powershell, argsPrefix: ["-NoProfile", "-File", found] };
+    return { ok: true, command: powershell, argsPrefix: ["-NoProfile", "-File", found] };
   }
-  return { command: found, argsPrefix: [] };
+  return { ok: true, command: found, argsPrefix: [] };
 }

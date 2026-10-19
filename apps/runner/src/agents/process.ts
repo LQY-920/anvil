@@ -34,13 +34,23 @@ export function killProcessTree(pid: number, force = false) {
 }
 
 export function runCliProcess(opts: RunProcessOptions): RunningProcess {
-  const child = spawn(opts.command, opts.args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    detached: process.platform !== "win32",
-  });
+  let child;
+  try {
+    child = spawn(opts.command, opts.args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      messages: (async function* () {})(),
+      result: Promise.resolve({ status: "failed", error: `spawn_failed: ${message}` }),
+      kill() {},
+    };
+  }
 
   // 消息队列：生产-消费桥接为 AsyncIterable
   const queue: AgentMessage[] = [];

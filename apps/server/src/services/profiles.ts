@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import {
   AUTH_STATES,
@@ -90,12 +92,15 @@ export function updateProfile(db: Db, id: string, body: { executable?: string; s
   const current = getProfile(db, id);
   if (!current) return undefined;
   const now = new Date().toISOString();
+  const executableChanged = body.executable !== undefined && body.executable.trim() !== current.executable;
   db.update(schema.agentProfiles).set({
     executable: body.executable?.trim() ?? current.executable,
     sandbox: body.sandbox ?? current.sandbox,
     model: body.model === undefined ? current.model : body.model,
     config_version: current.config_version + 1,
     auth_state: "auth_not_checked",
+    capabilities_json: executableChanged ? JSON.stringify(CODEX_UNPROBED_CAPABILITIES) : current.capabilities_json,
+    cli_version: executableChanged ? null : current.cli_version,
     updated_at: now,
   }).where(eq(schema.agentProfiles.id, id)).run();
   return getProfile(db, id);
@@ -158,24 +163,43 @@ export function decideSessionResume(input: {
   return { action: "resume", reason: null };
 }
 
-function runText(executable: string, args: string[]): Promise<string | null> {
+function runCaptured(executable: string, args: string[]): Promise<{ error: Error | null; stdout: string; stderr: string }> {
+  let command = executable;
+  let finalArgs = args;
+  if (executable.toLowerCase().endsWith(".cmd")) {
+    const js = path.join(path.dirname(executable), "node_modules", "@openai", "codex", "bin", "codex.js");
+    if (!fs.existsSync(js)) {
+      return Promise.resolve({ error: new Error("spawn_failed: Windows 不能直接启动 .cmd，且没有找到 codex.js"), stdout: "", stderr: "" });
+    }
+    const nodeBeside = path.join(path.dirname(executable), "node.exe");
+    command = fs.existsSync(nodeBeside) ? nodeBeside : "node";
+    finalArgs = [js, ...args];
+  }
   return new Promise((resolve) => {
-    execFile(executable, args, { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
-      const text = `${stdout ?? ""}\n${stderr ?? ""}`;
-      if (err && !text.trim()) return resolve(null);
-      resolve(text);
-    });
+    try {
+      execFile(command, finalArgs, { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
+        resolve({ error: err, stdout: stdout ?? "", stderr: stderr ?? "" });
+      });
+    } catch (error) {
+      resolve({ error: error as Error, stdout: "", stderr: "" });
+    }
+  });
+}
+
+function runText(executable: string, args: string[]): Promise<string | null> {
+  return runCaptured(executable, args).then(({ error, stdout, stderr }) => {
+    const text = `${stdout}\n${stderr}`;
+    if (error && !text.trim()) return null;
+    return text;
   });
 }
 
 function runVersion(executable: string): Promise<{ ok: true; version: string } | { ok: false }> {
-  return new Promise((resolve) => {
-    execFile(executable, ["--version"], { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) return resolve({ ok: false });
-      const version = (stdout || stderr).trim().split(/\r?\n/)[0] ?? "";
-      if (!version) return resolve({ ok: false });
-      resolve({ ok: true, version });
-    });
+  return runCaptured(executable, ["--version"]).then(({ error, stdout, stderr }) => {
+    if (error) return { ok: false };
+    const version = (stdout || stderr).trim().split(/\r?\n/)[0] ?? "";
+    if (!version) return { ok: false };
+    return { ok: true, version };
   });
 }
 

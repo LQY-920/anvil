@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { capabilitiesFromCodexHelp } from "@anvil/core";
+import { resolveCodexLaunch } from "./agents/codex-launch.js";
 
 export interface ProbeResult {
   provider: string;
@@ -34,21 +35,31 @@ export async function probeProviders(env: NodeJS.ProcessEnv = process.env): Prom
   return out;
 }
 
-export function tryText(cmd: string, args: string[], timeoutMs = 5000): Promise<string | null> {
+function runFile(cmd: string, args: string[], timeoutMs: number): Promise<{ error: Error | null; stdout: string; stderr: string }> {
+  const launch = resolveCodexLaunch(cmd);
+  if (!launch.ok) return Promise.resolve({ error: new Error(launch.error), stdout: "", stderr: "" });
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
-      const text = `${stdout ?? ""}\n${stderr ?? ""}`;
-      if (err && !text.trim()) return resolve(null);
-      resolve(text);
-    });
+    try {
+      execFile(launch.command, [...launch.argsPrefix, ...args], { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
+        resolve({ error: err, stdout: stdout ?? "", stderr: stderr ?? "" });
+      });
+    } catch (error) {
+      resolve({ error: error as Error, stdout: "", stderr: "" });
+    }
+  });
+}
+
+export function tryText(cmd: string, args: string[], timeoutMs = 5000): Promise<string | null> {
+  return runFile(cmd, args, timeoutMs).then(({ error, stdout, stderr }) => {
+    const text = `${stdout}\n${stderr}`;
+    if (error && !text.trim()) return null;
+    return text;
   });
 }
 
 export function tryVersion(cmd: string, args: string[], timeoutMs = 5000): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) return resolve(null);
-      resolve((stdout || stderr).trim().split("\n")[0] ?? null);
-    });
+  return runFile(cmd, args, timeoutMs).then(({ error, stdout, stderr }) => {
+    if (error) return null;
+    return (stdout || stderr).trim().split("\n")[0] ?? null;
   });
 }

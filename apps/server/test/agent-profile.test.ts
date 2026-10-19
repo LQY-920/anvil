@@ -132,6 +132,58 @@ describe("codex profile", () => {
     expect(blocked.json().tasks[0].session_block_reason).toContain("丢失");
   });
 
+  it("clears probed capabilities when the executable changes", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/agent-profiles",
+      payload: { provider: "codex", executable: "codex" },
+    });
+    const profileId = created.json().id as string;
+    app.db.prepare(`UPDATE agent_profiles SET capabilities_json = ?, cli_version = ? WHERE id = ?`).run(JSON.stringify({
+      stream: true, resume: true, cancel: true, structured_report: true,
+    }), "0.147.0", profileId);
+    const patched = await app.inject({
+      method: "PATCH", url: `/api/agent-profiles/${profileId}`,
+      payload: { executable: "other-codex" },
+    });
+    expect(patched.json().cli_version).toBeNull();
+    expect(JSON.parse(patched.json().capabilities_json)).toEqual({
+      stream: false, resume: false, cancel: false, structured_report: false,
+    });
+
+    const token = (await app.inject({ method: "POST", url: "/api/daemon-tokens", payload: { label: "t" } })).json().token;
+    const agent = await app.inject({
+      method: "POST", url: "/api/agents",
+      payload: { name: "codex", provider: "codex", profile_id: profileId },
+    });
+    await app.inject({
+      method: "POST", url: "/api/issues",
+      payload: { title: "after executable change", assignee_type: "agent", assignee_id: agent.json().id },
+    });
+    const auth = { authorization: `Bearer ${token}` };
+    await app.inject({
+      method: "POST", url: "/api/daemon/register", headers: auth,
+      payload: {
+        daemon_id: "d1",
+        runtimes: [{ provider: "codex", version: "0.147.0", capabilities: { stream: true, resume: true, cancel: true, structured_report: true } }],
+      },
+    });
+    const denied = await app.inject({ method: "POST", url: "/api/daemon/claim", headers: auth, payload: { daemon_id: "d1" } });
+    expect(denied.json().tasks).toHaveLength(0);
+  });
+
+  it("reports a cmd shim without a node entry as missing instead of crashing", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anvil-profile-cmd-"));
+    const cmd = path.join(dir, "codex.cmd");
+    fs.writeFileSync(cmd, "@echo off\r\n");
+    const created = await app.inject({
+      method: "POST", url: "/api/agent-profiles",
+      payload: { provider: "codex", executable: cmd },
+    });
+    const probed = await app.inject({ method: "POST", url: `/api/agent-profiles/${created.json().id}/probe` });
+    expect(probed.statusCode).toBe(200);
+    expect(probed.json().auth_state).toBe("missing");
+  });
+
   it("records a missing executable without calling it logged in", async () => {
     const created = await app.inject({
       method: "POST", url: "/api/agent-profiles",
