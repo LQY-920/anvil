@@ -1,4 +1,5 @@
 import type { DeliveryQueryResponse, Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
+import { parseExecutionSnapshot, validateDeliveryReport } from "@anvil/core";
 import { isRepoUrl } from "@anvil/core";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,6 +8,7 @@ import type { AgentBackend, AgentResult } from "./agents/backend.js";
 import { prepareWorkdir, gitDiffStat, readWorktreeHead, git } from "./worktree.js";
 import { MessageUploader } from "./uploader.js";
 import { loadVerificationPolicy, runVerification, type VerificationResult } from "./verification.js";
+import { CODEX_REPORT_SCHEMA } from "./agents/codex.js";
 
 export interface ExecutorDeps {
   client: ApiClient;
@@ -165,6 +167,29 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
   return lines.filter((l) => l !== null).join("\n");
 }
 
+function failureReasonOf(result: AgentResult): "spawn_failed" | "protocol_error" | "approval_blocked" | "non_zero_exit" {
+  const error = result.error ?? "";
+  if (error.includes("spawn_failed")) return "spawn_failed";
+  if (error.includes("approval_blocked")) return "approval_blocked";
+  if (error.includes("protocol_error")) return "protocol_error";
+  return "non_zero_exit";
+}
+
+/** 结构化最终输出只转交为 Agent Report。文件缺失或校验失败不制造 Verification。 */
+async function submitCodexReportFile(client: ApiClient, taskId: string, token: string, filePath: string) {
+  let raw: string;
+  try { raw = fs.readFileSync(filePath, "utf8"); } catch { return; }
+  let body: unknown;
+  try { body = JSON.parse(raw); } catch { return; }
+  if (!validateDeliveryReport({ body, bodyBytes: Buffer.byteLength(raw) }).ok) return;
+  try {
+    await client.submitDeliveryReport(taskId, token, body);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e).replace(/Bearer\s+\S+/g, "Bearer ***");
+    console.error(`[anvil-executor] task ${taskId} report file was not accepted:`, msg);
+  }
+}
+
 /** 单任务完整旅程：准备目录 → start → spawn → 流式上报 → complete/fail。任何异常收敛为 fail 上报，绝不外抛。 */
 export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise<void> {
   const { client, backend, daemonId } = deps;
@@ -203,11 +228,28 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     // 在 Agent 启动前固化可信策略；任务分支上的 ANVIL.verify.json 不参与本次终检。
     const verificationPolicy = isV2Task(task) && prepared.baseCommit
       ? await loadVerificationPolicy(workDir, prepared.baseCommit) : undefined;
+    const snapshot = parseExecutionSnapshot(task.execution_snapshot_json);
+    const provider = snapshot?.provider ?? "kimi";
+    let outputLastMessagePath: string | null = null;
+    let outputSchemaPath: string | null = null;
+    if (provider === "codex") {
+      const outDir = path.join(deps.runnerRoot, "codex-out", task.id);
+      fs.mkdirSync(outDir, { recursive: true });
+      outputLastMessagePath = path.join(outDir, "last.json");
+      outputSchemaPath = path.join(outDir, "report.schema.json");
+      fs.writeFileSync(outputSchemaPath, JSON.stringify(CODEX_REPORT_SCHEMA));
+    }
     const execOpts = {
       workDir,
       env,
       prompt: buildPrompt(issue, task, pkg.comments ?? []) + (guidance ? `\n\n## 仓库常驻指引（ANVIL.md）\n\n${guidance}` : ""),
-      resume: prepared.resumed,
+      resume: provider === "kimi" ? prepared.resumed : false,
+      provider,
+      sessionRef: provider === "codex" && prepared.resumed ? (pkg.prior_session_ref ?? null) : null,
+      sandbox: snapshot?.sandbox,
+      model: snapshot?.model,
+      outputLastMessagePath,
+      outputSchemaPath,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     };
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
@@ -234,6 +276,10 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
         result = await session.result;
       } finally {
         agentActive = false;
+      }
+      let observedSession = result.sessionRef;
+      if (provider === "codex" && outputLastMessagePath) {
+        await submitCodexReportFile(client, task.id, task_token, outputLastMessagePath);
       }
       try {
         await uploader.close();
@@ -289,11 +335,20 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
           followups++;
           const followPrompt = v2 ? V2_FOLLOWUP_PROMPT : FOLLOWUP_PROMPT;
           console.error(`[anvil-executor] task ${task.id} ended without delivery, follow-up ${followups}/2 (v2=${v2})`);
-          session = backend.execute({ ...execOpts, prompt: followPrompt, resume: true });
+          session = backend.execute({
+            ...execOpts,
+            prompt: followPrompt,
+            resume: provider === "kimi",
+            sessionRef: provider === "codex" ? (observedSession ?? null) : null,
+          });
           agentActive = true;
           try {
             for await (const m of session.messages) uploader.push(m);
             const fr = await session.result;
+            if (fr.sessionRef) observedSession = fr.sessionRef;
+            if (provider === "codex" && outputLastMessagePath) {
+              await submitCodexReportFile(client, task.id, task_token, outputLastMessagePath);
+            }
             // 追问轮本身被取消/失败就不再追（如用户看板取消），落到 complete 由 server 裁决
             if (fr.status !== "completed") {
               delivered = false;
@@ -363,6 +418,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
             branch: prepared.taskBranch ?? undefined,
             diff_stat: diffStat || undefined,
             work_dir: workDir,
+            ...(observedSession ? { session_id: observedSession } : {}),
             ...(evidence ? {
               base_commit: prepared.baseCommit,
               head_commit: evidence.headCommit,
@@ -393,7 +449,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
           console.error(`[anvil-executor] task ${task.id} fail ${status} after timeout:`, msg);
         }
       } else {
-        const reason = result.error?.includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
+        const reason = failureReasonOf(result);
         try {
           await client.fail(task.id, daemonId, reason, result.error ?? `exit ${result.exitCode}`, workDir);
         } catch (e: any) {

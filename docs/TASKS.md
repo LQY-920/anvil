@@ -9,13 +9,13 @@
 | ID | 任务 / PRD | 认领状态 | 研发状态 | 测试状态 | 验收状态 | 交接 |
 |---|---|---|---|---|---|---|
 | T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 申请认领：LQY-920；待共享 | 需求评审与技术拆分；代码未开始 | [12 条用例未执行](tests/tasks/T01-testcases.md) | 未开始 | [记录](handoffs/T01.md) |
-| T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 申请认领：LQY-920；待共享 | 设计（文档计划）；代码未开始 | [12 条初稿未执行](tests/tasks/T02-testcases.md)；映射见 [计划](plans/T02-codex-adapter.md) | 未开始 | [记录](handoffs/T02.md) |
+| T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 已认领：LQY-920；[PR #4](https://github.com/LQY-920/anvil/pull/4) 已合入 | 开发中；模型探针未跑 | [12 条产品用例未验收](tests/tasks/T02-testcases.md)；部分自动化见 [计划](plans/T02-codex-adapter.md) | 未开始 | [记录](handoffs/T02.md) |
 | T03 | [Factory 流程与真实任务](prds/T03-factory-workflow.md) | 待认领 | 未开始，等联合验收 | [用例初稿，未执行](tests/tasks/T03-testcases.md) | 未开始 | [记录](handoffs/T03.md) |
 | T04 | [内部频道、线程与 @Agent](prds/T04-channels-threads.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T04-testcases.md) | 未开始 | [记录](handoffs/T04.md) |
 | T05 | [移动端使用与安全访问](prds/T05-mobile-access.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T05-testcases.md) | 未开始 | [记录](handoffs/T05.md) |
 | T06 | [pi、dsh 等 Agent 扩展](prds/T06-agent-providers.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T06-testcases.md) | 未开始 | [记录](handoffs/T06.md) |
 
-2026-10-13 仓库所有者明确要求开始推进 T01，本地认领申请与技术拆分已建立；Codex 为当时的实施工具。2026-10-17 仓库所有者要求由 Cursor 准备 T02。T02 现为申请认领，尚未进入共享 main，业务代码未开始。T03–T06 未分配。
+2026-10-18 T02 认领 PR #4 已合入 main `b0401f52e8caa96275bfdb121562f2fbe309df1a`。实施在 `codex/t02-codex-adapter`，代码尚未推送。模型探针、TC12 和 J01 都未执行。T03–T06 未分配。
 
 2026-10-17 实时核对：T01 认领 [PR #2](https://github.com/LQY-920/anvil/pull/2) 已合入；实现草稿 [PR #3](https://github.com/LQY-920/anvil/pull/3) 仍未合并。上表 T01 行保持本 SHA 合入认领时的原文，详细漂移见 [T02 计划](plans/T02-codex-adapter.md)。本次不把 PR #3 的实现文档搬进 T02 认领补丁，也不把 T01 或 J01 标成验收完成。
 
@@ -83,5 +83,6 @@ H01 状态：未认领、未完成。旧指标未取消也未宣布达标；未�
 | 2026-10-10 | 按所有者要求通过基线 PR 对齐 main，更新同步和认领入口 | 所有者明确授权分支整理与合入 | 保留 A01–A08；修复旧 Git 任务启动兼容；六项任务仍待认领，PRD 版本和用例状态不变 |
 | 2026-10-13 | 建立 T01 本地认领申请、需求评审与技术拆分 | 所有者要求开始推进 T01 | 负责人申请 LQY-920，Codex 实施；认领未共享，代码未开始，PRD v1.0/hash 不变；T02–T06 状态不变 |
 | 2026-10-17 | T02 申请认领，并写技术计划、探针、用例映射和环境隔离 | 所有者要求 Cursor 接手 T02；Kimi 已停用，但不把恢复 Kimi 当前置 | 负责人申请 LQY-920，Cursor 实施；认领未共享，PRD v1.0/hash 不变，业务代码未开始；T03–T06 与 J01 状态不变 |
+| 2026-10-18 | PR #4 合入后开始 T02 实现 | 所有者要求合入并继续推进 | 认领生效。已接 Profile、JSONL 解析、显式会话参数、无 Kimi 启动和最小 UI。真实模型探针与 TC12 仍未执行 |
 
 需求整理时未实现六项新功能。后续基线合入运行的产品回归、审查和兼容修复记录在 PROGRESS，不计入六项任务的专项验收；真实 Codex、J01、旧 R2/H01 均尚未通过。

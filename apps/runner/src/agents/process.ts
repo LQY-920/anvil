@@ -10,6 +10,9 @@ export interface RunProcessOptions {
   env: Record<string, string>;
   parseLine: (line: string) => AgentMessage | null;
   idleTimeoutMs: number; // 0 = 不设 watchdog
+  observeLine?: (line: string) => void;
+  finalizeResult?: (result: AgentResult) => AgentResult;
+  maxLineBytes?: number;
 }
 
 export interface RunningProcess {
@@ -63,14 +66,29 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
   armWatchdog();
 
   let buf = "";
+  const takeLine = (line: string) => {
+    if (opts.maxLineBytes && line.length > opts.maxLineBytes) {
+      opts.observeLine?.(line.slice(0, opts.maxLineBytes));
+      push({ type: "log", content: "事件超过长度上限" });
+      return;
+    }
+    opts.observeLine?.(line);
+    push(opts.parseLine(line));
+  };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
     buf += chunk;
+    if (opts.maxLineBytes && buf.length > opts.maxLineBytes) {
+      buf = "";
+      push({ type: "log", content: "事件超过长度上限" });
+      armWatchdog();
+      return;
+    }
     let idx;
     while ((idx = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, idx);
       buf = buf.slice(idx + 1);
-      push(opts.parseLine(line));
+      takeLine(line);
       armWatchdog(); // 有消息即重置 watchdog
     }
   });
@@ -80,17 +98,18 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
     armWatchdog(); // stderr 有输出也说明进程活着
   });
 
+  const settle = (base: AgentResult) => opts.finalizeResult ? opts.finalizeResult(base) : base;
   const result = new Promise<AgentResult>((resolve) => {
     child.on("error", (err) => {
       finish();
-      resolve({ status: "failed", error: `spawn_failed: ${err.message}` });
+      resolve(settle({ status: "failed", error: `spawn_failed: ${err.message}` }));
     });
     child.on("close", (code) => {
-      if (buf.trim()) push(opts.parseLine(buf));
+      if (buf.trim()) takeLine(buf);
       finish();
-      if (killedByWatchdog) return resolve({ status: "timeout", error: "idle watchdog" });
-      if (killedManually) return resolve({ status: "cancelled" });
-      resolve(code === 0 ? { status: "completed", exitCode: 0 } : { status: "failed", exitCode: code ?? -1, error: `exit ${code}` });
+      if (killedByWatchdog) return resolve(settle({ status: "timeout", error: "idle watchdog" }));
+      if (killedManually) return resolve(settle({ status: "cancelled" }));
+      resolve(settle(code === 0 ? { status: "completed", exitCode: 0 } : { status: "failed", exitCode: code ?? -1, error: `exit ${code}` }));
     });
     function finish() {
       if (watchdog) clearTimeout(watchdog);

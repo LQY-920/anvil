@@ -11,13 +11,13 @@ export function priorityWeight(p: Priority): number {
   return { urgent: 40, high: 30, medium: 20, low: 10, none: 0 }[p];
 }
 
-export const FAILURE_REASONS = ["runtime_offline","idle_timeout","spawn_failed","non_zero_exit","lease_expired","cancelled_by_user"] as const;
+export const FAILURE_REASONS = ["runtime_offline","idle_timeout","spawn_failed","non_zero_exit","lease_expired","cancelled_by_user","protocol_error","approval_blocked"] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
 
 export const AGENT_STATUSES = ["idle","working","blocked","error","offline"] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
-export const PROVIDERS = ["kimi"] as const;
+export const PROVIDERS = ["kimi", "codex"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export interface Workspace { id: string; name: string; slug: string; settings_json: string; created_at: string; }
@@ -59,6 +59,11 @@ export interface Task {
   complete_response_json: string | null;
   fail_payload_hash: string | null;
   fail_response_json: string | null;
+  /** T02：入队时复制的 Profile。历史 Kimi 任务为空。 */
+  profile_id?: string | null;
+  profile_config_version?: number | null;
+  execution_snapshot_json?: string | null;
+  cli_version?: string | null;
 }
 
 export interface Comment {
@@ -70,11 +75,13 @@ export interface Comment {
 export interface Agent {
   id: string; workspace_id: string; name: string; provider: Provider;
   status: AgentStatus; max_concurrent_tasks: number; runtime_id: string | null; created_at: string;
+  profile_id?: string | null;
 }
 
 export interface Runtime {
   id: string; workspace_id: string; daemon_id: string; provider: Provider;
   version: string | null; status: "online" | "offline"; last_seen_at: string | null;
+  capabilities_json?: string | null;
 }
 
 // ----------------------------------------------------------------------------

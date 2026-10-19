@@ -3,17 +3,23 @@ import { probeProviders } from "./probe.js";
 import { ApiClient } from "./client.js";
 import { Daemon } from "./poller.js";
 import { createKimiBackend } from "./agents/kimi.js";
+import { createCodexBackend } from "./agents/codex.js";
+import { createRoutingBackend } from "./agents/router.js";
 import { executeTask } from "./executor.js";
+import type { AgentBackend } from "./agents/backend.js";
 
 async function main() {
   const cfg = loadConfig();
   const providers = await probeProviders();
   if (providers.length === 0) {
-    console.error("未探测到任何 Agent CLI（kimi）。请先安装 Kimi Code CLI。");
+    console.error("未探测到 Kimi 或 Codex。找不到 Codex 时不会改派到 Kimi；请安装 Codex CLI 或确认它在 PATH 中。");
     process.exit(1);
   }
   const client = new ApiClient(cfg.serverUrl, cfg.daemonToken);
-  const backend = createKimiBackend();
+  const backends: AgentBackend[] = [];
+  if (providers.some((p) => p.provider === "kimi")) backends.push(createKimiBackend());
+  if (providers.some((p) => p.provider === "codex")) backends.push(createCodexBackend({ command: process.env.ANVIL_CODEX_BIN || "codex" }));
+  const backend = createRoutingBackend(backends);
   const daemon = new Daemon(client, {
     daemonId: cfg.daemonId,
     providers,

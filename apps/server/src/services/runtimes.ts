@@ -6,7 +6,7 @@ export const OFFLINE_AFTER_MS = 60 * 1000;
 
 export function registerRuntimes(
   db: Db, workspaceId: string, daemonId: string,
-  list: { provider: string; version: string | null }[],
+  list: { provider: string; version: string | null; capabilities?: Record<string, boolean> | null }[],
 ): Runtime[] {
   const now = new Date().toISOString();
   const out: Runtime[] = [];
@@ -15,16 +15,18 @@ export function registerRuntimes(
       .prepare(`SELECT * FROM runtimes WHERE workspace_id = ? AND daemon_id = ? AND provider = ?`)
       .get(workspaceId, daemonId, r.provider) as any;
     if (existing) {
+      const capabilities = r.capabilities ? JSON.stringify(r.capabilities) : null;
       db.$client
-        .prepare(`UPDATE runtimes SET version = ?, status = 'online', last_seen_at = ? WHERE id = ?`)
-        .run(r.version, now, existing.id);
+        .prepare(`UPDATE runtimes SET version = ?, status = 'online', last_seen_at = ?, capabilities_json = COALESCE(?, capabilities_json) WHERE id = ?`)
+        .run(r.version, now, capabilities, existing.id);
       out.push({ ...existing, version: r.version, status: "online", last_seen_at: now });
     } else {
       const id = newId();
+      const capabilities = r.capabilities ? JSON.stringify(r.capabilities) : null;
       db.$client
-        .prepare(`INSERT INTO runtimes (id, workspace_id, daemon_id, provider, version, status, last_seen_at)
-                  VALUES (?, ?, ?, ?, ?, 'online', ?)`)
-        .run(id, workspaceId, daemonId, r.provider, r.version, now);
+        .prepare(`INSERT INTO runtimes (id, workspace_id, daemon_id, provider, version, capabilities_json, status, last_seen_at)
+                  VALUES (?, ?, ?, ?, ?, ?, 'online', ?)`)
+        .run(id, workspaceId, daemonId, r.provider, r.version, capabilities, now);
       out.push({ id, workspace_id: workspaceId, daemon_id: daemonId, provider: r.provider as Provider, version: r.version, status: "online", last_seen_at: now });
     }
   }

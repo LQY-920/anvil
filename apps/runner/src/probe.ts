@@ -1,12 +1,24 @@
 import { execFile } from "node:child_process";
 
-export interface ProbeResult { provider: string; version: string | null; }
+export interface ProbeResult {
+  provider: string;
+  version: string | null;
+  capabilities?: Record<string, boolean> | null;
+}
 
-/** 探测本机可用的 Agent CLI。初版只探 kimi。 */
-export async function probeProviders(): Promise<ProbeResult[]> {
+/** 探测本机 Kimi 与 Codex。版本命令成功只表示程序可执行，不是登录或推理成功。 */
+export async function probeProviders(env: NodeJS.ProcessEnv = process.env): Promise<ProbeResult[]> {
   const out: ProbeResult[] = [];
-  const version = await tryVersion("kimi", ["--version"]);
-  if (version) out.push({ provider: "kimi", version });
+  const kimi = await tryVersion(env.ANVIL_KIMI_BIN || "kimi", ["--version"]);
+  if (kimi) out.push({ provider: "kimi", version: kimi });
+  const codex = await tryVersion(env.ANVIL_CODEX_BIN || "codex", ["--version"]);
+  if (codex) {
+    out.push({
+      provider: "codex",
+      version: codex,
+      capabilities: { stream: true, resume: true, cancel: true, structured_report: true },
+    });
+  }
   return out;
 }
 
