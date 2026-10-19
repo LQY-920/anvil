@@ -175,6 +175,8 @@ describe("executor", () => {
   it("does not leak ANVIL_DAEMON_TOKEN or any daemon token into agent env", async () => {
     const { client, pkg, runnerRoot, daemonId, daemonToken } = await setup();
     process.env.ANVIL_DAEMON_TOKEN = "anv_supersecret_xyz";
+    process.env.GH_TOKEN = "ghp_fake_marker";
+    process.env.ANVIL_PROMPT_CARRIER = "prefix ghp_fake_marker suffix";
     let capturedEnv: Record<string, string> | null = null;
     const capturing: AgentBackend = {
       provider: "kimi",
@@ -182,10 +184,16 @@ describe("executor", () => {
     };
     try {
       await executeTask({ client, backend: capturing, runnerRoot, cancelPollMs: 50, daemonId }, pkg);
-    } finally { delete process.env.ANVIL_DAEMON_TOKEN; }
+    } finally {
+      delete process.env.ANVIL_DAEMON_TOKEN;
+      delete process.env.GH_TOKEN;
+      delete process.env.ANVIL_PROMPT_CARRIER;
+    }
     expect(capturedEnv).not.toBeNull();
     // A03 断言 1: ANVIL_DAEMON_TOKEN 绝不能进入子进程 env
     expect(capturedEnv!["ANVIL_DAEMON_TOKEN"]).toBeUndefined();
+    expect(capturedEnv!["GH_TOKEN"]).toBeUndefined();
+    expect(JSON.stringify(capturedEnv)).not.toContain("ghp_fake_marker");
     // A03 断言 2: 其他 daemon token 形式也不能进入(env 里所有键都不是 daemonToken 字符串)
     for (const [k, v] of Object.entries(capturedEnv!)) {
       expect(v, `env.${k} 不应包含 daemonToken`).not.toContain(daemonToken);

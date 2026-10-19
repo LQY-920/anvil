@@ -66,10 +66,13 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
   armWatchdog();
 
   let buf = "";
+  const markOverflow = () => {
+    opts.observeLine?.("\u0000overflow");
+    push({ type: "error", content: "protocol_error: 事件超过长度上限" });
+  };
   const takeLine = (line: string) => {
     if (opts.maxLineBytes && line.length > opts.maxLineBytes) {
-      opts.observeLine?.(line.slice(0, opts.maxLineBytes));
-      push({ type: "log", content: "事件超过长度上限" });
+      markOverflow();
       return;
     }
     opts.observeLine?.(line);
@@ -80,7 +83,7 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
     buf += chunk;
     if (opts.maxLineBytes && buf.length > opts.maxLineBytes) {
       buf = "";
-      push({ type: "log", content: "事件超过长度上限" });
+      markOverflow();
       armWatchdog();
       return;
     }
@@ -93,8 +96,20 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
     }
   });
   child.stderr.setEncoding("utf8");
+  const stderrLineMax = 8192;
+  let stderrCapped = false;
   child.stderr.on("data", (chunk: string) => {
-    for (const line of chunk.split(/\r?\n/)) push({ type: "log", content: `[stderr] ${line}` });
+    for (const line of chunk.split(/\r?\n/)) {
+      if (!line) continue;
+      if (line.length > stderrLineMax) {
+        if (!stderrCapped) {
+          stderrCapped = true;
+          push({ type: "log", content: "[stderr] 输出超过单行上限，已截断" });
+        }
+        continue;
+      }
+      push({ type: "log", content: `[stderr] ${line}` });
+    }
     armWatchdog(); // stderr 有输出也说明进程活着
   });
 

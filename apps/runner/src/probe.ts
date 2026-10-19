@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { capabilitiesFromCodexHelp } from "@anvil/core";
 
 export interface ProbeResult {
   provider: string;
@@ -11,15 +12,36 @@ export async function probeProviders(env: NodeJS.ProcessEnv = process.env): Prom
   const out: ProbeResult[] = [];
   const kimi = await tryVersion(env.ANVIL_KIMI_BIN || "kimi", ["--version"]);
   if (kimi) out.push({ provider: "kimi", version: kimi });
-  const codex = await tryVersion(env.ANVIL_CODEX_BIN || "codex", ["--version"]);
+  const codexBin = env.ANVIL_CODEX_BIN || "codex";
+  const codex = await tryVersion(codexBin, ["--version"]);
   if (codex) {
+    const execHelp = await tryText(codexBin, ["exec", "--help"]);
+    const resumeHelp = await tryText(codexBin, ["exec", "resume", "--help"]);
+    const detected = execHelp && resumeHelp
+      ? capabilitiesFromCodexHelp(execHelp, resumeHelp)
+      : { stream: false, resume: false, structured_report: false, cancel: false };
     out.push({
       provider: "codex",
       version: codex,
-      capabilities: { stream: true, resume: true, cancel: true, structured_report: true },
+      capabilities: {
+        stream: detected.stream,
+        resume: detected.resume,
+        structured_report: detected.structured_report,
+        cancel: detected.cancel,
+      },
     });
   }
   return out;
+}
+
+export function tryText(cmd: string, args: string[], timeoutMs = 5000): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
+      const text = `${stdout ?? ""}\n${stderr ?? ""}`;
+      if (err && !text.trim()) return resolve(null);
+      resolve(text);
+    });
+  });
 }
 
 export function tryVersion(cmd: string, args: string[], timeoutMs = 5000): Promise<string | null> {

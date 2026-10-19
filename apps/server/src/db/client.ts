@@ -30,8 +30,53 @@ const MIGRATIONS_FOLDER = path.join(
   "..", "..", "drizzle",
 );
 
+const T02_TABLES = `
+CREATE TABLE IF NOT EXISTS agent_profiles (
+  id text PRIMARY KEY NOT NULL,
+  workspace_id text NOT NULL,
+  provider text NOT NULL,
+  executable text NOT NULL,
+  sandbox text NOT NULL,
+  model text,
+  config_version integer NOT NULL DEFAULT 1,
+  capabilities_json text NOT NULL,
+  auth_state text NOT NULL,
+  cli_version text,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_sessions (
+  id text PRIMARY KEY NOT NULL,
+  session_ref text NOT NULL,
+  provider text NOT NULL,
+  runtime_id text,
+  task_id text NOT NULL,
+  profile_id text,
+  work_dir text,
+  repo_path text,
+  created_at text NOT NULL
+);`;
+
+function ensureColumn(sqlite: Database.Database, table: string, column: string, type: string) {
+  const rows = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!rows.some((row) => row.name === column)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+/** 补齐 T02 结构。drizzle 只执行时间戳更大的迁移，已应用 T01 的库会跳过更早的 0006。 */
+export function ensureCodexSchema(sqlite: Database.Database) {
+  sqlite.exec(T02_TABLES);
+  ensureColumn(sqlite, "agents", "profile_id", "text");
+  ensureColumn(sqlite, "tasks", "profile_id", "text");
+  ensureColumn(sqlite, "tasks", "profile_config_version", "integer");
+  ensureColumn(sqlite, "tasks", "execution_snapshot_json", "text");
+  ensureColumn(sqlite, "tasks", "cli_version", "text");
+  ensureColumn(sqlite, "runtimes", "capabilities_json", "text");
+  ensureColumn(sqlite, "provider_sessions", "repo_path", "text");
+}
+
 export function runMigrations(db: Db) {
   migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+  ensureCodexSchema(db.$client);
 }
 
 const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";

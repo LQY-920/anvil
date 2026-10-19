@@ -54,8 +54,8 @@ export function createCodexBackend(opts: CodexBackendOptions = {}): AgentBackend
     execute(execOpts: ExecOptions): AgentSession {
       const state = emptyCodexParseState();
       const p = runCliProcess({
-        command,
-        args: [...prefix, ...buildCodexArgs({
+        command: execOpts.command ?? command,
+        args: [...(execOpts.command ? execOpts.argsPrefix ?? [] : prefix), ...buildCodexArgs({
           prompt: execOpts.prompt,
           sessionRef: execOpts.sessionRef,
           sandbox: execOpts.sandbox,
@@ -66,7 +66,9 @@ export function createCodexBackend(opts: CodexBackendOptions = {}): AgentBackend
         cwd: execOpts.workDir,
         env: execOpts.env,
         parseLine: (line) => parseCodexLine(line, state),
-        observeLine: (line) => { if (line.length > CODEX_MAX_EVENT_CHARS) state.invalid = true; },
+        observeLine: (line) => {
+          if (line === "\u0000overflow" || line.length > CODEX_MAX_EVENT_CHARS) state.invalid = true;
+        },
         finalizeResult: (base: AgentResult): AgentResult => {
           if (base.status === "cancelled" || base.status === "timeout" || base.error?.includes("spawn_failed")) return base;
           const classified = classifyCodexResult(state, base.exitCode ?? null);

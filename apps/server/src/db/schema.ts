@@ -211,6 +211,7 @@ export const providerSessions = sqliteTable("provider_sessions", {
   task_id: text("task_id").notNull().references(() => tasks.id),
   profile_id: text("profile_id"),
   work_dir: text("work_dir"),
+  repo_path: text("repo_path"),
   created_at: text("created_at").notNull(),
 });
 

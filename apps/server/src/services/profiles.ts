@@ -2,9 +2,10 @@ import { execFile } from "node:child_process";
 import { eq } from "drizzle-orm";
 import {
   AUTH_STATES,
-  CODEX_HELP_CAPABILITIES,
   CODEX_SANDBOX_MODES,
+  CODEX_UNPROBED_CAPABILITIES,
   EXECUTION_SNAPSHOT_SCHEMA,
+  capabilitiesFromCodexHelp,
   capabilitiesMatch,
   parseExecutionSnapshot,
   rejectReservedProfileFields,
@@ -75,7 +76,7 @@ export function createProfile(db: Db, workspaceId: string, body: { executable: s
     sandbox: body.sandbox ?? "workspace-write",
     model: body.model ?? null,
     config_version: 1,
-    capabilities_json: JSON.stringify(CODEX_HELP_CAPABILITIES),
+    capabilities_json: JSON.stringify(CODEX_UNPROBED_CAPABILITIES),
     auth_state: "auth_not_checked" satisfies AuthState,
     cli_version: null,
     created_at: now,
@@ -104,6 +105,10 @@ export function snapshotForAgent(db: Db, agentId: string): { profile_id: string 
   const agent = db.select().from(schema.agents).where(eq(schema.agents.id, agentId)).all()[0];
   if (!agent || agent.provider !== "codex") return null;
   const profile = agent.profile_id ? getProfile(db, agent.profile_id) : undefined;
+  let capabilities = CODEX_UNPROBED_CAPABILITIES;
+  if (profile?.capabilities_json) {
+    try { capabilities = { ...CODEX_UNPROBED_CAPABILITIES, ...JSON.parse(profile.capabilities_json) }; } catch { /* 保持未探测 */ }
+  }
   const snapshot: ExecutionSnapshot = {
     schema: EXECUTION_SNAPSHOT_SCHEMA,
     provider: "codex",
@@ -113,7 +118,7 @@ export function snapshotForAgent(db: Db, agentId: string): { profile_id: string 
     sandbox: (profile?.sandbox === "read-only" ? "read-only" : "workspace-write"),
     model: profile?.model ?? null,
     cli_version: profile?.cli_version ?? null,
-    capabilities: CODEX_HELP_CAPABILITIES,
+    capabilities,
   };
   return {
     profile_id: profile?.id ?? null,
@@ -127,11 +132,40 @@ export function runtimeCanRunTask(task: { execution_snapshot_json?: string | nul
   const snapshot = parseExecutionSnapshot(task.execution_snapshot_json);
   if (!snapshot) return true;
   if (snapshot.provider !== runtime.provider) return false;
+  if (!snapshot.capabilities.stream || !snapshot.capabilities.resume || !snapshot.capabilities.structured_report) return false;
   let actual: CodexCapabilities | null = null;
   if (runtime.capabilities_json) {
     try { actual = JSON.parse(runtime.capabilities_json) as CodexCapabilities; } catch { actual = null; }
   }
   return capabilitiesMatch(snapshot.capabilities, actual);
+}
+
+export function decideSessionResume(input: {
+  hasPrior: boolean;
+  sameProvider: boolean;
+  sameProfile: boolean;
+  sameRuntime: boolean;
+  sameRepo: boolean;
+  workdirReused: boolean;
+  workdirExists: boolean;
+}): { action: "fresh" | "resume" | "blocked"; reason: string | null } {
+  if (!input.hasPrior) return { action: "fresh", reason: null };
+  if (!input.sameProvider || !input.sameProfile || !input.sameRuntime || !input.sameRepo) {
+    return { action: "blocked", reason: "会话归属与当前 Provider、Profile、Runtime 或仓库不一致" };
+  }
+  if (!input.workdirReused) return { action: "blocked", reason: "新工作树不能静默续作旧会话" };
+  if (!input.workdirExists) return { action: "blocked", reason: "旧会话工作目录已丢失" };
+  return { action: "resume", reason: null };
+}
+
+function runText(executable: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(executable, args, { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
+      const text = `${stdout ?? ""}\n${stderr ?? ""}`;
+      if (err && !text.trim()) return resolve(null);
+      resolve(text);
+    });
+  });
 }
 
 function runVersion(executable: string): Promise<{ ok: true; version: string } | { ok: false }> {
@@ -150,11 +184,21 @@ export async function probeProfile(db: Db, id: string): Promise<AgentProfileRow 
   const current = getProfile(db, id);
   if (!current) return undefined;
   const probed = await runVersion(current.executable);
-  const authState: AuthState = probed.ok ? "executable" : "missing";
-  if (!(AUTH_STATES as readonly string[]).includes(authState)) return current;
+  let authState: AuthState = probed.ok ? "executable" : "missing";
+  let capabilities = CODEX_UNPROBED_CAPABILITIES;
+  if (probed.ok) {
+    const execHelp = await runText(current.executable, ["exec", "--help"]);
+    const resumeHelp = await runText(current.executable, ["exec", "resume", "--help"]);
+    if (!execHelp || !resumeHelp) authState = "unsupported_version";
+    else {
+      capabilities = capabilitiesFromCodexHelp(execHelp, resumeHelp);
+      if (!capabilities.stream || !capabilities.resume || !capabilities.structured_report) authState = "unsupported_version";
+    }
+  }
   db.update(schema.agentProfiles).set({
     auth_state: authState,
     cli_version: probed.ok ? probed.version : null,
+    capabilities_json: JSON.stringify(capabilities),
     updated_at: new Date().toISOString(),
   }).where(eq(schema.agentProfiles.id, id)).run();
   return getProfile(db, id);

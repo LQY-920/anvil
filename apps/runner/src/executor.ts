@@ -1,5 +1,5 @@
 import type { DeliveryQueryResponse, Issue, Task, TaskComment, TaskPackage } from "@anvil/core";
-import { parseExecutionSnapshot, validateDeliveryReport } from "@anvil/core";
+import { LIMITS, parseExecutionSnapshot, validateDeliveryReport } from "@anvil/core";
 import { isRepoUrl } from "@anvil/core";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,6 +9,8 @@ import { prepareWorkdir, gitDiffStat, readWorktreeHead, git } from "./worktree.j
 import { MessageUploader } from "./uploader.js";
 import { loadVerificationPolicy, runVerification, type VerificationResult } from "./verification.js";
 import { CODEX_REPORT_SCHEMA } from "./agents/codex.js";
+import { resolveCodexLaunch } from "./agents/codex-launch.js";
+import { readBoundedUtf8 } from "./bounded-read.js";
 
 export interface ExecutorDeps {
   client: ApiClient;
@@ -175,18 +177,30 @@ function failureReasonOf(result: AgentResult): "spawn_failed" | "protocol_error"
   return "non_zero_exit";
 }
 
-/** 结构化最终输出只转交为 Agent Report。文件缺失或校验失败不制造 Verification。 */
-async function submitCodexReportFile(client: ApiClient, taskId: string, token: string, filePath: string) {
-  let raw: string;
-  try { raw = fs.readFileSync(filePath, "utf8"); } catch { return; }
+/** 结构化最终输出只转交为 Agent Report。缺失、超限和非法内容都留下可诊断原因。 */
+async function submitCodexReportFile(client: ApiClient, taskId: string, token: string, filePath: string): Promise<string | null> {
+  const read = readBoundedUtf8(filePath, LIMITS.REPORT_BODY_BYTES);
+  if (!read.ok) {
+    console.error(`[anvil-executor] task ${taskId} report file ${read.reason}`);
+    return read.reason;
+  }
   let body: unknown;
-  try { body = JSON.parse(raw); } catch { return; }
-  if (!validateDeliveryReport({ body, bodyBytes: Buffer.byteLength(raw) }).ok) return;
+  try { body = JSON.parse(read.text); }
+  catch {
+    console.error(`[anvil-executor] task ${taskId} report file invalid`);
+    return "invalid";
+  }
+  if (!validateDeliveryReport({ body, bodyBytes: Buffer.byteLength(read.text) }).ok) {
+    console.error(`[anvil-executor] task ${taskId} report file rejected_by_schema`);
+    return "rejected_by_schema";
+  }
   try {
     await client.submitDeliveryReport(taskId, token, body);
+    return null;
   } catch (e: any) {
     const msg = String(e?.message ?? e).replace(/Bearer\s+\S+/g, "Bearer ***");
     console.error(`[anvil-executor] task ${taskId} report file was not accepted:`, msg);
+    return "rejected";
   }
 }
 
@@ -196,6 +210,9 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
   const { task, issue, prior_work_dir, task_token } = pkg;
   let workDir: string | null = null;
   try {
+    if (pkg.session_action === "blocked") {
+      throw new Error(`protocol_error: ${pkg.session_block_reason ?? "会话不能恢复"}`);
+    }
     const prepared = await prepareWorkdir(issue, task.id, deps.runnerRoot, prior_work_dir, {
       taskBranch: task.task_branch ?? null,
       targetBranch: task.target_branch ?? null,
@@ -210,8 +227,12 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       baseCommit: prepared.baseCommit,
     } : undefined);
 
-    // daemon token 不进子进程：子进程只需要单次任务 token（spec §6 最小授权）
-    const { ANVIL_DAEMON_TOKEN: _drop, ...baseEnv } = process.env;
+    // 平台和 GitHub 连接凭据不进入 Agent；保留 Codex 运行所需的其余环境。
+    const connectionCredential = /^(?:ANVIL_DAEMON_TOKEN|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)$/i;
+    const connectionSecrets = Object.entries(process.env)
+      .filter(([key, value]) => connectionCredential.test(key) && Boolean(value)).map(([, value]) => value!);
+    const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key, value]) =>
+      value !== undefined && !connectionCredential.test(key) && !connectionSecrets.some((secret) => value.includes(secret))));
     const env = {
       ...baseEnv,
       ANVIL_TOKEN: task_token,
@@ -221,8 +242,8 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       ANVIL_TASK_ID: task.id,
     } as Record<string, string>;
 
-    // 纵深防御：daemon token 若出现在消息流里同样抹掉
-    const secrets = [task_token, process.env.ANVIL_DAEMON_TOKEN ?? ""].filter(Boolean);
+    // 纵深防御：凭据若出现在消息流里同样抹掉
+    const secrets = [task_token, ...connectionSecrets].filter(Boolean);
     const uploader = new MessageUploader(client, task.id, task_token, secrets, 500);
     const guidance = readRepoGuidance(workDir);
     // 在 Agent 启动前固化可信策略；任务分支上的 ANVIL.verify.json 不参与本次终检。
@@ -239,17 +260,24 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       outputSchemaPath = path.join(outDir, "report.schema.json");
       fs.writeFileSync(outputSchemaPath, JSON.stringify(CODEX_REPORT_SCHEMA));
     }
+    const launch = provider === "codex" ? resolveCodexLaunch(snapshot?.executable || "codex") : null;
+    const sessionRef = provider === "codex" && pkg.session_action === "resume" ? (pkg.prior_session_ref ?? null) : null;
+    if (provider === "codex" && pkg.session_action === "resume" && !sessionRef) {
+      throw new Error("protocol_error: 要求恢复会话但没有显式 ID");
+    }
     const execOpts = {
       workDir,
       env,
       prompt: buildPrompt(issue, task, pkg.comments ?? []) + (guidance ? `\n\n## 仓库常驻指引（ANVIL.md）\n\n${guidance}` : ""),
       resume: provider === "kimi" ? prepared.resumed : false,
       provider,
-      sessionRef: provider === "codex" && prepared.resumed ? (pkg.prior_session_ref ?? null) : null,
+      sessionRef,
       sandbox: snapshot?.sandbox,
       model: snapshot?.model,
       outputLastMessagePath,
       outputSchemaPath,
+      command: launch?.command,
+      argsPrefix: launch?.argsPrefix,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,
     };
     // let：追问会换成新 session，取消轮询闭包始终杀"当前"会话
@@ -352,7 +380,9 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
             // 追问轮本身被取消/失败就不再追（如用户看板取消），落到 complete 由 server 裁决
             if (fr.status !== "completed") {
               delivered = false;
-              break;
+              if (fr.status === "cancelled" || terminal.signal.aborted) break;
+              await client.fail(task.id, daemonId, failureReasonOf(fr), fr.error ?? `exit ${fr.exitCode}`, workDir);
+              return;
             }
           } finally {
             agentActive = false;
@@ -477,7 +507,11 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       }
     } else {
       // spawn / 5xx 耗尽 / transport:try fail,失败后吞掉
-      const reason = String(e?.message ?? "").includes("spawn_failed") ? "spawn_failed" : "non_zero_exit";
+      const message = String(e?.message ?? "");
+      const reason = message.includes("spawn_failed") ? "spawn_failed"
+        : message.includes("approval_blocked") ? "approval_blocked"
+        : message.includes("protocol_error") ? "protocol_error"
+        : "non_zero_exit";
       try {
         await client.fail(pkg.task.id, daemonId, reason, String(e?.message ?? e), workDir ?? undefined);
       } catch (e2: any) {

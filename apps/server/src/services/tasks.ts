@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { newId, type Db } from "../db/client.js";
 import { sha256Hex } from "../lib/hash.js";
 import { getIssue, addComment } from "./issues.js";
@@ -9,7 +10,7 @@ import {
 } from "@anvil/core";
 import type { Issue, Task, TaskComment, TaskPackage, ReviewPacketStatus, V2CompleteResponse } from "@anvil/core";
 import { validateCompleteEvidence, redactVerification, persistVerification, getDeliveryReport, deriveCompletedPacketStatus } from "./delivery.js";
-import { runtimeCanRunTask } from "./profiles.js";
+import { decideSessionResume, runtimeCanRunTask } from "./profiles.js";
 
 /** SQLite 没有原生 boolean;raw SQL 读出的 worktree_clean 是 0/1/null。
  *  把它归一化为 Task 协议规定的 `boolean | null`:null 保持 null,0/1 转 boolean。 */
@@ -586,9 +587,27 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
       .prepare(`SELECT author_type, body, created_at FROM comments WHERE issue_id = ?
                 ORDER BY created_at DESC, rowid DESC LIMIT 10`)
       .all(cand.issue_id) as TaskComment[]).reverse();
-    const priorSessionRef = priorWorkDir && typeof prior?.session_id === "string" && prior.session_id.trim()
-      ? prior.session_id.trim() : null;
-    out.push({ task, issue, prior_work_dir: priorWorkDir, prior_session_ref: priorSessionRef, task_token: taskToken, comments });
+    const priorSession = agent.provider === "codex" ? db.$client
+      .prepare(`SELECT ps.session_ref, ps.provider, ps.profile_id, ps.runtime_id, ps.work_dir, ps.repo_path
+                FROM provider_sessions ps JOIN tasks t ON t.id = ps.task_id
+                WHERE t.issue_id = ? AND t.id != ?
+                ORDER BY ps.created_at DESC LIMIT 1`)
+      .get(cand.issue_id, cand.id) as any : null;
+    const decision = decideSessionResume({
+      hasPrior: Boolean(priorSession?.session_ref),
+      sameProvider: priorSession?.provider === agent.provider,
+      sameProfile: (priorSession?.profile_id ?? null) === (cand.profile_id ?? null),
+      sameRuntime: priorSession?.runtime_id === runtime.id,
+      sameRepo: (priorSession?.repo_path ?? null) === (issue.repo_path ?? null),
+      workdirReused: Boolean(priorWorkDir) && priorSession?.work_dir === priorWorkDir,
+      workdirExists: typeof priorWorkDir === "string" && fs.existsSync(priorWorkDir),
+    });
+    out.push({
+      task, issue, prior_work_dir: priorWorkDir, task_token: taskToken, comments,
+      prior_session_ref: decision.action === "resume" ? priorSession.session_ref : null,
+      session_action: decision.action,
+      session_block_reason: decision.reason,
+    });
   }
   return out;
 }
@@ -1032,11 +1051,12 @@ export function runCompleteInTransaction(
         const snap = JSON.parse(String(cur.execution_snapshot_json ?? ""));
         if (snap?.provider === "codex") provider = "codex";
       } catch { /* 历史任务没有快照 */ }
+      const issue = getIssue(db, cur.issue_id);
       db.$client.prepare(`INSERT INTO provider_sessions
-        (id, session_ref, provider, runtime_id, task_id, profile_id, work_dir, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        (id, session_ref, provider, runtime_id, task_id, profile_id, work_dir, repo_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         newId(), body.session_id.trim(), provider, cur.runtime_id ?? null, taskId,
-        cur.profile_id ?? null, body.work_dir ?? cur.work_dir ?? null, now,
+        cur.profile_id ?? null, body.work_dir ?? cur.work_dir ?? null, issue?.repo_path ?? null, now,
       );
     }
     syncAgentIdle(db, cur.agent_id);

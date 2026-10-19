@@ -24,11 +24,22 @@
 
 ## 自动化映射
 
-当前无新增测试代码；认领后将每个用例映射到真实文件/测试名，注明单元、集成、真实进程或人工验收。既有测试可引用但要确认覆盖此版本，不能只填写“pnpm test”。
+2026-10-19 起有新增测试。产品用例的“当前结果”仍按人工验收口径保留，不因自动化存在改成通过。
 
 | 用例 ID | 自动化文件 / 测试名 | 覆盖范围 / 剩余人工项 | 状态 |
 |---|---|---|---|
-| 全部 12 条 | 待实现/映射 | 以上预期均待验证 | 未开始 |
+| TC01 | `apps/server/test/agent-profile.test.ts` | 入队快照不被后续编辑改变；保留参数拒绝；未探测能力不认领 | 部分自动化；真机调度未验收 |
+| TC02 | `apps/runner/src/probe.ts`、`apps/server/src/services/profiles.ts`、`apps/web/test/agents.test.tsx` | 版本成功不写满能力；缺失程序为 missing | 真实登录未验收 |
+| TC03 | `packages/core/test/codex.test.ts`、`apps/runner/test/codex.test.ts` | 分帧、坏 JSON、超长行后仍有 turn.completed 不算成功；0.147.0 失败流 | 成功推理 fixture 未取得 |
+| TC04 | `apps/runner/src/agents/codex-launch.ts`、`apps/runner/test/codex.test.ts` | Windows `.cmd` 转 node 入口，`.ps1` 走 powershell -File；空格路径参数不拆开 | 已有进程测试 |
+| TC05 | `decideSessionResume` 与 `agent-profile.test.ts` | 双仓库/换 Runtime/丢目录/新工作树拒绝静默续作 | 真实 CLI 恢复未验收 |
+| TC06 | 同上，显式重开为 blocked | 不使用 `--last` | 真实续作未验收 |
+| TC07 | `readBoundedUtf8`、executor 追问失败保留原因 | 超限先读上限；protocol_error 不进入 complete | 旧 SHA 仍依赖既有 A05 测试 |
+| TC08 | 既有 `verification.test.ts` | Runner 终检不读 Agent 自述 | 未把本轮标成新的产品通过 |
+| TC09 | 既有 complete 幂等测试 | 回执未知不改发 fail | 未单列新的 Codex 故障注入 |
+| TC10 | 既有 `process.test.ts` 进程树 | 执行阶段取消 | 终检阶段取消沿用旧测试 |
+| TC11 | `executor.test.ts` 虚构 GH_TOKEN / daemon token | 凭据键和嵌入值不进环境 | 真实批准未验收 |
+| TC12 | 无 | 需要 3 个真实 v2 Task | 未执行；模型被账号拒绝 |
 
 ## 运行记录（每轮追加，不覆盖失败历史）
 
@@ -37,6 +48,7 @@
 | 日期 / 执行人 | 代码 SHA / PRD 版本 | 环境 / CLI 版本 | 用例 / 命令或步骤 | 通过 / 失败 / 未测 | 证据 / 缺陷 |
 |---|---|---|---|---|---|
 | 尚无执行 | 未运行 / 1.0 | 未采集 | 未执行 | 0 / 0 / 12 | 无 |
+| 2026-10-19 / Cursor | 实施分支 codex/t02-codex-adapter，检查点 49ca0f0 之后的工作区；PRD 1.0 | Windows，Node 22.18.0，Codex CLI 0.147.0 | 专项与随后的 pnpm test。真实探针只得到失败 JSONL | 产品用例仍 0/0/12。自动化另行记录 | 账号拒绝 gpt-6-luna 与一次显式 gpt-5.2-codex，未完成 3 个真实 Task |
 
 产品改动完成后还需项目全量 test、build、四包 noEmit；将真实结果追加此处。文档链接检查不计作这些产品用例通过。
 

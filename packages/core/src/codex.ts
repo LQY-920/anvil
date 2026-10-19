@@ -17,12 +17,25 @@ export interface CodexCapabilities {
 }
 
 /** 0.147.0 的帮助已确认这些开关存在。批准行为仍未由模型探针冻结。 */
-export const CODEX_HELP_CAPABILITIES: CodexCapabilities = {
-  stream: true,
-  resume: true,
-  cancel: true,
-  structured_report: true,
+export const CODEX_UNPROBED_CAPABILITIES: CodexCapabilities = {
+  stream: false,
+  resume: false,
+  structured_report: false,
+  cancel: false,
 };
+
+/** 只根据子命令帮助判断能力。`--version` 成功不能把这些开关写成 true。 */
+export function capabilitiesFromCodexHelp(execHelp: string, resumeHelp: string): CodexCapabilities {
+  const stream = execHelp.includes("--json");
+  const resume = resumeHelp.includes("SESSION_ID");
+  const structuredReport = execHelp.includes("--output-schema");
+  return {
+    stream,
+    resume,
+    structured_report: structuredReport,
+    cancel: stream,
+  };
+}
 
 export interface ExecutionSnapshot {
   schema: typeof EXECUTION_SNAPSHOT_SCHEMA;

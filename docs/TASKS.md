@@ -9,7 +9,7 @@
 | ID | 任务 / PRD | 认领状态 | 研发状态 | 测试状态 | 验收状态 | 交接 |
 |---|---|---|---|---|---|---|
 | T01 | [Anvil 与 GitHub/Git 集成](prds/T01-git-github.md) | 申请认领：LQY-920；待共享 | 需求评审与技术拆分；代码未开始 | [12 条用例未执行](tests/tasks/T01-testcases.md) | 未开始 | [记录](handoffs/T01.md) |
-| T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 已认领：LQY-920；[PR #4](https://github.com/LQY-920/anvil/pull/4) 已合入 | 开发中；模型探针未跑 | [12 条产品用例未验收](tests/tasks/T02-testcases.md)；部分自动化见 [计划](plans/T02-codex-adapter.md) | 未开始 | [记录](handoffs/T02.md) |
+| T02 | [Codex adapter 与测试](prds/T02-codex-adapter.md) | 已认领：LQY-920；[PR #4](https://github.com/LQY-920/anvil/pull/4) 已合入 | 开发中；真实模型被账号拒绝 | [12 条产品用例未验收](tests/tasks/T02-testcases.md)；2026-10-19 全量 test/build/noEmit 通过 | 未开始 | [记录](handoffs/T02.md) |
 | T03 | [Factory 流程与真实任务](prds/T03-factory-workflow.md) | 待认领 | 未开始，等联合验收 | [用例初稿，未执行](tests/tasks/T03-testcases.md) | 未开始 | [记录](handoffs/T03.md) |
 | T04 | [内部频道、线程与 @Agent](prds/T04-channels-threads.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T04-testcases.md) | 未开始 | [记录](handoffs/T04.md) |
 | T05 | [移动端使用与安全访问](prds/T05-mobile-access.md) | 待认领 | 未开始 | [用例初稿，未执行](tests/tasks/T05-testcases.md) | 未开始 | [记录](handoffs/T05.md) |

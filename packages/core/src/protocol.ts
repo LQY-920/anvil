@@ -17,8 +17,10 @@ export interface TaskPackage {
   task: Task;
   issue: Issue;
   prior_work_dir: string | null;
-  /** 仅在复用同一工作树时携带上一次显式会话 ID。没有 ID 时不得改用 resume --last。 */
+  /** 仅在归属校验通过且复用同一工作树时携带显式会话 ID。 */
   prior_session_ref?: string | null;
+  session_action?: "fresh" | "resume" | "blocked";
+  session_block_reason?: string | null;
   task_token: string;
   comments: TaskComment[];
 }

@@ -13,6 +13,9 @@ export interface ExecOptions {
   model?: string | null;
   outputLastMessagePath?: string | null;
   outputSchemaPath?: string | null;
+  /** 入队快照里的可执行文件。缺省时才用 backend 构造时的命令。 */
+  command?: string;
+  argsPrefix?: string[];
 }
 
 export type AgentResultStatus = "completed" | "failed" | "aborted" | "timeout" | "cancelled";
