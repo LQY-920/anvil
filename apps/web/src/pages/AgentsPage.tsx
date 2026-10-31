@@ -48,6 +48,9 @@ export default function AgentsPage() {
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [tokens, setTokens] = useState<DaemonTokenInfo[]>([]);
   const [name, setName] = useState("");
+  const [provider, setProvider] = useState("codex");
+  const [profiles, setProfiles] = useState<api.AgentProfileInfo[]>([]);
+  const [probingId, setProbingId] = useState<string | null>(null);
   const [newToken, setNewToken] = useState("");
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -55,10 +58,11 @@ export default function AgentsPage() {
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const reload = async () => {
-    const [a, r, t] = await Promise.all([api.listAgents(), api.listRuntimes(), api.listDaemonTokens()]);
+    const [a, r, t, p] = await Promise.all([api.listAgents(), api.listRuntimes(), api.listDaemonTokens(), api.listProfiles()]);
     setAgents(a);
     setRuntimes(r);
     setTokens(t);
+    setProfiles(p);
   };
   useEffect(() => { reload().catch(console.error); }, []);
 
@@ -103,17 +107,26 @@ export default function AgentsPage() {
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
+            <select
+              aria-label="执行器"
+              className="h-8 rounded-md border bg-background px-2 text-sm"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+            >
+              <option value="codex">Codex</option>
+              <option value="kimi">Kimi</option>
+            </select>
             <Button
               disabled={creating || !name.trim()}
               onClick={async () => {
                 const trimmed = name.trim();
                 if (!trimmed || creating) return;
                 setCreating(true);
-                try { await api.createAgent({ name: trimmed, provider: "kimi" }); setName(""); reload(); } finally { setCreating(false); }
+                try { await api.createAgent({ name: trimmed, provider }); setName(""); reload(); } finally { setCreating(false); }
               }}
             >
               <Plus />
-              创建（kimi）
+              创建
             </Button>
           </div>
           <Table>
@@ -139,6 +152,49 @@ export default function AgentsPage() {
                   </TableRow>
                 );
               })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Codex 配置</CardTitle>
+          <CardDescription>找到程序只表示可执行。探测不会登录，也不会把帮助成功当成可用。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>程序</TableHead>
+                <TableHead>沙箱</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>版本</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {profiles.map((profile) => (
+                <TableRow key={profile.id}>
+                  <TableCell className="font-medium">{profile.executable}</TableCell>
+                  <TableCell className="text-muted-foreground">{profile.sandbox}</TableCell>
+                  <TableCell className="text-muted-foreground">{profile.auth_state}</TableCell>
+                  <TableCell className="text-muted-foreground">{profile.cli_version ?? "未探测"}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={probingId === profile.id}
+                      onClick={async () => {
+                        setProbingId(profile.id);
+                        try { await api.probeProfile(profile.id); await reload(); } finally { setProbingId(null); }
+                      }}
+                    >
+                      探测
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </CardContent>

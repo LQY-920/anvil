@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { newId, type Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { DELIVERY_CONTRACT_CURRENT_VERSION, priorityWeight, type CreateIssueRequest, type Issue, type IssueWithTask, type LatestTaskSummary, type Task, type UpdateIssueRequest } from "@anvil/core";
+import { snapshotForAgent } from "./profiles.js";
 
 function rowToIssue(r: typeof schema.issues.$inferSelect): Issue {
   return r as unknown as Issue;
@@ -53,12 +54,17 @@ export function enqueueForComment(db: Db, issue: Issue): CommentEnqueueResult {
 function insertQueuedTask(db: Db, issue: Issue, trigger: string): Task | null {
   const now = new Date().toISOString();
   const id = newId();
+  const snapshot = snapshotForAgent(db, issue.assignee_id!);
   try {
     db.insert(schema.tasks).values({
       id, workspace_id: issue.workspace_id, issue_id: issue.id,
       agent_id: issue.assignee_id!, status: "queued", // 调用方已守卫 assignee_id 非空
       priority: priorityWeight(issue.priority), attempt: 1, max_attempts: 3,
       delivery_contract_version: DELIVERY_CONTRACT_CURRENT_VERSION,
+      profile_id: snapshot?.profile_id ?? null,
+      profile_config_version: snapshot?.config_version ?? null,
+      execution_snapshot_json: snapshot?.snapshot_json ?? null,
+      cli_version: snapshot?.cli_version ?? null,
       created_at: now,
     }).run();
   } catch (e: any) {

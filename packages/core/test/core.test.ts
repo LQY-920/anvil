@@ -9,7 +9,7 @@ describe("enums", () => {
     expect(ISSUE_STATUSES).toEqual(["backlog","todo","in_progress","in_review","done","blocked","cancelled"]);
     expect(TASK_STATUSES).toEqual(["queued","dispatched","running","completed","failed","cancelled"]);
     expect(MESSAGE_TYPES).toEqual(["text","thinking","tool_use","tool_result","status","error","log"]);
-    expect(FAILURE_REASONS).toEqual(["runtime_offline","idle_timeout","spawn_failed","non_zero_exit","lease_expired","cancelled_by_user"]);
+    expect(FAILURE_REASONS).toEqual(["runtime_offline","idle_timeout","spawn_failed","non_zero_exit","lease_expired","cancelled_by_user","protocol_error","approval_blocked"]);
   });
   it("priorityWeight maps each priority to its exact weight", () => {
     expect(priorityWeight("urgent")).toBe(40);

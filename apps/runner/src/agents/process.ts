@@ -10,6 +10,9 @@ export interface RunProcessOptions {
   env: Record<string, string>;
   parseLine: (line: string) => AgentMessage | null;
   idleTimeoutMs: number; // 0 = 不设 watchdog
+  observeLine?: (line: string) => void;
+  finalizeResult?: (result: AgentResult) => AgentResult;
+  maxLineBytes?: number;
 }
 
 export interface RunningProcess {
@@ -31,13 +34,23 @@ export function killProcessTree(pid: number, force = false) {
 }
 
 export function runCliProcess(opts: RunProcessOptions): RunningProcess {
-  const child = spawn(opts.command, opts.args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    detached: process.platform !== "win32",
-  });
+  let child;
+  try {
+    child = spawn(opts.command, opts.args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      messages: (async function* () {})(),
+      result: Promise.resolve({ status: "failed", error: `spawn_failed: ${message}` }),
+      kill() {},
+    };
+  }
 
   // 消息队列：生产-消费桥接为 AsyncIterable
   const queue: AgentMessage[] = [];
@@ -63,34 +76,65 @@ export function runCliProcess(opts: RunProcessOptions): RunningProcess {
   armWatchdog();
 
   let buf = "";
+  const markOverflow = () => {
+    opts.observeLine?.("\u0000overflow");
+    push({ type: "error", content: "protocol_error: 事件超过长度上限" });
+  };
+  const takeLine = (line: string) => {
+    if (opts.maxLineBytes && line.length > opts.maxLineBytes) {
+      markOverflow();
+      return;
+    }
+    opts.observeLine?.(line);
+    push(opts.parseLine(line));
+  };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
     buf += chunk;
+    if (opts.maxLineBytes && buf.length > opts.maxLineBytes) {
+      buf = "";
+      markOverflow();
+      armWatchdog();
+      return;
+    }
     let idx;
     while ((idx = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, idx);
       buf = buf.slice(idx + 1);
-      push(opts.parseLine(line));
+      takeLine(line);
       armWatchdog(); // 有消息即重置 watchdog
     }
   });
   child.stderr.setEncoding("utf8");
+  const stderrLineMax = 8192;
+  let stderrCapped = false;
   child.stderr.on("data", (chunk: string) => {
-    for (const line of chunk.split(/\r?\n/)) push({ type: "log", content: `[stderr] ${line}` });
+    for (const line of chunk.split(/\r?\n/)) {
+      if (!line) continue;
+      if (line.length > stderrLineMax) {
+        if (!stderrCapped) {
+          stderrCapped = true;
+          push({ type: "log", content: "[stderr] 输出超过单行上限，已截断" });
+        }
+        continue;
+      }
+      push({ type: "log", content: `[stderr] ${line}` });
+    }
     armWatchdog(); // stderr 有输出也说明进程活着
   });
 
+  const settle = (base: AgentResult) => opts.finalizeResult ? opts.finalizeResult(base) : base;
   const result = new Promise<AgentResult>((resolve) => {
     child.on("error", (err) => {
       finish();
-      resolve({ status: "failed", error: `spawn_failed: ${err.message}` });
+      resolve(settle({ status: "failed", error: `spawn_failed: ${err.message}` }));
     });
     child.on("close", (code) => {
-      if (buf.trim()) push(opts.parseLine(buf));
+      if (buf.trim()) takeLine(buf);
       finish();
-      if (killedByWatchdog) return resolve({ status: "timeout", error: "idle watchdog" });
-      if (killedManually) return resolve({ status: "cancelled" });
-      resolve(code === 0 ? { status: "completed", exitCode: 0 } : { status: "failed", exitCode: code ?? -1, error: `exit ${code}` });
+      if (killedByWatchdog) return resolve(settle({ status: "timeout", error: "idle watchdog" }));
+      if (killedManually) return resolve(settle({ status: "cancelled" }));
+      resolve(settle(code === 0 ? { status: "completed", exitCode: 0 } : { status: "failed", exitCode: code ?? -1, error: `exit ${code}` }));
     });
     function finish() {
       if (watchdog) clearTimeout(watchdog);

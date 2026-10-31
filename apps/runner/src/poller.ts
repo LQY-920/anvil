@@ -5,7 +5,7 @@ import { killAllActiveSessions } from "./executor.js";
 
 export interface DaemonOptions {
   daemonId: string;
-  providers: { provider: string; version: string | null }[];
+  providers: { provider: string; version: string | null; capabilities?: Record<string, boolean> | null }[];
   pollMs: number;          // 正常轮询间隔（生产 10s，测试 50ms）
   heartbeatMs: number;     // 心跳间隔（生产 15s）
   executor: (pkg: TaskPackage) => Promise<void>;

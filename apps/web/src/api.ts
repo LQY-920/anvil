@@ -48,8 +48,16 @@ export async function saveReviewMeasurement(id: string, body: ReviewMeasurementR
   finally { clearTimeout(timeout); }
 }
 export const listAgents = () => req<Agent[]>("GET", "/api/agents");
-export const createAgent = (body: { name: string; provider: string; max_concurrent_tasks?: number }) =>
+export const createAgent = (body: { name: string; provider: string; max_concurrent_tasks?: number; profile_id?: string }) =>
   req<Agent>("POST", "/api/agents", body);
+export interface AgentProfileInfo {
+  id: string; provider: string; executable: string; sandbox: string; model: string | null;
+  config_version: number; auth_state: string; cli_version: string | null;
+}
+export const listProfiles = () => req<AgentProfileInfo[]>("GET", "/api/agent-profiles");
+export const createProfile = (body: { provider: "codex"; executable: string; sandbox?: "read-only" | "workspace-write"; model?: string | null }) =>
+  req<AgentProfileInfo>("POST", "/api/agent-profiles", body);
+export const probeProfile = (id: string) => req<{ id: string; auth_state: string; cli_version: string | null }>("POST", `/api/agent-profiles/${id}/probe`);
 export const listRuntimes = () => req<Runtime[]>("GET", "/api/runtimes");
 export const createDaemonToken = (label: string) => req<{ id: string; token: string }>("POST", "/api/daemon-tokens", { label });
 export interface DaemonTokenInfo { id: string; label: string; revoked_at: string | null; created_at: string; }

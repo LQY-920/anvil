@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { newId, type Db } from "../db/client.js";
 import { sha256Hex } from "../lib/hash.js";
 import { getIssue, addComment } from "./issues.js";
@@ -9,6 +10,7 @@ import {
 } from "@anvil/core";
 import type { Issue, Task, TaskComment, TaskPackage, ReviewPacketStatus, V2CompleteResponse } from "@anvil/core";
 import { validateCompleteEvidence, redactVerification, persistVerification, getDeliveryReport, deriveCompletedPacketStatus } from "./delivery.js";
+import { decideSessionResume, runtimeCanRunTask } from "./profiles.js";
 
 /** SQLite 没有原生 boolean;raw SQL 读出的 worktree_clean 是 0/1/null。
  *  把它归一化为 Task 协议规定的 `boolean | null`:null 保持 null,0/1 转 boolean。 */
@@ -511,6 +513,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
     const runtime = db.$client
       .prepare(`SELECT * FROM runtimes WHERE workspace_id = ? AND daemon_id = ? AND provider = ? AND status = 'online'`)
       .get(workspaceId, daemonId, agent.provider) as any;
+    if (!runtime || !runtimeCanRunTask(cand, runtime)) continue;
     const taskToken = `atk_${crypto.randomBytes(24).toString("hex")}`;
     const lease = new Date(Date.now() + LEASE_MS).toISOString();
     const now = new Date().toISOString();
@@ -518,7 +521,7 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
     // 故意只 SELECT 锚点字段,不读 head_commit / verification_* / 任何 hash / response_json:
     // 这些是完成证据,本次认领不得复制。
     const prior = db.$client
-      .prepare(`SELECT work_dir, task_branch, target_branch, base_commit
+      .prepare(`SELECT work_dir, task_branch, target_branch, base_commit, session_id
                 FROM tasks WHERE issue_id = ? AND id != ? AND work_dir IS NOT NULL
                 ORDER BY created_at DESC LIMIT 1`)
       .get(cand.issue_id, cand.id) as any;
@@ -584,7 +587,27 @@ export function claimTasks(db: Db, workspaceId: string, daemonId: string, maxTas
       .prepare(`SELECT author_type, body, created_at FROM comments WHERE issue_id = ?
                 ORDER BY created_at DESC, rowid DESC LIMIT 10`)
       .all(cand.issue_id) as TaskComment[]).reverse();
-    out.push({ task, issue, prior_work_dir: priorWorkDir, task_token: taskToken, comments });
+    const priorSession = agent.provider === "codex" ? db.$client
+      .prepare(`SELECT ps.session_ref, ps.provider, ps.profile_id, ps.runtime_id, ps.work_dir, ps.repo_path
+                FROM provider_sessions ps JOIN tasks t ON t.id = ps.task_id
+                WHERE t.issue_id = ? AND t.id != ?
+                ORDER BY ps.created_at DESC LIMIT 1`)
+      .get(cand.issue_id, cand.id) as any : null;
+    const decision = decideSessionResume({
+      hasPrior: Boolean(priorSession?.session_ref),
+      sameProvider: priorSession?.provider === agent.provider,
+      sameProfile: (priorSession?.profile_id ?? null) === (cand.profile_id ?? null),
+      sameRuntime: priorSession?.runtime_id === runtime.id,
+      sameRepo: (priorSession?.repo_path ?? null) === (issue.repo_path ?? null),
+      workdirReused: Boolean(priorWorkDir) && priorSession?.work_dir === priorWorkDir,
+      workdirExists: typeof priorWorkDir === "string" && fs.existsSync(priorWorkDir),
+    });
+    out.push({
+      task, issue, prior_work_dir: priorWorkDir, task_token: taskToken, comments,
+      prior_session_ref: decision.action === "resume" ? priorSession.session_ref : null,
+      session_action: decision.action,
+      session_block_reason: decision.reason,
+    });
   }
   return out;
 }
@@ -610,15 +633,17 @@ export function failTaskInternal(db: Db, taskId: string, reason: string, error: 
     db.$client
       .prepare(`INSERT INTO tasks
                 (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                 parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
-                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                 parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit,
+                 profile_id, profile_config_version, execution_snapshot_json, cli_version, created_at)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(newId(), task.workspace_id, task.issue_id, task.agent_id,
            task.priority, task.attempt + 1, task.max_attempts,
            task.id, DELIVERY_CONTRACT_CURRENT_VERSION,
            // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
            // 不得覆盖已有的不一致锚点,也不得继承 head_commit / verification_* /
-           // 任何 payload hash / response_json 等完成证据。
-           task.task_branch, task.target_branch, task.base_commit, now);
+           // 任何 payload hash / response_json 等完成证据。Profile 快照随父任务复制。
+           task.task_branch, task.target_branch, task.base_commit,
+           task.profile_id ?? null, task.profile_config_version ?? null, task.execution_snapshot_json ?? null, task.cli_version ?? null, now);
     addComment(db, task.issue_id, {
       author_type: "system", author_id: "system", type: "system",
       body: `任务失败(${reason}),自动重试 ${task.attempt + 1}/${task.max_attempts}`,
@@ -1020,6 +1045,20 @@ export function runCompleteInTransaction(
     if (res.changes !== 1) {
       throw makeOpError(409, "invalid_transition", "Task 状态被并发改动,无法 complete", { task_id: taskId });
     }
+    if (typeof body.session_id === "string" && body.session_id.trim()) {
+      let provider = "kimi";
+      try {
+        const snap = JSON.parse(String(cur.execution_snapshot_json ?? ""));
+        if (snap?.provider === "codex") provider = "codex";
+      } catch { /* 历史任务没有快照 */ }
+      const issue = getIssue(db, cur.issue_id);
+      db.$client.prepare(`INSERT INTO provider_sessions
+        (id, session_ref, provider, runtime_id, task_id, profile_id, work_dir, repo_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        newId(), body.session_id.trim(), provider, cur.runtime_id ?? null, taskId,
+        cur.profile_id ?? null, body.work_dir ?? cur.work_dir ?? null, issue?.repo_path ?? null, now,
+      );
+    }
     syncAgentIdle(db, cur.agent_id);
     // Issue 自动流转 + 系统评论(同 transaction)
     const advanced = autoAdvanceIssue(db, getTask(db, taskId)!, "complete");
@@ -1114,14 +1153,16 @@ export function runFailInTransaction(
         db.$client
           .prepare(`INSERT INTO tasks
                     (id, workspace_id, issue_id, agent_id, status, priority, attempt, max_attempts,
-                     parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit, created_at)
-                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                     parent_task_id, delivery_contract_version, task_branch, target_branch, base_commit,
+                     profile_id, profile_config_version, execution_snapshot_json, cli_version, created_at)
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(newId(), cur.workspace_id, cur.issue_id, cur.agent_id,
                cur.priority, cur.attempt + 1, cur.max_attempts,
                cur.id, DELIVERY_CONTRACT_CURRENT_VERSION,
                // A04-FIX1 · D:自动重试在父 Task 三锚点齐全时,继承 task_branch;
                // 不得继承 head_commit / verification_* / 任何 hash / response_json。
-               cur.task_branch, cur.target_branch, cur.base_commit, now);
+               cur.task_branch, cur.target_branch, cur.base_commit,
+               cur.profile_id ?? null, cur.profile_config_version ?? null, cur.execution_snapshot_json ?? null, cur.cli_version ?? null, now);
         addComment(db, cur.issue_id, {
           author_type: "system", author_id: "system", type: "system",
           body: `任务失败(${persisted.failure_reason}),自动重试 ${cur.attempt + 1}/${cur.max_attempts}`,

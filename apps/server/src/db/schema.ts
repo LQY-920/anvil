@@ -66,10 +66,26 @@ export const agents = sqliteTable("agents", {
   status: text("status").notNull().default("idle"),
   max_concurrent_tasks: integer("max_concurrent_tasks").notNull().default(1),
   runtime_id: text("runtime_id"),
+  profile_id: text("profile_id"),
   created_at: text("created_at").notNull(),
 }, (t) => [
   index("agents_ws").on(t.workspace_id),
 ]);
+
+export const agentProfiles = sqliteTable("agent_profiles", {
+  id: text("id").primaryKey(),
+  workspace_id: text("workspace_id").notNull().references(() => workspaces.id),
+  provider: text("provider").notNull(),
+  executable: text("executable").notNull(),
+  sandbox: text("sandbox").notNull(),
+  model: text("model"),
+  config_version: integer("config_version").notNull().default(1),
+  capabilities_json: text("capabilities_json").notNull(),
+  auth_state: text("auth_state").notNull(),
+  cli_version: text("cli_version"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+});
 
 // ----------------------------------------------------------------------------
 // verification_runs 在 tasks 之前声明,tasks.verification_run_id 通过闭包反向引用,
@@ -107,6 +123,10 @@ export const tasks = sqliteTable("tasks", {
   failure_reason: text("failure_reason"),
   session_id: text("session_id"),
   work_dir: text("work_dir"),
+  profile_id: text("profile_id"),
+  profile_config_version: integer("profile_config_version"),
+  execution_snapshot_json: text("execution_snapshot_json"),
+  cli_version: text("cli_version"),
   task_token_hash: text("task_token_hash"),
   result_json: text("result_json"),
   error: text("error"),
@@ -176,11 +196,24 @@ export const runtimes = sqliteTable("runtimes", {
   daemon_id: text("daemon_id").notNull(),
   provider: text("provider").notNull(),
   version: text("version"),
+  capabilities_json: text("capabilities_json"),
   status: text("status").notNull().default("offline"),
   last_seen_at: text("last_seen_at"),
 }, (t) => [
   uniqueIndex("runtimes_ws_daemon_provider").on(t.workspace_id, t.daemon_id, t.provider),
 ]);
+
+export const providerSessions = sqliteTable("provider_sessions", {
+  id: text("id").primaryKey(),
+  session_ref: text("session_ref").notNull(),
+  provider: text("provider").notNull(),
+  runtime_id: text("runtime_id"),
+  task_id: text("task_id").notNull().references(() => tasks.id),
+  profile_id: text("profile_id"),
+  work_dir: text("work_dir"),
+  repo_path: text("repo_path"),
+  created_at: text("created_at").notNull(),
+});
 
 export const daemonTokens = sqliteTable("daemon_tokens", {
   id: text("id").primaryKey(),

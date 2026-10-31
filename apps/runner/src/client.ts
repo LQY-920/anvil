@@ -64,7 +64,7 @@ export class ApiClient {
     throw lastErr ?? new Error(`${method} ${path} failed after ${maxAttempts} attempts`);
   }
 
-  register(daemonId: string, runtimes: { provider: string; version: string | null }[]) {
+  register(daemonId: string, runtimes: { provider: string; version: string | null; capabilities?: Record<string, boolean> | null }[]) {
     return this.req("POST", "/api/daemon/register", { daemon_id: daemonId, runtimes });
   }
   heartbeat(daemonId: string) {
@@ -174,6 +174,9 @@ export class ApiClient {
   async taskDelivered(taskId: string, token: string): Promise<boolean> {
     const r = await this.getTaskDelivery(taskId, token);
     return r?.delivered === true;
+  }
+  submitDeliveryReport(taskId: string, token: string, body: unknown) {
+    return this.req("PUT", `/api/daemon/tasks/${taskId}/delivery-report`, body, token);
   }
   async taskStatus(taskId: string, token: string): Promise<string | null> {
     try {
