@@ -13,6 +13,8 @@ export interface ExecOptions {
   model?: string | null;
   outputLastMessagePath?: string | null;
   outputSchemaPath?: string | null;
+  /** 工作树的 Git 元数据在沙箱外时，只追加这些目录。 */
+  extraWritableDirs?: string[];
   /** 入队快照里的可执行文件。缺省时才用 backend 构造时的命令。 */
   command?: string;
   argsPrefix?: string[];

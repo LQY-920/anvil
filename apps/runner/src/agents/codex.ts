@@ -30,9 +30,11 @@ export function buildCodexArgs(opts: {
   model?: string | null;
   outputLastMessagePath?: string | null;
   outputSchemaPath?: string | null;
+  extraWritableDirs?: string[];
 }): string[] {
   const args = ["exec", "--json", "--color", "never", "--sandbox", opts.sandbox ?? "workspace-write"];
   if (opts.model) args.push("-m", opts.model);
+  for (const dir of opts.extraWritableDirs ?? []) args.push("--add-dir", dir);
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (opts.outputLastMessagePath) args.push("-o", opts.outputLastMessagePath);
   if (opts.sessionRef) args.push("resume", opts.sessionRef, opts.prompt);
@@ -69,6 +71,7 @@ export function createCodexBackend(opts: CodexBackendOptions = {}): AgentBackend
           model: execOpts.model,
           outputLastMessagePath: execOpts.outputLastMessagePath,
           outputSchemaPath: execOpts.outputSchemaPath,
+          extraWritableDirs: execOpts.extraWritableDirs,
         })],
         cwd: execOpts.workDir,
         env: execOpts.env,

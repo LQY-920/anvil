@@ -20,7 +20,7 @@
 | T02-TC09；T02-FR05 | 完成回执未知；故障注入 | complete 成功后丢失响应 | 同载荷重试；检查写库与广播；提交冲突载荷 | 幂等、不重复证据；未知回执不改发 fail；冲突拒绝 | 未执行 |
 | T02-TC10；T02-FR06 | 取消与超时竞争；真实进程 | Agent 和终检各可启动子进程 | 在执行/终检两阶段取消，模拟 idle timeout 与 PID 过期 | 作用于当前进程树；不误杀旧 PID；终态一致，后续任务可跑 | 未执行 |
 | T02-TC11；T02-FR06 | 权限与环境隔离；权限/进程 | 可观察子进程 env、审批失败替身 | 触发审批/回调失败；检查环境、日志和错误 UI | daemon token 不进入 Agent；敏感值不输出；不自动关闭 sandbox 或无限等待 | 未执行 |
-| T02-TC12；T02-FR01、T02-FR02、T02-FR03、T02-FR04、T02-FR05、T02-FR06 | 真实 Codex 验收；真实本机验收 | 人自行配置可用 Codex；本地 Git 试验仓库 | 执行至少 3 个不同真实 v2 Task，其中至少一个为真实反馈续作 | 保存版本/session/Task/base/head/Report/Verification/策略hash/退出码；缺登录或额度记未完成 | 未执行 |
+| T02-TC12；T02-FR01、T02-FR02、T02-FR03、T02-FR04、T02-FR05、T02-FR06 | 真实 Codex 验收；真实本机验收 | 人自行配置可用 Codex；本地 Git 试验仓库 | 执行至少 3 个不同真实 v2 Task，其中至少一个为真实反馈续作 | 保存版本/session/Task/base/head/Report/Verification/策略hash/退出码；缺登录或额度记未完成 | 已执行，未标通过。后两个任务交付成功，含一次同会话续作；前两个未提交 |
 
 ## 自动化映射
 
@@ -39,7 +39,7 @@
 | TC09 | 既有 complete 幂等测试 | 回执未知不改发 fail | 未单列新的 Codex 故障注入 |
 | TC10 | 既有 `process.test.ts` 进程树 | 执行阶段取消 | 终检阶段取消沿用旧测试 |
 | TC11 | `executor.test.ts` 虚构 GH_TOKEN / daemon token | 凭据键、嵌入值和带凭据的服务地址不进环境 | 真实批准未验收 |
-| TC12 | 无 | 需要 3 个真实 v2 Task | 未执行；模型被账号拒绝 |
+| TC12 | 无 | 需要 3 个真实 v2 Task | 2026-10-31 已跑 4 个真实任务。成功交付 2 个，含一次续作。未标通过 |
 
 ## 运行记录（每轮追加，不覆盖失败历史）
 
@@ -50,6 +50,8 @@
 | 尚无执行 | 未运行 / 1.0 | 未采集 | 未执行 | 0 / 0 / 12 | 无 |
 | 2026-10-19 / Cursor | 实施分支 codex/t02-codex-adapter，检查点 49ca0f0 之后的工作区；PRD 1.0 | Windows，Node 22.18.0，Codex CLI 0.147.0 | 专项与随后的 pnpm test。真实探针只得到失败 JSONL | 产品用例仍 0/0/12。自动化另行记录 | 账号拒绝 gpt-6-luna 与一次显式 gpt-5.2-codex，未完成 3 个真实 Task |
 | 2026-10-19 / Cursor | 同一实施分支，审查修复之后；PRD 1.0 | Windows，Node 22.18.0 | 修复后 `pnpm test`、`pnpm build`、四包 `tsc --noEmit` | 产品用例仍 0/0/12。自动化 Core 167、Server 419、Web 79、Runner 218，退出码 0 | 首轮全量因服务地址多了斜杠导致 3 条 Runner 端到端失败，已去掉多余斜杠后重跑通过 |
+| 2026-10-31 / Cursor | `codex/t02-codex-adapter`；PRD 1.0 | Windows，Codex CLI 0.166.0 | 隔离目录 `tmp/probes/codex/repo-retry` 一次 `exec --json --sandbox workspace-write --ephemeral`。未传模型名，使用账号当前默认模型 | 产品用例当时仍未跑 Anvil 任务。探针退出码 0，`turn.completed`，写出 `probe-ok.txt` | 线程 `01a190f2-2f0e-7fb0-951d-653c09abbda3` |
+| 2026-10-31 / Cursor | 同一分支；PRD 1.0 | Windows，Codex CLI 0.166.0，Server `127.0.0.1:43100`，库在 `tmp/probes/codex/tc12` | 4 个真实 v2 任务。任务 1 写 `notes/one.txt`；任务 2 是它的反馈续作；任务 3 写 `notes/two.txt`；任务 4 把内容改成 `task-two-revised` | TC12 未标通过。任务 3、4 交付成功。任务 1、2 未提交 | 见交接记录。策略 hash `89ad5dddbb6d4a5bd82aebf8bc51bd04d55bb913710ca2af70507910f58c4589` |
 
 产品改动完成后还需项目全量 test、build、四包 noEmit；将真实结果追加此处。文档链接检查不计作这些产品用例通过。
 

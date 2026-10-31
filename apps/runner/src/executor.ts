@@ -169,6 +169,19 @@ export function buildPrompt(issue: Issue, task: Task, comments: TaskComment[] = 
   return lines.filter((l) => l !== null).join("\n");
 }
 
+async function codexWritableGitDirs(workDir: string): Promise<string[]> {
+  try {
+    const gitDir = path.resolve(workDir, (await git(workDir, ["rev-parse", "--git-dir"])).trim());
+    const commonDir = path.resolve(workDir, (await git(workDir, ["rev-parse", "--git-common-dir"])).trim());
+    return [...new Set([gitDir, commonDir].filter((dir) => {
+      const rel = path.relative(workDir, dir);
+      return rel.startsWith("..") || path.isAbsolute(rel);
+    }))];
+  } catch {
+    return [];
+  }
+}
+
 export function agentServerUrl(baseUrl: string, secrets: string[]): string {
   let out = baseUrl;
   try {
@@ -275,6 +288,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
     }
     const launch = provider === "codex" ? resolveCodexLaunch(snapshot?.executable || "codex") : null;
     if (launch && !launch.ok) throw new Error(launch.error);
+    const extraWritableDirs = provider === "codex" ? await codexWritableGitDirs(workDir) : undefined;
     const sessionRef = provider === "codex" && pkg.session_action === "resume" ? (pkg.prior_session_ref ?? null) : null;
     if (provider === "codex" && pkg.session_action === "resume" && !sessionRef) {
       throw new Error("protocol_error: 要求恢复会话但没有显式 ID");
@@ -290,6 +304,7 @@ export async function executeTask(deps: ExecutorDeps, pkg: TaskPackage): Promise
       model: snapshot?.model,
       outputLastMessagePath,
       outputSchemaPath,
+      extraWritableDirs,
       command: launch?.ok ? launch.command : undefined,
       argsPrefix: launch?.ok ? launch.argsPrefix : undefined,
       idleTimeoutMs: deps.idleTimeoutMs ?? 30 * 60 * 1000,

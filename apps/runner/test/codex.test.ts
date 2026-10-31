@@ -21,6 +21,10 @@ describe("codex adapter", () => {
     expect(resumed).toContain("thread-9");
     expect(resumed).not.toContain("--last");
     expect(resumed).not.toContain("--all");
+    const withGit = buildCodexArgs({ prompt: "commit", extraWritableDirs: ["D:\\repo\\.git\\worktrees\\task", "D:\\repo\\.git"] });
+    expect(withGit).toContain("--add-dir");
+    expect(withGit).toContain("D:\\repo\\.git");
+    expect(withGit.indexOf("--add-dir")).toBeLessThan(withGit.indexOf("commit"));
     const resumeAt = resumed.indexOf("resume");
     expect(resumed[resumeAt + 1]).toBe("thread-9");
   });
